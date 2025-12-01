@@ -1,10 +1,10 @@
 # 🚀 SPANE
 
-**S**calable **P**arallel **A**synchronous **N**ode **E**xecution
+**P**arallel **A**synchronous **N**ode **E**xecution
 
-> **The workflow engine that powers platforms like n8n** - Build your own automation platform, workflow builder, or embed powerful orchestration into any application.
+> Build your own automation platform, workflow builder, or embed powerful orchestration into any application.
 
-SPANE is an embeddable, production-ready workflow orchestration engine built on BullMQ and Redis. It's the **infrastructure layer** that enables you to create automation platforms, visual workflow builders, and intelligent job orchestration systems - without building the complex engine from scratch.
+SPANE is an embeddable, workflow orchestration engine built on BullMQ and Redis. It's the **infrastructure layer** that enables you to create automation platforms, visual workflow builders, and intelligent job orchestration systems - without building the complex engine from scratch.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 [![Bun](https://img.shields.io/badge/Bun-1.0+-orange.svg)](https://bun.sh/)
@@ -12,10 +12,10 @@ SPANE is an embeddable, production-ready workflow orchestration engine built on 
 
 ## 🎯 What is SPANE?
 
-SPANE is the **headless workflow engine** that platforms like n8n, Zapier, and Temporal are built on top of. Instead of using these platforms, you can use SPANE to:
+SPANE aims to be a **production-grade headless workflow engine** - the type of infrastructure that platforms like n8n, Zapier, and Temporal are built upon. With SPANE, you can:
 
 ### **🏗️ Build Your Own Platform**
-- Create a custom n8n-like automation platform for your domain
+- Create a custom automation platform tailored to your domain
 - Build a visual workflow builder with your own UI
 - Develop industry-specific automation tools (marketing automation, data pipelines, etc.)
 - Launch a SaaS product with workflow capabilities built-in
