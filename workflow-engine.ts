@@ -325,17 +325,29 @@ export class WorkflowEngine {
     return result;
   }
 
-  // Execute a function with timeout
+  /**
+   * Execute a function with timeout.
+   *
+   * IMPORTANT: This method rejects on timeout but does NOT cancel the underlying operation.
+   * The operation (fn) will continue running in the background, potentially causing resource leaks.
+   *
+   * To properly support cancellation, the INodeExecutor interface would need to be updated
+   * to accept an AbortSignal, but this would be a breaking change for existing implementations.
+   */
   private async executeWithTimeout<T>(
     fn: () => Promise<T>,
     timeoutMs: number,
     nodeId: string
   ): Promise<T> {
     return new Promise((resolve, reject) => {
+      const controller = new AbortController();
       const timeout = setTimeout(() => {
+        controller.abort();
         reject(new Error(`Node ${nodeId} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
+      // Note: fn() is called without the AbortSignal since the interface doesn't support it yet.
+      // This means the underlying operation cannot be cancelled, only the timeout promise rejects.
       fn()
         .then((result) => {
           clearTimeout(timeout);
@@ -576,18 +588,19 @@ export class WorkflowEngine {
 
       // First try to retry from DLQ
       const dlqRetrySuccess = await this.dlqManager.retryFromDLQ(executionId, nodeId);
-      
+
       if (dlqRetrySuccess) {
-        // Reset the node result in state store
-        const resetResult: ExecutionResult = {
-          success: true,
-          data: undefined, // Will be populated when node executes successfully
+        // Clear the node result from state store - set pending sentinel instead of success
+        const pendingResult: ExecutionResult = {
+          success: false,
+          pending: true,
+          retryable: true,
         };
-        await this.stateStore.updateNodeResult(executionId, nodeId, resetResult);
-        
+        await this.stateStore.updateNodeResult(executionId, nodeId, pendingResult);
+
         // Reset execution status to running
         await this.stateStore.setExecutionStatus(executionId, 'running');
-        
+
         console.log(`✓ Successfully initiated retry for node ${nodeId}`);
         return true;
       }

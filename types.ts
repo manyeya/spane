@@ -43,6 +43,7 @@ export interface ExecutionResult {
   error?: string;
   retryable?: boolean;
   failureReason?: 'timeout' | 'error' | 'cancelled' | 'dependency_failed';
+  pending?: boolean;
 }
 
 export interface IExecutionStateStore {

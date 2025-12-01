@@ -6,14 +6,16 @@ import type { WorkflowDefinition, INodeExecutor, ExecutionContext, ExecutionResu
 
 // Example node executors for testing error handling
 class FailingNodeExecutor implements INodeExecutor {
+  private failCounts = new Map<string, number>();
+
   constructor(private failCount: number = 1) {}
 
   async execute(context: ExecutionContext): Promise<ExecutionResult> {
-    const failKey = `fail_${context.executionId}_${context.nodeId}`;
-    const currentFailCount = parseInt((globalThis as any)[failKey] || '0');
-    
+    const failKey = `${context.executionId}_${context.nodeId}`;
+    const currentFailCount = this.failCounts.get(failKey) ?? 0;
+
     if (currentFailCount < this.failCount) {
-      (globalThis as any)[failKey] = (currentFailCount + 1).toString();
+      this.failCounts.set(failKey, currentFailCount + 1);
       return {
         success: false,
         error: `Node ${context.nodeId} failed (attempt ${currentFailCount + 1})`,
@@ -21,7 +23,10 @@ class FailingNodeExecutor implements INodeExecutor {
         failureReason: 'error',
       };
     }
-    
+
+    // Clean up the key on success to avoid memory leaks
+    this.failCounts.delete(failKey);
+
     return {
       success: true,
       data: { message: `Node ${context.nodeId} succeeded after ${currentFailCount} failures` },
