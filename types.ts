@@ -35,13 +35,13 @@ export interface IExecutionStateStore {
   createExecution(workflowId: string): Promise<string>;
   updateNodeResult(executionId: string, nodeId: string, result: ExecutionResult): Promise<void>;
   getExecution(executionId: string): Promise<ExecutionState | null>;
-  setExecutionStatus(executionId: string, status: 'running' | 'completed' | 'failed'): Promise<void>;
+  setExecutionStatus(executionId: string, status: 'running' | 'completed' | 'failed' | 'cancelled' | 'paused'): Promise<void>;
 }
 
 export interface ExecutionState {
   executionId: string;
   workflowId: string;
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'paused';
   nodeResults: Record<string, ExecutionResult>;
   startedAt: Date;
   completedAt?: Date;

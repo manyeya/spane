@@ -27,11 +27,11 @@ export class InMemoryExecutionStore implements IExecutionStateStore {
     return this.executions.get(executionId) || null;
   }
 
-  async setExecutionStatus(executionId: string, status: 'running' | 'completed' | 'failed'): Promise<void> {
+  async setExecutionStatus(executionId: string, status: 'running' | 'completed' | 'failed' | 'cancelled' | 'paused'): Promise<void> {
     const execution = this.executions.get(executionId);
     if (execution) {
       execution.status = status;
-      if (status === 'completed' || status === 'failed') {
+      if (status === 'completed' || status === 'failed' || status === 'cancelled') {
         execution.completedAt = new Date();
       }
     }

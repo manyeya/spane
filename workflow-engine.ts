@@ -1,4 +1,4 @@
-import { Queue, Worker, Job, QueueEvents, FlowProducer } from 'bullmq';
+import { Queue, Worker, Job, QueueEvents, FlowProducer, DelayedError } from 'bullmq';
 import { Redis } from 'ioredis';
 import type { ExecutionContext, ExecutionResult, IExecutionStateStore, NodeDefinition, WorkflowDefinition } from './types';
 import type { NodeRegistry } from './registry';
@@ -166,6 +166,7 @@ export class WorkflowEngine {
             type: 'exponential',
             delay: 1000,
           },
+          timeout: node.config?.timeout || undefined, // Add timeout from node config
         },
         children: children.length > 0 ? children : undefined,
       };
@@ -340,6 +341,18 @@ export class WorkflowEngine {
     const execution = await this.stateStore.getExecution(executionId);
     const previousResults = execution?.nodeResults || {};
 
+    // Check execution status before running
+    if (execution?.status === 'cancelled') {
+      console.log(`🚫 Execution ${executionId} is cancelled. Skipping node ${nodeId}.`);
+      return { success: false, error: 'Workflow execution cancelled' };
+    }
+
+    if (execution?.status === 'paused') {
+      console.log(`⏸️ Execution ${executionId} is paused. Moving to delayed queue.`);
+      await job.moveToDelayed(Date.now() + 5000, job.token); // Retry in 5 seconds
+      throw new DelayedError();
+    }
+
     const context: ExecutionContext = {
       workflowId,
       executionId,
@@ -351,8 +364,23 @@ export class WorkflowEngine {
     console.log(`▶ Executing node ${nodeId} (type: ${node.type})`);
     await job.updateProgress(50);
 
-    // Execute the node
-    const result = await executor.execute(context);
+    // Execute the node with timeout if configured
+    let result: ExecutionResult;
+    const timeoutMs = node.config?.timeout;
+
+    if (timeoutMs) {
+      let timer: ReturnType<typeof setTimeout>;
+      const timeoutPromise = new Promise<ExecutionResult>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Node execution timed out after ${timeoutMs}ms`)), timeoutMs);
+      });
+
+      result = await Promise.race([
+        executor.execute(context).finally(() => clearTimeout(timer)),
+        timeoutPromise
+      ]);
+    } else {
+      result = await executor.execute(context);
+    }
 
     // Save result to state store
     await this.stateStore.updateNodeResult(executionId, nodeId, result);
@@ -377,12 +405,48 @@ export class WorkflowEngine {
     await this.enqueueNode(executionId, workflowId, workflow.entryNodeId, initialData);
   }
 
+  // Cancel a running workflow
+  async cancelWorkflow(executionId: string): Promise<void> {
+    const execution = await this.stateStore.getExecution(executionId);
+    if (!execution || execution.status === 'completed' || execution.status === 'failed') {
+      return;
+    }
+
+    await this.stateStore.setExecutionStatus(executionId, 'cancelled');
+    console.log(`🚫 Workflow execution ${executionId} cancelled`);
+  }
+
+  // Pause a running workflow
+  async pauseWorkflow(executionId: string): Promise<void> {
+    const execution = await this.stateStore.getExecution(executionId);
+    if (!execution || execution.status !== 'running') {
+      return;
+    }
+
+    await this.stateStore.setExecutionStatus(executionId, 'paused');
+    console.log(`⏸️ Workflow execution ${executionId} paused`);
+  }
+
+  // Resume a paused workflow
+  async resumeWorkflow(executionId: string): Promise<void> {
+    const execution = await this.stateStore.getExecution(executionId);
+    if (!execution || execution.status !== 'paused') {
+      return;
+    }
+
+    await this.stateStore.setExecutionStatus(executionId, 'running');
+    console.log(`▶️ Workflow execution ${executionId} resumed`);
+  }
+
   // Check if all nodes in the workflow have completed
   private async checkWorkflowCompletion(executionId: string, workflowId: string): Promise<void> {
     const workflow = this.workflows.get(workflowId);
     const execution = await this.stateStore.getExecution(executionId);
 
     if (!workflow || !execution) return;
+
+    // If cancelled, don't mark as completed/failed based on nodes
+    if (execution.status === 'cancelled') return;
 
     const allNodesExecuted = workflow.nodes.every(
       node => execution.nodeResults[node.id] !== undefined
