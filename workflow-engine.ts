@@ -1,19 +1,8 @@
 import { Queue, Worker, Job, QueueEvents, FlowProducer } from 'bullmq';
 import { Redis } from 'ioredis';
-import type { ExecutionContext, ExecutionResult, IExecutionStateStore, NodeDefinition, WorkflowDefinition } from './types';
+import type { ExecutionContext, ExecutionResult, IExecutionStateStore, NodeDefinition, WorkflowDefinition, ErrorRecoveryOptions, DLQJobData, NodeJobData, WorkflowJobData } from './types';
 import type { NodeRegistry } from './registry';
-
-export interface NodeJobData {
-  executionId: string;
-  workflowId: string;
-  nodeId: string;
-  inputData?: any;
-}
-
-export interface WorkflowJobData {
-  workflowId: string;
-  initialData?: any;
-}
+import { DeadLetterQueueManager } from './dead-letter-queue';
 
 export class WorkflowEngine {
   private nodeQueue: Queue<NodeJobData>;
@@ -24,12 +13,34 @@ export class WorkflowEngine {
   private nodeWorker?: Worker<NodeJobData>;
   private workflowWorker?: Worker<WorkflowJobData>;
   private workflows: Map<string, WorkflowDefinition> = new Map();
+  private dlqManager: DeadLetterQueueManager;
+  private errorRecoveryOptions: ErrorRecoveryOptions;
 
   constructor(
     private registry: NodeRegistry,
     private stateStore: IExecutionStateStore,
-    private redisConnection: Redis
+    private redisConnection: Redis,
+    errorRecoveryOptions?: Partial<ErrorRecoveryOptions>
   ) {
+    // Set default error recovery options
+    this.errorRecoveryOptions = {
+      retryPolicy: {
+        maxRetries: 3,
+        backoffStrategy: 'exponential',
+        baseDelay: 1000,
+        maxDelay: 30000,
+      },
+      deadLetterQueue: true,
+      errorPropagation: true,
+      timeoutMs: 30000,
+      ...errorRecoveryOptions,
+    };
+
+    // Initialize DLQ manager
+    this.dlqManager = new DeadLetterQueueManager(
+      this.redisConnection,
+      this.errorRecoveryOptions.retryPolicy
+    );
     // Initialize queues
     this.nodeQueue = new Queue<NodeJobData>('node-execution', {
       connection: redisConnection,
@@ -62,8 +73,9 @@ export class WorkflowEngine {
       console.log(`✓ Node job ${jobId} completed with result:`, returnvalue);
     });
 
-    this.nodeQueueEvents.on('failed', ({ jobId, failedReason }) => {
+    this.nodeQueueEvents.on('failed', async ({ jobId, failedReason }) => {
       console.error(`✗ Node job ${jobId} failed:`, failedReason);
+      await this.handleNodeFailure(jobId, failedReason);
     });
 
     this.nodeQueueEvents.on('progress', ({ jobId, data }) => {
@@ -261,8 +273,37 @@ export class WorkflowEngine {
     console.log(`▶ Executing node ${nodeId} (type: ${node.type})`);
     await job.updateProgress(50);
 
-    // Execute the node
-    const result = await executor.execute(context);
+    // Execute the node with timeout handling
+    let result: ExecutionResult;
+    
+    try {
+      if (this.errorRecoveryOptions.timeoutMs) {
+        result = await this.executeWithTimeout(
+          () => executor.execute(context),
+          this.errorRecoveryOptions.timeoutMs,
+          nodeId
+        );
+      } else {
+        result = await executor.execute(context);
+      }
+
+      // Ensure result has required fields
+      if (!result.hasOwnProperty('success')) {
+        result = { ...result, success: true };
+      }
+
+      if (!result.hasOwnProperty('retryable')) {
+        result.retryable = true;
+      }
+
+    } catch (error) {
+      result = {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        retryable: true,
+        failureReason: 'error',
+      };
+    }
 
     // Save result to state store
     await this.stateStore.updateNodeResult(executionId, nodeId, result);
@@ -271,6 +312,29 @@ export class WorkflowEngine {
     await this.checkWorkflowCompletion(executionId, workflowId);
 
     return result;
+  }
+
+  // Execute a function with timeout
+  private async executeWithTimeout<T>(
+    fn: () => Promise<T>,
+    timeoutMs: number,
+    nodeId: string
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`Node ${nodeId} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      fn()
+        .then((result) => {
+          clearTimeout(timeout);
+          resolve(result);
+        })
+        .catch((error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+    });
   }
 
   // Process a full workflow job (legacy, FlowProducer handles this now)
@@ -323,6 +387,8 @@ export class WorkflowEngine {
       this.workflowQueue.getFailedCount(),
     ]);
 
+    const dlqStats = await this.dlqManager.getDLQStats();
+
     return {
       nodeQueue: {
         waiting: nodeWaiting,
@@ -336,7 +402,175 @@ export class WorkflowEngine {
         completed: workflowCompleted,
         failed: workflowFailed,
       },
+      deadLetterQueue: dlqStats,
     };
+  }
+
+  // Handle node failure with error recovery
+  private async handleNodeFailure(jobId: string, failedReason: string): Promise<void> {
+    try {
+      const job = await this.nodeQueue.getJob(jobId);
+      if (!job) return;
+
+      const jobData = job.data as NodeJobData;
+      const { executionId, workflowId, nodeId } = jobData;
+
+      console.log(`🔍 Handling failure for node ${nodeId} in execution ${executionId}`);
+
+      // Get failure count from job attempts
+      const failureCount = job.attemptsMade || 1;
+
+      // Check if we should add to DLQ
+      if (failureCount >= this.errorRecoveryOptions.retryPolicy.maxRetries) {
+        console.log(`📨 Adding node ${nodeId} to DLQ after ${failureCount} failures`);
+
+        const dlqJobData: DLQJobData = {
+          executionId,
+          workflowId,
+          nodeId,
+          originalJobData: jobData,
+          failureReason: failedReason,
+          failureCount,
+          lastFailedAt: new Date(),
+          errorDetails: { jobId, failedReason },
+        };
+
+        await this.dlqManager.addToDLQ(dlqJobData);
+
+        // Propagate error to dependent nodes if enabled
+        if (this.errorRecoveryOptions.errorPropagation) {
+          await this.propagateErrorToDependents(executionId, workflowId, nodeId);
+        }
+      } else {
+        console.log(`🔄 Node ${nodeId} will be retried automatically (attempt ${failureCount + 1}/${this.errorRecoveryOptions.retryPolicy.maxRetries})`);
+      }
+
+      // Update execution state
+      await this.stateStore.incrementRetryCount(executionId);
+
+    } catch (error) {
+      console.error(`❌ Error handling node failure for job ${jobId}:`, error);
+    }
+  }
+
+  // Propagate error to dependent nodes in the DAG
+  private async propagateErrorToDependents(executionId: string, workflowId: string, failedNodeId: string): Promise<void> {
+    try {
+      const workflow = this.workflows.get(workflowId);
+      if (!workflow) return;
+
+      const failedNode = workflow.nodes.find(n => n.id === failedNodeId);
+      if (!failedNode) return;
+
+      // Get all dependent nodes (nodes that have this failed node as input)
+      const dependentNodes = workflow.nodes.filter(node => 
+        node.inputs.includes(failedNodeId)
+      );
+
+      if (dependentNodes.length === 0) return;
+
+      console.log(`🔗 Propagating error from ${failedNodeId} to ${dependentNodes.length} dependent nodes`);
+
+      // Mark dependent nodes as failed due to dependency failure
+      for (const dependentNode of dependentNodes) {
+        const failedResult: ExecutionResult = {
+          success: false,
+          error: `Dependency node ${failedNodeId} failed`,
+          failureReason: 'dependency_failed',
+          retryable: false,
+        };
+
+        await this.stateStore.updateNodeResult(executionId, dependentNode.id, failedResult);
+        console.log(`🚫 Marked dependent node ${dependentNode.id} as failed due to dependency failure`);
+      }
+
+      // Store error propagation mapping
+      const dependentIds = dependentNodes.map(n => n.id);
+      await this.stateStore.setErrorPropagation(executionId, failedNodeId, dependentIds);
+
+      // Check if workflow should be marked as failed
+      await this.checkWorkflowCompletion(executionId, workflowId);
+
+    } catch (error) {
+      console.error(`❌ Error propagating failure from node ${failedNodeId}:`, error);
+    }
+  }
+
+  // Retry a failed node from DLQ
+  async retryFailedNode(executionId: string, nodeId: string): Promise<boolean> {
+    try {
+      console.log(`🔄 Attempting to retry failed node ${nodeId} in execution ${executionId}`);
+
+      // First try to retry from DLQ
+      const dlqRetrySuccess = await this.dlqManager.retryFromDLQ(executionId, nodeId);
+      
+      if (dlqRetrySuccess) {
+        // Reset the node result in state store
+        const resetResult: ExecutionResult = {
+          success: true,
+          data: undefined, // Will be populated when node executes successfully
+        };
+        await this.stateStore.updateNodeResult(executionId, nodeId, resetResult);
+        
+        // Reset execution status to running
+        await this.stateStore.setExecutionStatus(executionId, 'running');
+        
+        console.log(`✓ Successfully initiated retry for node ${nodeId}`);
+        return true;
+      }
+
+      console.log(`❌ Failed to retry node ${nodeId} - not found in DLQ or max retries exceeded`);
+      return false;
+
+    } catch (error) {
+      console.error(`❌ Error retrying node ${nodeId}:`, error);
+      return false;
+    }
+  }
+
+  // Get all failed nodes for an execution
+  async getFailedNodes(executionId: string): Promise<string[]> {
+    return await this.stateStore.getFailedNodes(executionId);
+  }
+
+  // Get DLQ jobs for monitoring
+  async getDLQJobs(executionId?: string): Promise<DLQJobData[]> {
+    return await this.dlqManager.getDLQJobs(executionId);
+  }
+
+  // Cancel a running workflow
+  async cancelWorkflow(executionId: string): Promise<boolean> {
+    try {
+      console.log(`🛑 Attempting to cancel workflow execution ${executionId}`);
+
+      // Get the execution
+      const execution = await this.stateStore.getExecution(executionId);
+      if (!execution) {
+        console.log(`❌ Execution ${executionId} not found`);
+        return false;
+      }
+
+      // Mark execution as cancelled
+      await this.stateStore.setExecutionStatus(executionId, 'cancelled');
+
+      // Remove any pending jobs for this execution
+      const jobs = await this.nodeQueue.getJobs(['waiting', 'active']);
+      let cancelledCount = 0;
+
+      for (const job of jobs) {
+        if (job.data.executionId === executionId) {
+          await job.remove();
+          cancelledCount++;
+        }
+      }
+
+      console.log(`✓ Cancelled ${cancelledCount} pending jobs for execution ${executionId}`);
+      return true;
+
+    } catch (error) {
+      console.error(`❌ Error cancelling workflow execution ${executionId}:`, error);
+      return false;
+    }
   }
 
   // Graceful shutdown
@@ -348,6 +582,7 @@ export class WorkflowEngine {
     await this.nodeQueueEvents.close();
     await this.workflowQueueEvents.close();
     await this.flowProducer.close();
+    await this.dlqManager.close();
     await this.nodeQueue.close();
     await this.workflowQueue.close();
     
