@@ -148,12 +148,23 @@ async function demonstrateErrorHandling() {
     
     while (checkCount < maxChecks) {
       await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
-      
+
       const execution = await stateStore.getExecution(executionId);
       const stats = await engine.getQueueStats();
-      const failedNodes = await engine.getFailedNodes(executionId);
+
+      let failedNodes: string[] = [];
+      try {
+        failedNodes = await engine.getFailedNodes(executionId);
+      } catch (error) {
+        if (error instanceof ReferenceError && error.message.includes('execution not found')) {
+          console.log(`   Execution ${executionId} not found`);
+          break;
+        }
+        throw error;
+      }
+
       const dlqJobs = await engine.getDLQJobs(executionId);
-      
+
       console.log(`📊 Check ${checkCount + 1}:`);
       console.log(`   Status: ${execution?.status}`);
       console.log(`   Failed nodes: ${failedNodes.join(', ') || 'none'}`);
@@ -171,20 +182,30 @@ async function demonstrateErrorHandling() {
 
     // Demonstrate retry functionality
     console.log('\n🔄 Demonstrating retry functionality...\n');
-    
-    const failedNodes = await engine.getFailedNodes(executionId);
+
+    let failedNodes: string[] = [];
+    try {
+      failedNodes = await engine.getFailedNodes(executionId);
+    } catch (error) {
+      if (error instanceof ReferenceError && error.message.includes('execution not found')) {
+        console.log(`   Cannot demonstrate retry - execution ${executionId} not found`);
+      } else {
+        throw error;
+      }
+    }
+
     if (failedNodes.length > 0) {
       const nodeIdToRetry = failedNodes[0];
       if (nodeIdToRetry) {
         console.log(`Retrying failed node: ${nodeIdToRetry}`);
-        
+
         const retrySuccess = await engine.retryFailedNode(executionId, nodeIdToRetry);
         console.log(`Retry ${retrySuccess ? 'succeeded' : 'failed'}`);
-        
+
         // Wait a bit and check status again
         await new Promise(resolve => setTimeout(resolve, 5000));
       }
-      
+
       const finalExecution = await stateStore.getExecution(executionId);
       console.log(`Final execution status: ${finalExecution?.status}`);
     }

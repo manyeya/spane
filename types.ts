@@ -51,6 +51,8 @@ export interface IExecutionStateStore {
   getExecution(executionId: string): Promise<ExecutionState | null>;
   setExecutionStatus(executionId: string, status: 'running' | 'completed' | 'failed' | 'cancelled' | 'retrying'): Promise<void>;
   incrementRetryCount(executionId: string): Promise<void>;
+  getRetryCount(executionId: string): Promise<number>;
+  setRetryCount(executionId: string, count: number): Promise<void>;
   setErrorPropagation(executionId: string, nodeId: string, dependentIds: string[]): Promise<void>;
   getFailedNodes(executionId: string): Promise<string[]>;
 }

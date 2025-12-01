@@ -50,6 +50,18 @@ export class InMemoryExecutionStore implements IExecutionStateStore {
     }
   }
 
+  async getRetryCount(executionId: string): Promise<number> {
+    const execution = this.executions.get(executionId);
+    return execution?.retryCount || 0;
+  }
+
+  async setRetryCount(executionId: string, count: number): Promise<void> {
+    const execution = this.executions.get(executionId);
+    if (execution) {
+      execution.retryCount = count;
+    }
+  }
+
   async setErrorPropagation(executionId: string, nodeId: string, dependentIds: string[]): Promise<void> {
     const execution = this.executions.get(executionId);
     if (execution) {
@@ -62,7 +74,9 @@ export class InMemoryExecutionStore implements IExecutionStateStore {
 
   async getFailedNodes(executionId: string): Promise<string[]> {
     const execution = this.executions.get(executionId);
-    if (!execution) return [];
+    if (!execution) {
+      throw new ReferenceError(`execution not found: ${executionId}`);
+    }
 
     return Object.entries(execution.nodeResults)
       .filter(([_, result]) => !result.success)

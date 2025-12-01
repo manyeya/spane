@@ -13,11 +13,16 @@ export class DeadLetterQueueManager implements IDeadLetterQueueManager {
       backoffStrategy: 'exponential',
       baseDelay: 1000,
       maxDelay: 30000,
-    }
+    },
+    private nodeQueue?: Queue<any>
   ) {
     this.dlqQueue = new Queue<DLQJobData>('dead-letter-queue', {
       connection: redisConnection,
     });
+  }
+
+  setNodeQueue(nodeQueue: Queue<any>): void {
+    this.nodeQueue = nodeQueue;
   }
 
   async addToDLQ(jobData: DLQJobData): Promise<void> {
@@ -47,19 +52,33 @@ export class DeadLetterQueueManager implements IDeadLetterQueueManager {
 
       const jobData = job.data as DLQJobData;
       
-      // Check if we've exceeded max retries
-      if (jobData.failureCount >= this.retryPolicy.maxRetries) {
-        console.log(`❌ Max retries exceeded for ${executionId}-${nodeId}`);
+      // Allow one retry from DLQ even if max retries was exceeded
+      // This gives manual intervention capability
+      console.log(`🔄 Retrying job ${executionId}-${nodeId} from DLQ (previous failures: ${jobData.failureCount})`);
+
+      if (!this.nodeQueue) {
+        console.error(`❌ Node queue not available for retry - cannot re-queue job ${executionId}-${nodeId}`);
         return false;
       }
 
-      // Calculate retry delay
-      const delay = this.calculateRetryDelay(jobData.failureCount);
+      // Calculate retry delay (shorter for DLQ retries)
+      const delay = 1000; // Fixed 1 second delay for DLQ retries
       
-      // Remove from DLQ and re-queue with delay
+      // Re-queue to original node queue with delay before removing from DLQ
+      const retryJob = await this.nodeQueue.add(
+        'run-node',
+        jobData.originalJobData,
+        {
+          jobId: `${executionId}-${nodeId}-dlq-retry-${Date.now()}`,
+          delay,
+          attempts: 1, // Single attempt for DLQ retry
+        }
+      );
+      
+      // Remove from DLQ only after successfully re-queuing
       await job.remove();
       
-      console.log(`🔄 Retrying job ${executionId}-${nodeId} (attempt ${jobData.failureCount + 1}) after ${delay}ms delay`);
+      console.log(`🔄 Retried job ${executionId}-${nodeId} from DLQ with new job ID: ${retryJob.id}`);
       
       return true;
     } catch (error) {

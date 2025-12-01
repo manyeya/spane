@@ -36,11 +36,6 @@ export class WorkflowEngine {
       ...errorRecoveryOptions,
     };
 
-    // Initialize DLQ manager
-    this.dlqManager = new DeadLetterQueueManager(
-      this.redisConnection,
-      this.errorRecoveryOptions.retryPolicy
-    );
     // Initialize queues
     this.nodeQueue = new Queue<NodeJobData>('node-execution', {
       connection: redisConnection,
@@ -49,6 +44,13 @@ export class WorkflowEngine {
     this.workflowQueue = new Queue<WorkflowJobData>('workflow-execution', {
       connection: redisConnection,
     });
+
+    // Initialize DLQ manager
+    this.dlqManager = new DeadLetterQueueManager(
+      this.redisConnection,
+      this.errorRecoveryOptions.retryPolicy,
+      this.nodeQueue
+    );
 
     // Initialize queue events for monitoring
     this.nodeQueueEvents = new QueueEvents('node-execution', {
@@ -148,11 +150,8 @@ export class WorkflowEngine {
         data: jobData,
         opts: {
           jobId: `${executionId}-${nodeId}`,
-          attempts: 3,
-          backoff: {
-            type: 'exponential',
-            delay: 1000,
-          },
+          attempts: 1, // Let our error recovery system handle retries
+          // removeOnFail: true, // Let DLQ handle failed jobs
         },
         children: children.length > 0 ? children : undefined,
       };
@@ -296,13 +295,25 @@ export class WorkflowEngine {
         result.retryable = true;
       }
 
+      // If the node execution failed, throw an error to trigger BullMQ failure handling
+      if (!result.success) {
+        const error = new Error(result.error || `Node ${nodeId} execution failed`);
+        (error as any).nodeResult = result; // Attach result for error handler
+        throw error;
+      }
+
     } catch (error) {
-      result = {
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-        retryable: true,
-        failureReason: 'error',
-      };
+      // If this is a timeout or other execution error, create failure result
+      if (!(error as any).nodeResult) {
+        result = {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+          retryable: true,
+          failureReason: 'error',
+        };
+        (error as any).nodeResult = result;
+      }
+      throw error; // Re-throw to trigger BullMQ failure handling
     }
 
     // Save result to state store
@@ -417,8 +428,36 @@ export class WorkflowEngine {
 
       console.log(`🔍 Handling failure for node ${nodeId} in execution ${executionId}`);
 
-      // Get failure count from job attempts
-      const failureCount = job.attemptsMade || 1;
+      // Extract node result from error if available
+      let nodeResult: ExecutionResult | undefined;
+      if (job.failedReason) {
+        try {
+          const error = new Error(job.failedReason);
+          nodeResult = (error as any).nodeResult;
+        } catch (e) {
+          // Ignore parsing errors
+        }
+      }
+
+      // If no node result attached, create a default failure result
+      if (!nodeResult) {
+        nodeResult = {
+          success: false,
+          error: failedReason,
+          retryable: true,
+          failureReason: 'error',
+        };
+      }
+
+      // Save the failure result to state store
+      await this.stateStore.updateNodeResult(executionId, nodeId, nodeResult);
+
+      // Get current failure count from state store
+      const currentFailureCount = await this.stateStore.getRetryCount(executionId);
+      const failureCount = currentFailureCount + 1;
+
+      // Update failure count
+      await this.stateStore.setRetryCount(executionId, failureCount);
 
       // Check if we should add to DLQ
       if (failureCount >= this.errorRecoveryOptions.retryPolicy.maxRetries) {
@@ -442,15 +481,49 @@ export class WorkflowEngine {
           await this.propagateErrorToDependents(executionId, workflowId, nodeId);
         }
       } else {
-        console.log(`🔄 Node ${nodeId} will be retried automatically (attempt ${failureCount + 1}/${this.errorRecoveryOptions.retryPolicy.maxRetries})`);
+        // Calculate retry delay and re-queue the job
+        const delay = this.calculateRetryDelay(failureCount - 1);
+        console.log(`🔄 Re-queuing node ${nodeId} for retry ${failureCount}/${this.errorRecoveryOptions.retryPolicy.maxRetries} after ${delay}ms delay`);
+
+        await this.nodeQueue.add(
+          'run-node',
+          jobData,
+          {
+            jobId: `${executionId}-${nodeId}-retry-${failureCount}`,
+            delay,
+            attempts: 1,
+          }
+        );
       }
 
-      // Update execution state
-      await this.stateStore.incrementRetryCount(executionId);
+      // Check if workflow is complete
+      await this.checkWorkflowCompletion(executionId, workflowId);
 
     } catch (error) {
       console.error(`❌ Error handling node failure for job ${jobId}:`, error);
     }
+  }
+
+  // Calculate retry delay based on policy
+  private calculateRetryDelay(failureCount: number): number {
+    const { baseDelay, maxDelay, backoffStrategy } = this.errorRecoveryOptions.retryPolicy;
+    
+    let delay: number;
+    
+    switch (backoffStrategy) {
+      case 'exponential':
+        delay = baseDelay * Math.pow(2, failureCount);
+        break;
+      case 'linear':
+        delay = baseDelay * (failureCount + 1);
+        break;
+      case 'fixed':
+      default:
+        delay = baseDelay;
+        break;
+    }
+    
+    return maxDelay ? Math.min(delay, maxDelay) : delay;
   }
 
   // Propagate error to dependent nodes in the DAG
