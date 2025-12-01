@@ -15,9 +15,18 @@ export interface WorkflowJobData {
   initialData?: any;
 }
 
+export interface DLQItem {
+  jobId: string;
+  data: NodeJobData;
+  failedReason: string;
+  timestamp: number;
+  stacktrace?: string[];
+}
+
 export class WorkflowEngine {
   private nodeQueue: Queue<NodeJobData>;
   private workflowQueue: Queue<WorkflowJobData>;
+  private dlqQueue: Queue<DLQItem>; // Dead Letter Queue
   private nodeQueueEvents: QueueEvents;
   private workflowQueueEvents: QueueEvents;
   private flowProducer: FlowProducer;
@@ -36,6 +45,10 @@ export class WorkflowEngine {
     });
 
     this.workflowQueue = new Queue<WorkflowJobData>('workflow-execution', {
+      connection: redisConnection,
+    });
+
+    this.dlqQueue = new Queue<DLQItem>('dlq-execution', {
       connection: redisConnection,
     });
 
@@ -62,8 +75,20 @@ export class WorkflowEngine {
       console.log(`✓ Node job ${jobId} completed with result:`, returnvalue);
     });
 
-    this.nodeQueueEvents.on('failed', ({ jobId, failedReason }) => {
+    this.nodeQueueEvents.on('failed', async ({ jobId, failedReason }) => {
       console.error(`✗ Node job ${jobId} failed:`, failedReason);
+      
+      // Handle permanent failure (after retries are exhausted)
+      // Note: QueueEvents 'failed' is emitted when a job fails, but we need to check if it's a permanent failure
+      // However, BullMQ emits 'failed' for every attempt failure. 
+      // To properly handle DLQ, we should rely on the worker's 'failed' event or check job status.
+      // But since we are in a separate process context potentially (or just want centralized monitoring),
+      // we can try to fetch the job and check if it has exhausted retries.
+      // A simpler approach for this implementation is to handle DLQ logic in the worker's 'failed' handler
+      // or here if we can access the job.
+      
+      // Let's handle it in the worker listeners for better access to job object, 
+      // but we can also do some global logging here.
     });
 
     this.nodeQueueEvents.on('progress', ({ jobId, data }) => {
@@ -206,8 +231,24 @@ export class WorkflowEngine {
       console.log(`✓ Node worker completed job ${job.id}`);
     });
 
-    this.nodeWorker.on('failed', (job, err) => {
+    this.nodeWorker.on('failed', async (job, err) => {
       console.error(`✗ Node worker failed job ${job?.id}:`, err.message);
+      
+      if (job) {
+        // Check if we have exhausted all attempts
+        if (job.attemptsMade >= (job.opts.attempts || 1)) {
+           console.log(`💀 Job ${job.id} has exhausted all retries. Moving to DLQ.`);
+           await this.moveToDLQ(job, err);
+           
+           // Propagate error to workflow status
+           const { executionId, workflowId, nodeId } = job.data;
+           await this.stateStore.updateNodeResult(executionId, nodeId, {
+             success: false,
+             error: err.message
+           });
+           await this.stateStore.setExecutionStatus(executionId, 'failed');
+        }
+      }
     });
 
     this.nodeWorker.on('progress', (job, progress) => {
@@ -223,6 +264,49 @@ export class WorkflowEngine {
     });
 
     console.log(`👷 Workers started with concurrency: ${concurrency}`);
+  }
+
+  // Move failed job to Dead Letter Queue
+  private async moveToDLQ(job: Job<NodeJobData>, error: Error): Promise<void> {
+    const dlqItem: DLQItem = {
+      jobId: job.id!,
+      data: job.data,
+      failedReason: error.message,
+      timestamp: Date.now(),
+      stacktrace: job.stacktrace,
+    };
+
+    await this.dlqQueue.add('dlq-item', dlqItem);
+  }
+
+  // Get items from DLQ
+  async getDLQItems(start: number = 0, end: number = 10): Promise<DLQItem[]> {
+    // BullMQ doesn't store job data in the queue directly in a way that we can list easily without fetching jobs
+    // But since we are adding 'dlq-item' jobs to dlqQueue, we can fetch them.
+    const jobs = await this.dlqQueue.getJobs(['waiting', 'active', 'delayed', 'paused'], start, end);
+    return jobs.map(j => j.data);
+  }
+
+  // Retry a job from DLQ
+  async retryDLQItem(dlqJobId: string): Promise<boolean> {
+    const dlqJob = await this.dlqQueue.getJob(dlqJobId);
+    if (!dlqJob) return false;
+
+    const { data } = dlqJob.data;
+    
+    // Re-queue the original job
+    await this.nodeQueue.add('run-node', data, {
+      jobId: data.executionId + '-' + data.nodeId + '-retry-' + Date.now(), // New Job ID to avoid collision
+      attempts: 3,
+      backoff: {
+        type: 'exponential',
+        delay: 1000,
+      },
+    });
+
+    // Remove from DLQ
+    await dlqJob.remove();
+    return true;
   }
 
   // Process a single node job
@@ -323,6 +407,10 @@ export class WorkflowEngine {
       this.workflowQueue.getFailedCount(),
     ]);
 
+    const [dlqWaiting] = await Promise.all([
+        this.dlqQueue.getWaitingCount()
+    ]);
+
     return {
       nodeQueue: {
         waiting: nodeWaiting,
@@ -336,6 +424,9 @@ export class WorkflowEngine {
         completed: workflowCompleted,
         failed: workflowFailed,
       },
+      dlqQueue: {
+        waiting: dlqWaiting
+      }
     };
   }
 
@@ -350,6 +441,7 @@ export class WorkflowEngine {
     await this.flowProducer.close();
     await this.nodeQueue.close();
     await this.workflowQueue.close();
+    await this.dlqQueue.close();
     
     console.log('✓ Workflow engine shutdown complete');
   }
