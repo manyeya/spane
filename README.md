@@ -4,7 +4,10 @@
 
 > Build your own automation platform, workflow builder, or embed powerful orchestration into any application.
 
-SPANE is an embeddable, workflow orchestration engine built on BullMQ and Redis. It's the **infrastructure layer** that enables you to create automation platforms, visual workflow builders, and intelligent job orchestration systems - without building the complex engine from scratch.
+> [!WARNING]
+> **Experimental Project** - SPANE is currently an experiment and proof-of-concept. It is **not production-ready** and has not been battle-tested. Use at your own risk and expect breaking changes.
+
+SPANE is an embeddable workflow orchestration engine built on BullMQ and Redis. It's designed to be the **infrastructure layer** that could enable you to create automation platforms, visual workflow builders, and intelligent job orchestration systems - without building the complex engine from scratch.
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 [![Bun](https://img.shields.io/badge/Bun-1.0+-orange.svg)](https://bun.sh/)
@@ -12,13 +15,13 @@ SPANE is an embeddable, workflow orchestration engine built on BullMQ and Redis.
 
 ## 🎯 What is SPANE?
 
-SPANE aims to be a **production-grade headless workflow engine** - the type of infrastructure that platforms like n8n, Zapier, and Temporal are built upon. With SPANE, you can:
+SPANE is an **experimental headless workflow engine** - exploring what it takes to build the type of infrastructure that platforms like n8n, Zapier, and Temporal are built upon. With SPANE, you can experiment with:
 
 ### **🏗️ Build Your Own Platform**
 - Create a custom automation platform tailored to your domain
 - Build a visual workflow builder with your own UI
 - Develop industry-specific automation tools (marketing automation, data pipelines, etc.)
-- Launch a SaaS product with workflow capabilities built-in
+- Prototype a SaaS product with workflow capabilities built-in
 
 ### **🔌 Embed Workflow Power**
 - Add workflow orchestration to your existing application
@@ -26,13 +29,13 @@ SPANE aims to be a **production-grade headless workflow engine** - the type of i
 - Build internal tools with complex job dependencies
 - Create event-driven architectures with visual workflow support
 
-### **💡 Why Build on SPANE?**
-- ✅ **Production-Ready Engine** - Don't reinvent BullMQ, Redis queues, and DAG execution
+### **💡 Why Experiment with SPANE?**
+- ✅ **Learning Foundation** - Understand BullMQ, Redis queues, and DAG execution
 - ✅ **Fully Embeddable** - Drop into any Node.js/Bun application as a library
-- ✅ **Type-Safe Foundation** - Build your platform on solid TypeScript foundations
+- ✅ **Type-Safe Foundation** - Built with TypeScript for better DX
 - ✅ **Bring Your Own UI** - SPANE handles execution, you build the interface
 - ✅ **Complete Control** - Customize node types, execution logic, and workflows
-- ✅ **Battle-Tested Stack** - Built on BullMQ and Redis, proven at scale
+- ✅ **Solid Stack** - Built on BullMQ and Redis (though SPANE itself is experimental)
 
 ## ✨ Features
 
@@ -42,7 +45,7 @@ SPANE aims to be a **production-grade headless workflow engine** - the type of i
 - **🧪 Testable** - Unit test your workflows like any other code
 - **📝 IDE Support** - Autocomplete, refactoring, and inline documentation
 - **🔄 Version Control** - Commit workflows to Git, review in PRs
-- **🚀 Zero Config** - No database setup, just Redis and you're ready
+- **🚀 Minimal Setup** - Just Redis and you're ready to experiment
 
 ### ⚡ Workflow Capabilities
 - **🔄 DAG-based Workflows** - Define complex workflows as Directed Acyclic Graphs
@@ -55,33 +58,33 @@ SPANE aims to be a **production-grade headless workflow engine** - the type of i
 - **📊 Real-time Monitoring** - Track queue statistics and execution states
 - **🔌 REST API** - Full HTTP API for workflow management
 
-### 🏗️ Architecture Highlights
-- **BullMQ Integration** - Leverages BullMQ's FlowProducer for robust job orchestration
+### 🏗️ Architecture
+- **BullMQ Integration** - Leverages BullMQ's FlowProducer for job orchestration
 - **Redis-backed** - Persistent job queues with Redis
 - **Embeddable** - Drop into any Node.js/Bun application
 - **Extensible** - Plugin-based node executor system
-- **Production-ready** - Error handling, graceful shutdown, and observability built-in
+- **Error Handling** - DLQ, retries, and graceful shutdown
 - **Lightweight** - Minimal dependencies, no UI overhead
 
-## 🎨 What Can You Build?
+## 🎨 What Can You Build? (Experimentally)
 
-### **Automation Platforms**
-Build your own n8n, Zapier, or Make.com:
-- 🎯 **Domain-Specific Automation** - Create automation tools for specific industries (e-commerce, marketing, finance)
-- 🎨 **Custom Visual Builders** - Build your own drag-and-drop workflow UI on top of SPANE
-- 🏢 **Enterprise Automation** - White-label automation platforms for enterprise clients
-- 🌐 **Multi-Tenant SaaS** - Launch a workflow automation SaaS product
+### **Automation Platform Prototypes**
+Experiment with building your own automation tools:
+- 🎯 **Domain-Specific Automation** - Prototype automation tools for specific industries (e-commerce, marketing, finance)
+- 🎨 **Custom Visual Builders** - Experiment with drag-and-drop workflow UIs on top of SPANE
+- 🏢 **Enterprise Automation** - Explore white-label automation platforms
+- 🌐 **Multi-Tenant SaaS** - Prototype workflow automation SaaS products
 
 ### **Embedded Workflow Features**
-Add workflow capabilities to existing products:
+Experiment with adding workflow capabilities to existing products:
 - 📊 **Analytics Pipelines** - Let users create custom data transformation workflows
 - 🤖 **AI Agent Orchestration** - Build LangChain-style agent workflows with custom logic
 - 📧 **Marketing Automation** - Embed drip campaigns and customer journeys into your CRM
 - 🔄 **ETL/Data Pipelines** - Create Airflow-like data orchestration within your app
 - 🎮 **Game Event Systems** - Complex event-driven game mechanics and quests
 
-### **Internal Tools**
-Power your backend infrastructure:
+### **Internal Tools & Learning**
+Power your backend infrastructure or learn workflow orchestration:
 - 🔧 **Microservice Orchestration** - Coordinate complex service interactions
 - 📦 **Deployment Pipelines** - Build custom CI/CD workflows
 - 🔔 **Event Processing** - Handle webhooks, events, and async tasks
