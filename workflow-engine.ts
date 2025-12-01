@@ -77,7 +77,7 @@ export class WorkflowEngine {
 
     this.nodeQueueEvents.on('failed', async ({ jobId, failedReason }) => {
       console.error(`✗ Node job ${jobId} failed:`, failedReason);
-      
+
       // Handle permanent failure (after retries are exhausted)
       // Note: QueueEvents 'failed' is emitted when a job fails, but we need to check if it's a permanent failure
       // However, BullMQ emits 'failed' for every attempt failure. 
@@ -86,7 +86,7 @@ export class WorkflowEngine {
       // we can try to fetch the job and check if it has exhausted retries.
       // A simpler approach for this implementation is to handle DLQ logic in the worker's 'failed' handler
       // or here if we can access the job.
-      
+
       // Let's handle it in the worker listeners for better access to job object, 
       // but we can also do some global logging here.
     });
@@ -233,20 +233,26 @@ export class WorkflowEngine {
 
     this.nodeWorker.on('failed', async (job, err) => {
       console.error(`✗ Node worker failed job ${job?.id}:`, err.message);
-      
+
       if (job) {
         // Check if we have exhausted all attempts
         if (job.attemptsMade >= (job.opts.attempts || 1)) {
-           console.log(`💀 Job ${job.id} has exhausted all retries. Moving to DLQ.`);
-           await this.moveToDLQ(job, err);
-           
-           // Propagate error to workflow status
-           const { executionId, workflowId, nodeId } = job.data;
-           await this.stateStore.updateNodeResult(executionId, nodeId, {
-             success: false,
-             error: err.message
-           });
-           await this.stateStore.setExecutionStatus(executionId, 'failed');
+          console.log(`💀 Job ${job.id} has exhausted all retries. Moving to DLQ.`);
+
+          try {
+            await this.moveToDLQ(job, err);
+
+            // Propagate error to workflow status
+            const { executionId, nodeId } = job.data;
+            await this.stateStore.updateNodeResult(executionId, nodeId, {
+              success: false,
+              error: err.message
+            });
+            await this.stateStore.setExecutionStatus(executionId, 'failed');
+          } catch (dlqError) {
+            console.error(`CRITICAL: Failed to process DLQ/State update for job ${job.id} (Execution: ${job.data.executionId}):`, dlqError);
+            // Do not rethrow to prevent crashing the worker listener
+          }
         }
       }
     });
@@ -293,7 +299,7 @@ export class WorkflowEngine {
     if (!dlqJob) return false;
 
     const { data } = dlqJob.data;
-    
+
     // Re-queue the original job
     await this.nodeQueue.add('run-node', data, {
       jobId: data.executionId + '-' + data.nodeId + '-retry-' + Date.now(), // New Job ID to avoid collision
@@ -313,7 +319,7 @@ export class WorkflowEngine {
   private async processNodeJob(data: NodeJobData, job: Job): Promise<ExecutionResult> {
     const { executionId, workflowId, nodeId, inputData } = data;
     const workflow = this.workflows.get(workflowId);
-    
+
     if (!workflow) {
       throw new Error(`Workflow ${workflowId} not found`);
     }
@@ -325,7 +331,7 @@ export class WorkflowEngine {
     }
 
     const executor = this.registry.get(node.type);
-    
+
     if (!executor) {
       throw new Error(`No executor registered for node type: ${node.type}`);
     }
@@ -386,7 +392,7 @@ export class WorkflowEngine {
       const anyFailed = Object.values(execution.nodeResults).some(r => !r.success);
       const newStatus = anyFailed ? 'failed' : 'completed';
       await this.stateStore.setExecutionStatus(executionId, newStatus);
-      
+
       console.log(`🏁 Workflow ${workflowId} (execution: ${executionId}) ${newStatus}`);
     }
   }
@@ -408,7 +414,7 @@ export class WorkflowEngine {
     ]);
 
     const [dlqWaiting] = await Promise.all([
-        this.dlqQueue.getWaitingCount()
+      this.dlqQueue.getWaitingCount()
     ]);
 
     return {
@@ -433,7 +439,7 @@ export class WorkflowEngine {
   // Graceful shutdown
   async close(): Promise<void> {
     console.log('🛑 Shutting down workflow engine...');
-    
+
     await this.nodeWorker?.close();
     await this.workflowWorker?.close();
     await this.nodeQueueEvents.close();
@@ -442,7 +448,7 @@ export class WorkflowEngine {
     await this.nodeQueue.close();
     await this.workflowQueue.close();
     await this.dlqQueue.close();
-    
+
     console.log('✓ Workflow engine shutdown complete');
   }
 }
