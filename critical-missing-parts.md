@@ -30,11 +30,12 @@ Implementation: Nodes are enqueued only after all parents complete. Parent outpu
 - ✅ Skipped nodes propagate status to children
 - ✅ Join nodes handle skipped parents correctly
 
-5. Parallel Execution Limits
+5. Parallel Execution Limits (Implemented)
 
-- No concurrency control per workflow
-- Can't limit parallel branches
-- Missing rate limiting per node type
+- ✅ Concurrency control per workflow via `maxConcurrency`
+- ✅ Limit parallel branches (enforced by workflow concurrency)
+- ✅ Rate limiting per node type via `NodeRegistry`
+
 
 6. Webhook/Trigger Support
 

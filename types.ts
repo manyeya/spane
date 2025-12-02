@@ -15,6 +15,7 @@ export interface WorkflowDefinition {
   name: string;
   nodes: NodeDefinition[];
   entryNodeId: string; // Starting node for full workflow execution
+  maxConcurrency?: number; // Maximum number of concurrent nodes for this workflow
 }
 
 /**
