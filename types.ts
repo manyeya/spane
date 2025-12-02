@@ -100,11 +100,11 @@ export interface IExecutionStateStore {
   getChildExecutions?(executionId: string): Promise<ExecutionState[]>;
   getParentExecution?(executionId: string): Promise<ExecutionState | null>;
   // Observability
-  addLog?(log: ExecutionLog): Promise<void>;
-  getLogs?(executionId: string): Promise<ExecutionLog[]>;
-  addSpan?(executionId: string, span: ExecutionSpan): Promise<void>;
-  updateSpan?(executionId: string, spanId: string, update: Partial<ExecutionSpan>): Promise<void>;
-  getTrace?(executionId: string): Promise<ExecutionTrace | null>;
+  addLog(log: ExecutionLog): Promise<void>;
+  getLogs(executionId: string): Promise<ExecutionLog[]>;
+  addSpan(executionId: string, span: ExecutionSpan): Promise<void>;
+  updateSpan(executionId: string, spanId: string, update: Partial<ExecutionSpan>): Promise<void>;
+  getTrace(executionId: string): Promise<ExecutionTrace | null>;
 }
 
 export interface ExecutionState {

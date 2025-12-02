@@ -202,7 +202,6 @@ export class WorkflowEngine {
       await this.enqueueNode(executionId, workflowId, node.id, initialData, parentJobId);
     }
 
-    console.log(`🚀 Workflow ${workflowId} enqueued with execution ID: ${executionId}${depth > 0 ? ` (depth: ${depth})` : ''}`);
     await this.log(executionId, undefined, 'info', `Workflow ${workflowId} started (Execution ID: ${executionId})`);
     return executionId;
   }
@@ -237,8 +236,6 @@ export class WorkflowEngine {
     if (!execution) {
       throw new Error(`Execution ${executionId} not found`);
     }
-
-    console.log(`🔄 Replaying workflow execution ${executionId}`);
 
     // Retrieve initialData from the original execution state
     const initialData = execution.initialData;
@@ -787,7 +784,6 @@ export class WorkflowEngine {
         depth: execution?.depth || 0,
       };
 
-      console.log(`▶ Executing node ${nodeId} (type: ${node.type})`);
       await this.log(executionId, nodeId, 'info', `Executing node ${nodeId} (type: ${node.type})`);
 
       const spanId = `${executionId}-${nodeId}-${Date.now()}`;

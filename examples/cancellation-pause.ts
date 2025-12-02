@@ -103,7 +103,9 @@ async function runTest() {
         console.log('\n--- TEST 3: Timeout ---');
         // Modify workflow for timeout
         const timeoutWorkflow = { ...workflow, id: 'test-timeout' };
-        timeoutWorkflow.nodes[0].config.timeout = 1000; // 1s timeout
+        if (timeoutWorkflow.nodes[0]) {
+            timeoutWorkflow.nodes[0].config.timeout = 1000; // 1s timeout
+        }
         engine.registerWorkflow(timeoutWorkflow);
 
         const exec3 = await engine.enqueueWorkflow(timeoutWorkflow.id, { duration: 5000 }); // 5s duration > 1s timeout

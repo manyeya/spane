@@ -1,8 +1,8 @@
 
-import { WorkflowEngine, NodeJobData } from '../workflow-engine';
+import { WorkflowEngine } from '../workflow-engine';
 import { NodeRegistry } from '../registry';
 import { InMemoryExecutionStore } from '../inmemory-store';
-import { WorkflowDefinition } from '../types';
+import type { WorkflowDefinition } from '../types';
 import { Redis } from 'ioredis';
 
 // Setup
