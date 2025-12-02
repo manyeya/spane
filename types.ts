@@ -16,6 +16,7 @@ export interface WorkflowDefinition {
   nodes: NodeDefinition[];
   entryNodeId: string; // Starting node for full workflow execution
   maxConcurrency?: number; // Maximum number of concurrent nodes for this workflow
+  concurrencyLockTTL?: number; // TTL for the concurrency lock in seconds
   triggers?: WorkflowTrigger[]; // Triggers that start this workflow
   // Advanced Queue Features
   priority?: number; // Job priority (1-10, higher = more important, default: 5)
@@ -103,6 +104,7 @@ export interface IExecutionStateStore {
   getNodeResults(executionId: string, nodeIds: string[]): Promise<Record<string, ExecutionResult>>;
   getPendingNodeCount(executionId: string, totalNodes: number): Promise<number>;
   updateNodeResult(executionId: string, nodeId: string, result: ExecutionResult): Promise<void>;
+  cacheNodeResult(executionId: string, nodeId: string, result: ExecutionResult): Promise<void>;
   setExecutionStatus(executionId: string, status: ExecutionState['status']): Promise<void>;
   updateExecutionMetadata(executionId: string, metadata: ExecutionState['metadata']): Promise<void>;
   getChildExecutions?(executionId: string): Promise<ExecutionState[]>;

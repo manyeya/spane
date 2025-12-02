@@ -35,6 +35,7 @@ export class WorkflowEngine {
   private flowProducer: FlowProducer; // For parent-child job dependencies
   private nodeQueueEvents: QueueEvents;
   private workflowQueueEvents: QueueEvents;
+  private resultCacheEvents: QueueEvents;
   private nodeWorker?: Worker<NodeJobData>;
   private workflowWorker?: Worker<WorkflowJobData>;
   private workflows: Map<string, WorkflowDefinition> = new Map();
@@ -70,6 +71,11 @@ export class WorkflowEngine {
     });
 
     this.workflowQueueEvents = new QueueEvents('workflow-execution', {
+      connection: redisConnection,
+    });
+
+    // Dedicated QueueEvents for caching results to avoid conflicts
+    this.resultCacheEvents = new QueueEvents('node-execution', {
       connection: redisConnection,
     });
 
@@ -115,6 +121,20 @@ export class WorkflowEngine {
 
     this.workflowQueueEvents.on('failed', ({ jobId, failedReason }) => {
       console.error(`✗ Workflow job ${jobId} failed:`, failedReason);
+    });
+
+    // --- Result Caching Listener ---
+    this.resultCacheEvents.on('completed', async ({ jobId, returnvalue }) => {
+      try {
+        const job = await this.nodeQueue.getJob(jobId);
+        if (job && job.data) {
+          const { executionId, nodeId } = job.data;
+          // The returnvalue is the ExecutionResult, already in the correct format.
+          await this.stateStore.cacheNodeResult(executionId, nodeId, returnvalue);
+        }
+      } catch (error) {
+        console.error(`Error caching result for job ${jobId}:`, error);
+      }
     });
   }
 
@@ -791,7 +811,8 @@ export class WorkflowEngine {
         redis.call('EXPIRE', KEYS[1], 300)
         return 1
       `;
-      const allowed = await this.redisConnection.eval(luaScript, 1, activeKey, job.id!, maxConcurrency);
+      const lockTTL = workflow.concurrencyLockTTL || 3600; // Default to 1 hour
+      const allowed = await this.redisConnection.eval(luaScript, 1, activeKey, job.id!, maxConcurrency, lockTTL);
 
       if (allowed === 0) {
         console.log(`🚦 Max concurrency (${maxConcurrency}) reached for workflow ${executionId}. Re-queueing.`);
@@ -1283,6 +1304,7 @@ export class WorkflowEngine {
     await this.workflowWorker?.close();
     await this.nodeQueueEvents.close();
     await this.workflowQueueEvents.close();
+    await this.resultCacheEvents.close();
     await this.nodeQueue.close();
     await this.workflowQueue.close();
     await this.dlqQueue.close();

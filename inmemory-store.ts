@@ -26,6 +26,11 @@ export class InMemoryExecutionStore implements IExecutionStateStore {
     }
   }
 
+  async cacheNodeResult(executionId: string, nodeId: string, result: ExecutionResult): Promise<void> {
+    // For in-memory, caching is the same as updating the main object
+    return this.updateNodeResult(executionId, nodeId, result);
+  }
+
   async getExecution(executionId: string): Promise<ExecutionState | null> {
     return this.executions.get(executionId) || null;
   }
