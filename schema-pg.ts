@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, jsonb, integer, bigint, boolean, index } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, jsonb, integer, bigint, boolean, index, foreignKey } from 'drizzle-orm/pg-core';
 
 // Executions table
 export const executions = pgTable('executions', {
@@ -16,6 +16,10 @@ export const executions = pgTable('executions', {
     index('execution_id_idx').on(table.executionId),
     index('workflow_id_idx').on(table.workflowId),
     index('parent_execution_id_idx').on(table.parentExecutionId),
+    foreignKey({
+      columns: [table.parentExecutionId],
+      foreignColumns: [table.executionId],
+    }).onDelete('set null'),
 ]);
 
 // Node results table
@@ -30,6 +34,10 @@ export const nodeResults = pgTable('node_results', {
     skipped: boolean('skipped').default(false),
 }, (table) => [
     index('execution_node_idx').on(table.executionId, table.nodeId),
+    foreignKey({
+      columns: [table.executionId],
+      foreignColumns: [executions.executionId],
+    }).onDelete('cascade'),
 ]);
 
 // Logs table
@@ -43,6 +51,10 @@ export const logs = pgTable('logs', {
     metadata: jsonb('metadata'),
 }, (table) => [
     index('logs_execution_id_idx').on(table.executionId),
+    foreignKey({
+      columns: [table.executionId],
+      foreignColumns: [executions.executionId],
+    }).onDelete('cascade'),
 ]);
 
 // Spans table
@@ -58,4 +70,8 @@ export const spans = pgTable('spans', {
     metadata: jsonb('metadata'),
 }, (table) => [
     index('spans_execution_id_idx').on(table.executionId),
+    foreignKey({
+      columns: [table.executionId],
+      foreignColumns: [executions.executionId],
+    }).onDelete('cascade'),
 ]);

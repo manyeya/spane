@@ -1,6 +1,6 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import type { 
   ExecutionResult, 
   ExecutionState, 
@@ -13,10 +13,15 @@ import * as schema from './schema-pg';
 
 export class DrizzleExecutionStateStore implements IExecutionStateStore {
   private db: ReturnType<typeof drizzle>;
+  private client: ReturnType<typeof postgres>;
 
   constructor(connectionString: string) {
-    const client = postgres(connectionString);
-    this.db = drizzle(client);
+    this.client = postgres(connectionString);
+    this.db = drizzle(this.client);
+  }
+
+  async close(): Promise<void> {
+    await this.client.end();
   }
 
   async createExecution(
@@ -152,15 +157,59 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
   }
 
   async getChildExecutions(executionId: string): Promise<ExecutionState[]> {
+    // Fetch all child executions with their node results in batch to avoid N+1 queries
     const children = await this.db
       .select()
       .from(schema.executions)
       .where(eq(schema.executions.parentExecutionId, executionId));
 
+    if (children.length === 0) return [];
+
+    const childExecutionIds = children.map(c => c.executionId);
+
+    // Fetch all node results for all children in one query
+    const allResults = await this.db
+      .select()
+      .from(schema.nodeResults)
+      .where(inArray(schema.nodeResults.executionId, childExecutionIds));
+
+    // Group results by executionId
+    const resultsByExecution: Record<string, typeof allResults> = {};
+    for (const result of allResults) {
+      const execId = result.executionId;
+      if (!resultsByExecution[execId]) {
+        resultsByExecution[execId] = [];
+      }
+      resultsByExecution[execId]!.push(result);
+    }
+
+    // Build execution states
     const childStates: ExecutionState[] = [];
     for (const child of children) {
-      const state = await this.getExecution(child.executionId);
-      if (state) childStates.push(state);
+      const results = resultsByExecution[child.executionId] || [];
+      const nodeResultsMap: Record<string, ExecutionResult> = {};
+      for (const result of results) {
+        nodeResultsMap[result.nodeId] = {
+          success: result.success,
+          data: result.data || undefined,
+          error: result.error || undefined,
+          nextNodes: result.nextNodes as string[] | undefined,
+          skipped: result.skipped || false,
+        };
+      }
+
+      childStates.push({
+        executionId: child.executionId,
+        workflowId: child.workflowId,
+        status: child.status as ExecutionState['status'],
+        nodeResults: nodeResultsMap,
+        startedAt: child.startedAt,
+        completedAt: child.completedAt || undefined,
+        parentExecutionId: child.parentExecutionId || undefined,
+        depth: child.depth,
+        initialData: child.initialData || undefined,
+        metadata: child.metadata as ExecutionState['metadata'] | undefined,
+      });
     }
 
     return childStates;
@@ -225,12 +274,12 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
   }
 
   async updateSpan(
-    executionId: string, 
-    spanId: string, 
+    executionId: string,
+    spanId: string,
     update: Partial<ExecutionSpan>
   ): Promise<void> {
     const updateData: any = {};
-    
+
     if (update.endTime !== undefined) updateData.endTime = update.endTime;
     if (update.status !== undefined) updateData.status = update.status;
     if (update.error !== undefined) updateData.error = update.error;
@@ -239,7 +288,10 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
     await this.db
       .update(schema.spans)
       .set(updateData)
-      .where(eq(schema.spans.id, spanId));
+      .where(and(
+        eq(schema.spans.id, spanId),
+        eq(schema.spans.executionId, executionId)
+      ));
   }
 
   async getTrace(executionId: string): Promise<ExecutionTrace | null> {
