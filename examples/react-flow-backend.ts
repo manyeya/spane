@@ -202,93 +202,63 @@ const engine = new WorkflowEngine(
 // Start the workers
 engine.startWorkers(5);
 
-// Store for execution tracking
-const executions = new Map<string, any>();
-
 // Poll execution state from the engine store
-async function updateExecutionFromStore(executionId: string, execution: any) {
+async function updateExecutionFromStore(executionId: string) {
     try {
         const state = await stateStore.getExecution(executionId);
         if (state) {
-            // Map node results to statuses
             const nodeStatuses: Record<string, string> = {};
             const nodeResults: Record<string, any> = {};
             
             for (const [nodeId, result] of Object.entries(state.nodeResults || {})) {
-                nodeStatuses[nodeId] = result.success ? 'success' : 'error';
+                nodeStatuses[nodeId] = result.skipped ? 'skipped' : result.success ? 'success' : 'error';
                 nodeResults[nodeId] = result;
             }
-            
-            execution.nodeStatuses = nodeStatuses;
-            execution.nodeResults = nodeResults;
-            execution.status = state.status === 'completed' ? 'success' : 
-                              state.status === 'failed' ? 'error' : state.status;
-            
-            if (state.completedAt) {
-                execution.completedAt = state.completedAt;
-            }
+
+            return {
+                executionId: state.executionId,
+                workflowId: state.workflowId,
+                status: state.status === 'completed' ? 'success' :
+                        state.status === 'failed' ? 'error' : state.status,
+                nodeStatuses,
+                nodeResults,
+                startedAt: state.startedAt,
+                completedAt: state.completedAt,
+            };
         }
+        return null;
     } catch (error) {
         console.error('Error updating execution from store:', error);
+        return null;
     }
 }
 
-// Convert React Flow workflow to spane workflow
 function convertToSpaneWorkflow(reactFlowWorkflow: any): WorkflowDefinition {
-    console.log('Converting workflow:', JSON.stringify(reactFlowWorkflow, null, 2));
+    const { nodes: reactFlowNodes, edges } = reactFlowWorkflow;
 
-    // Start with the actual nodes from the frontend
-    const nodes: NodeDefinition[] = reactFlowWorkflow.nodes.map((node: any) => {
-        // Use the specific node type (http, transform, etc.) if available, otherwise fall back to generic type
-        const nodeType = node.config?.type || node.type || 'action';
+    const spaneNodes: NodeDefinition[] = reactFlowNodes.map((node: any) => {
+        // Determine inputs and outputs from edges
+        const inputs = edges.filter((e: any) => e.target === node.id).map((e: any) => e.source);
+        const outputs = edges.filter((e: any) => e.source === node.id).map((e: any) => e.target);
+
         return {
             id: node.id,
-            type: nodeType,
-            config: node.config || {},
-            inputs: node.dependencies || [],
-            outputs: []
+            type: node.data.type || node.type,
+            config: node.data.config || {},
+            inputs,
+            outputs,
         };
     });
 
-    // Add a virtual trigger node if there's a trigger
-    if (reactFlowWorkflow.trigger) {
-        const triggerNode: NodeDefinition = {
-            id: 'node-0',
-            type: 'trigger',
-            config: reactFlowWorkflow.trigger.config || {},
-            inputs: [],
-            outputs: []
-        };
-
-        // Find nodes that have no dependencies (they should connect to trigger)
-        for (const node of nodes) {
-            if (node.inputs.length === 0) {
-                node.inputs.push('node-0');
-            }
-        }
-
-        nodes.unshift(triggerNode);
-    }
-
-    // Calculate outputs for each node based on other nodes' inputs
-    for (const node of nodes) {
-        for (const inputNodeId of node.inputs) {
-            const inputNode = nodes.find(n => n.id === inputNodeId);
-            if (inputNode && !inputNode.outputs.includes(node.id)) {
-                inputNode.outputs.push(node.id);
-            }
-        }
-    }
+    const triggerNode = spaneNodes.find(n => n.type === 'trigger');
 
     const workflow: WorkflowDefinition = {
         id: `workflow-${Date.now()}`,
         name: 'React Flow Workflow',
-        entryNodeId: 'node-0',
-        nodes,
+        nodes: spaneNodes,
+        entryNodeId: triggerNode?.id || '',
         triggers: reactFlowWorkflow.trigger ? [reactFlowWorkflow.trigger] : []
     };
-
-    console.log('Converted workflow:', JSON.stringify(workflow, null, 2));
 
     return workflow;
 }
@@ -313,35 +283,6 @@ const app = new Elysia()
                 timestamp: Date.now()
             });
 
-            // Store execution info
-            executions.set(executionId, {
-                executionId,
-                workflowId: spaneWorkflow.id,
-                status: 'running',
-                nodeStatuses: {},
-                startedAt: Date.now()
-            });
-
-            // Simulate execution progress (in real implementation, this would come from BullMQ events)
-            setTimeout(async () => {
-                const execution = executions.get(executionId);
-                if (execution) {
-                    // Update node statuses
-                    for (const node of body.nodes) {
-                        execution.nodeStatuses[node.id] = 'running';
-                    }
-
-                    // Simulate completion after some time
-                    setTimeout(() => {
-                        for (const node of body.nodes) {
-                            execution.nodeStatuses[node.id] = 'success';
-                        }
-                        execution.status = 'success';
-                        execution.completedAt = Date.now();
-                    }, 3000);
-                }
-            }, 500);
-
             return {
                 executionId,
                 status: 'running',
@@ -359,7 +300,7 @@ const app = new Elysia()
     })
 
     .get('/api/workflows/executions/:id', async ({ params }: { params: { id: string } }) => {
-        const execution = executions.get(params.id);
+        const execution = await updateExecutionFromStore(params.id);
 
         if (!execution) {
             return {
@@ -371,13 +312,7 @@ const app = new Elysia()
             };
         }
 
-        // Update from store to get real results
-        await updateExecutionFromStore(params.id, execution);
-
-        return {
-            ...execution,
-            nodeResults: execution.nodeResults || {}
-        };
+        return execution;
     })
 
     .listen(3001);
