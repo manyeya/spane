@@ -1,0 +1,248 @@
+/* Custom Node Styles */
+.custom-node {
+    background: white;
+    border: 2px solid #e0e0e0;
+    border-radius: 10px;
+    padding: 0;
+    min-width: 200px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    transition: all 0.2s;
+}
+
+.custom-node:hover {
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.custom-node.selected {
+    border-color: #667eea;
+    box-shadow: 0 4px 16px rgba(102, 126, 234, 0.3);
+}
+
+.custom-node.executing {
+    border-color: #4caf50;
+    animation: node-pulse 1.5s infinite;
+}
+
+.custom-node.success {
+    border-color: #2196f3;
+}
+
+.custom-node.error {
+    border-color: #f44336;
+}
+
+@keyframes node-pulse {
+
+    0%,
+    100% {
+        box-shadow: 0 4px 16px rgba(76, 175, 80, 0.3);
+    }
+
+    50% {
+        box-shadow: 0 4px 20px rgba(76, 175, 80, 0.5);
+    }
+}
+
+.node-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px;
+    border-bottom: 1px solid #f0f0f0;
+    background: linear-gradient(to bottom, #fafafa, #ffffff);
+}
+
+.node-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    flex-shrink: 0;
+}
+
+.node-icon.trigger {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+}
+
+.node-icon.action {
+    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    color: white;
+}
+
+.node-icon.condition {
+    background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+    color: white;
+}
+
+.node-icon.transform {
+    background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
+    color: white;
+}
+
+.node-title-container {
+    flex: 1;
+    min-width: 0;
+}
+
+.node-type {
+    font-size: 10px;
+    text-transform: uppercase;
+    color: #999;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+}
+
+.node-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #333;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.node-body {
+    padding: 12px;
+}
+
+.node-description {
+    font-size: 12px;
+    color: #666;
+    line-height: 1.4;
+    margin-bottom: 8px;
+}
+
+.node-config-summary {
+    font-size: 11px;
+    color: #999;
+    background: #f9f9f9;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-family: 'Monaco', 'Menlo', monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.node-status {
+    padding: 8px 12px;
+    border-top: 1px solid #f0f0f0;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #fafafa;
+}
+
+.node-status-icon {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #9e9e9e;
+}
+
+.node-status-icon.running {
+    background: #4caf50;
+    animation: pulse 1s infinite;
+}
+
+.node-status-icon.success {
+    background: #2196f3;
+}
+
+.node-status-icon.error {
+    background: #f44336;
+}
+
+.node-status-text {
+    color: #666;
+}
+
+/* Condition Node Specific */
+.condition-node .node-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.condition-branch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    background: #f9f9f9;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+.condition-branch.true {
+    border-left: 3px solid #4caf50;
+}
+
+.condition-branch.false {
+    border-left: 3px solid #f44336;
+}
+
+.condition-label {
+    font-weight: 600;
+    color: #666;
+    min-width: 40px;
+}
+
+/* Handle Positioning */
+.react-flow__handle-left {
+    left: -5px;
+}
+
+.react-flow__handle-right {
+    right: -5px;
+}
+
+.react-flow__handle-top {
+    top: -5px;
+}
+
+.react-flow__handle-bottom {
+    bottom: -5px;
+}
+
+/* Drag Handle */
+.node-drag-handle {
+    cursor: grab;
+}
+
+.node-drag-handle:active {
+    cursor: grabbing;
+}
+
+/* Empty State */
+.empty-canvas {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    color: #999;
+    pointer-events: none;
+}
+
+.empty-canvas-icon {
+    font-size: 64px;
+    margin-bottom: 16px;
+    opacity: 0.3;
+}
+
+.empty-canvas-text {
+    font-size: 18px;
+    font-weight: 500;
+    margin-bottom: 8px;
+}
+
+.empty-canvas-hint {
+    font-size: 14px;
+    opacity: 0.7;
+}

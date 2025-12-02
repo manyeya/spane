@@ -50,6 +50,19 @@ class SumNodeExecutor implements INodeExecutor {
     }
 }
 
+// Helper function to wait for workflow completion
+async function waitForCompletion(store: InMemoryExecutionStore, executionId: string, maxWaitMs: number = 10000): Promise<void> {
+    const startTime = Date.now();
+    while (Date.now() - startTime < maxWaitMs) {
+        const state = await store.getExecution(executionId);
+        if (state?.status === 'completed' || state?.status === 'failed' || state?.status === 'cancelled') {
+            return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100)); // Poll every 100ms
+    }
+    throw new Error(`Workflow ${executionId} did not complete within ${maxWaitMs}ms`);
+}
+
 async function runTest() {
     const redis = new Redis({
         maxRetriesPerRequest: null,
@@ -105,7 +118,7 @@ async function runTest() {
     console.log(`Started chain workflow execution: ${exec1}`);
 
     // Wait for completion
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await waitForCompletion(store, exec1);
 
     const state1 = await store.getExecution(exec1);
     console.log('\n--- Chain Workflow Results ---');
@@ -121,6 +134,9 @@ async function runTest() {
     }
 
     console.log('\n=== TEST 2: Multiple Parents (A → C, B → C) ===\n');
+
+    // Add small delay between tests
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
     // Workflow: node-a (10) → node-c (sum)
     //           node-b (20) → node-c (sum)
@@ -160,7 +176,7 @@ async function runTest() {
     console.log(`Started merge workflow execution: ${exec2}`);
 
     // Wait for completion
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await waitForCompletion(store, exec2);
 
     const state2 = await store.getExecution(exec2);
     console.log('\n--- Merge Workflow Results ---');
