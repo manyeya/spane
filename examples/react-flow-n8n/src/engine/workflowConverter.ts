@@ -4,6 +4,7 @@ import { ConditionNodeData } from '../nodes/ConditionNode';
 
 export interface WorkflowDefinition {
     nodes: WorkflowNode[];
+    edges: Edge[];
     trigger?: {
         type: string;
         config: any;
@@ -15,22 +16,21 @@ export interface WorkflowNode {
     name: string;
     type: string;
     config: any;
-    dependencies: string[];
-    condition?: {
-        expression: string;
-        branch: 'true' | 'false';
-    };
 }
 
 export function convertToWorkflow(
     nodes: any[],
     edges: Edge[]
 ): WorkflowDefinition {
-    const workflowNodes: WorkflowNode[] = [];
-    let trigger: WorkflowDefinition['trigger'] | undefined;
+    const workflowNodes: WorkflowNode[] = nodes.map(node => ({
+        id: node.id,
+        name: node.data.label,
+        type: node.data.type || node.type,
+        config: node.data.config || {},
+    }));
 
-    // Find trigger node
     const triggerNode = nodes.find(n => n.type === 'trigger');
+    let trigger: WorkflowDefinition['trigger'] | undefined;
     if (triggerNode) {
         const triggerData = triggerNode.data as TriggerNodeData;
         trigger = {
@@ -39,42 +39,9 @@ export function convertToWorkflow(
         };
     }
 
-    // Convert each node
-    nodes.forEach(node => {
-        if (node.type === 'trigger') return; // Skip trigger, handled separately
-
-        // Find dependencies (incoming edges)
-        const incomingEdges = edges.filter(e => e.target === node.id);
-        const dependencies = incomingEdges.map(e => e.source);
-
-        // Check if this is a conditional branch
-        let condition: WorkflowNode['condition'] | undefined;
-        const incomingEdge = incomingEdges[0];
-        if (incomingEdge?.sourceHandle === 'true' || incomingEdge?.sourceHandle === 'false') {
-            const sourceNode = nodes.find(n => n.id === incomingEdge.source);
-            if (sourceNode?.type === 'condition') {
-                const conditionData = sourceNode.data as ConditionNodeData;
-                condition = {
-                    expression: conditionData.config?.condition || 'true',
-                    branch: incomingEdge.sourceHandle as 'true' | 'false'
-                };
-            }
-        }
-
-        const workflowNode: WorkflowNode = {
-            id: node.id,
-            name: node.data.label,
-            type: node.type || 'action',
-            config: node.data.config || {},
-            dependencies,
-            ...(condition && { condition })
-        };
-
-        workflowNodes.push(workflowNode);
-    });
-
     return {
         nodes: workflowNodes,
+        edges: edges,
         trigger
     };
 }

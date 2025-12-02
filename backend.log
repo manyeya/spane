@@ -1,0 +1,6 @@
+👷 Workers started with concurrency: 5
+🚀 React Flow n8n Backend running at http://localhost:3001
+📊 API endpoints:
+   - POST /api/workflows/execute
+   - GET  /api/workflows/executions/:id
+   - GET  /api/health
