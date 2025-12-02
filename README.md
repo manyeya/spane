@@ -43,16 +43,6 @@ SPANE is an **experimental headless workflow engine** - exploring what it takes 
 - ✅ **Complete Control** - Customize node types, execution logic, and workflows
 - ✅ **Solid Stack** - Built on BullMQ and Redis (though SPANE itself is experimental)
 
-## ✨ Features
-
-### 🎨 Visual Workflow Builder
-- **🖱️ Drag-and-Drop Interface** - Build workflows visually with React Flow
-- **🎯 Multiple Node Types** - Triggers (Schedule, Webhook, Manual), Actions (HTTP, Transform, Email, Database), Control (Condition)
-- **⚙️ Node Configuration** - Configure each node with custom parameters
-- **🚀 Real-time Execution** - Execute workflows and see live status updates
-- **💾 Import/Export** - Save and load workflows as JSON
-- **✅ Validation** - Automatic workflow validation before execution
-- **🎨 n8n-Inspired UI** - Familiar interface for workflow automation
 
 ### 💻 Developer Experience
 - **📝 Workflows as Code** - Define workflows in TypeScript, not just UI
