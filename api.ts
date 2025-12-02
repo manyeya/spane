@@ -1,11 +1,22 @@
 import { Elysia } from 'elysia';
 import type { WorkflowEngine } from './workflow-engine';
 import type { IExecutionStateStore, WorkflowDefinition } from './types';
+import type { HealthMonitor } from './health';
+import type { MetricsCollector } from './metrics';
+import type { CircuitBreakerRegistry } from './circuit-breaker';
+import type { GracefulShutdown } from './graceful-shutdown';
 
 export class WorkflowAPIController {
   private app = new Elysia();
 
-  constructor(private engine: WorkflowEngine, private stateStore: IExecutionStateStore) {
+  constructor(
+    private engine: WorkflowEngine,
+    private stateStore: IExecutionStateStore,
+    private healthMonitor?: HealthMonitor,
+    private metricsCollector?: MetricsCollector,
+    private circuitBreakerRegistry?: CircuitBreakerRegistry,
+    private gracefulShutdown?: GracefulShutdown
+  ) {
     this.setupRoutes();
   }
 
@@ -145,10 +156,160 @@ export class WorkflowAPIController {
       }
     });
 
-    // Health check
-    this.app.get('/health', () => {
-      return { status: 'ok', timestamp: new Date().toISOString() };
+    // Production Operations Endpoints
+
+    // Health check (detailed)
+    this.app.get('/health', async ({ set }) => {
+      if (!this.healthMonitor) {
+        return { status: 'ok', timestamp: new Date().toISOString() };
+      }
+
+      try {
+        const health = await this.healthMonitor.getHealth();
+
+        if (health.status === 'unhealthy') {
+          set.status = 503;
+        } else if (health.status === 'degraded') {
+          set.status = 200; // Still return 200 for degraded
+        }
+
+        return health;
+      } catch (error: any) {
+        set.status = 503;
+        return {
+          status: 'unhealthy',
+          timestamp: Date.now(),
+          error: error.message,
+        };
+      }
     });
+
+    // Liveness probe (for Kubernetes)
+    this.app.get('/health/live', async ({ set }) => {
+      if (!this.healthMonitor) {
+        return { alive: true };
+      }
+
+      try {
+        const liveness = await this.healthMonitor.getLiveness();
+        return liveness;
+      } catch (error: any) {
+        set.status = 503;
+        return { alive: false, error: error.message };
+      }
+    });
+
+    // Readiness probe (for Kubernetes)
+    this.app.get('/health/ready', async ({ set }) => {
+      if (!this.healthMonitor) {
+        return { ready: true };
+      }
+
+      try {
+        const readiness = await this.healthMonitor.getReadiness();
+
+        if (!readiness.ready) {
+          set.status = 503;
+        }
+
+        return readiness;
+      } catch (error: any) {
+        set.status = 503;
+        return { ready: false, reason: error.message };
+      }
+    });
+
+    // Metrics endpoint (Prometheus format)
+    this.app.get('/metrics', async ({ set }) => {
+      if (!this.metricsCollector) {
+        set.status = 404;
+        return 'Metrics not enabled';
+      }
+
+      try {
+        // Update queue metrics before exporting
+        await this.metricsCollector.updateQueueMetrics();
+
+        set.headers['Content-Type'] = 'text/plain; version=0.0.4';
+        return this.metricsCollector.toPrometheus();
+      } catch (error: any) {
+        set.status = 500;
+        return `# Error generating metrics: ${error.message}`;
+      }
+    });
+
+    // Metrics endpoint (JSON format)
+    this.app.get('/metrics/json', async ({ set }) => {
+      if (!this.metricsCollector) {
+        set.status = 404;
+        return { error: 'Metrics not enabled' };
+      }
+
+      try {
+        // Update queue metrics before exporting
+        await this.metricsCollector.updateQueueMetrics();
+
+        return {
+          success: true,
+          metrics: this.metricsCollector.toJSON(),
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    });
+
+    // Circuit breaker status
+    this.app.get('/circuit-breakers', ({ set }) => {
+      if (!this.circuitBreakerRegistry) {
+        set.status = 404;
+        return { error: 'Circuit breakers not enabled' };
+      }
+
+      return {
+        success: true,
+        breakers: this.circuitBreakerRegistry.getAllStats(),
+      };
+    });
+
+    // Reset circuit breaker
+    this.app.post('/circuit-breakers/:name/reset', ({ params, set }) => {
+      if (!this.circuitBreakerRegistry) {
+        set.status = 404;
+        return { error: 'Circuit breakers not enabled' };
+      }
+
+      const { name } = params;
+      const success = this.circuitBreakerRegistry.reset(name);
+
+      if (!success) {
+        set.status = 404;
+        return {
+          success: false,
+          error: `Circuit breaker '${name}' not found`,
+        };
+      }
+
+      return {
+        success: true,
+        message: `Circuit breaker '${name}' reset`,
+      };
+    });
+
+    // Shutdown status
+    this.app.get('/shutdown/status', () => {
+      if (!this.gracefulShutdown) {
+        return { shutdownInProgress: false };
+      }
+
+      return {
+        shutdownInProgress: this.gracefulShutdown.isShutdownInProgress(),
+      };
+    });
+
 
     // Webhook endpoint (supports multi-segment paths like /foo/bar)
     this.app.all('/api/webhooks/*', async ({ params, body, request, set }) => {

@@ -4,6 +4,10 @@ import { InMemoryExecutionStore } from './inmemory-store';
 import { DrizzleExecutionStateStore } from './drizzle-store';
 import { NodeRegistry } from './registry';
 import { Redis } from 'ioredis';
+import { HealthMonitor } from './health';
+import { MetricsCollector } from './metrics';
+import { CircuitBreakerRegistry } from './circuit-breaker';
+import { GracefulShutdown } from './graceful-shutdown';
 
 // Initialize Redis connection
 const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
@@ -20,8 +24,56 @@ const stateStore = process.env.DATABASE_URL
 
 console.log(`📦 Using ${process.env.DATABASE_URL ? 'Postgres' : 'in-memory'} state store`);
 
-const engine = new WorkflowEngine(nodeRegistry, stateStore, redis);
-const api = new WorkflowAPIController(engine, stateStore);
+// Initialize production operations features (optional)
+const enableProductionOps = process.env.ENABLE_PRODUCTION_OPS !== 'false'; // Enabled by default
+
+let healthMonitor: HealthMonitor | undefined;
+let metricsCollector: MetricsCollector | undefined;
+let circuitBreakerRegistry: CircuitBreakerRegistry | undefined;
+let gracefulShutdown: GracefulShutdown | undefined;
+
+if (enableProductionOps) {
+  console.log('🏥 Enabling production operations features...');
+
+  healthMonitor = new HealthMonitor(redis);
+  metricsCollector = new MetricsCollector();
+  circuitBreakerRegistry = new CircuitBreakerRegistry();
+  gracefulShutdown = new GracefulShutdown({
+    timeout: parseInt(process.env.SHUTDOWN_TIMEOUT || '30000'),
+    forceExit: true,
+  });
+}
+
+const engine = new WorkflowEngine(
+  nodeRegistry,
+  stateStore,
+  redis,
+  metricsCollector,
+  circuitBreakerRegistry
+);
+
+const api = new WorkflowAPIController(
+  engine,
+  stateStore,
+  healthMonitor,
+  metricsCollector,
+  circuitBreakerRegistry,
+  gracefulShutdown
+);
+
+// Start workers
+const concurrency = parseInt(process.env.WORKER_CONCURRENCY || '5');
+engine.startWorkers(concurrency);
+
+// Register workers and queues with production ops
+if (enableProductionOps && healthMonitor && gracefulShutdown) {
+  // Note: Workers are private in WorkflowEngine, so we register via the engine's close method
+  gracefulShutdown.registerRedis(redis);
+  gracefulShutdown.registerCleanupHandler(async () => {
+    console.log('Closing workflow engine...');
+    await engine.close();
+  });
+}
 
 // Start the server
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
@@ -29,4 +81,13 @@ api.listen(PORT);
 
 console.log(`🚀 SPANE workflow engine started on port ${PORT}`);
 console.log(`📊 Health check: http://localhost:${PORT}/health`);
-console.log(`📚 API docs: http://localhost:${PORT}/api/stats`);
+console.log(`📈 Metrics: http://localhost:${PORT}/metrics`);
+console.log(`📚 API stats: http://localhost:${PORT}/api/stats`);
+
+if (enableProductionOps) {
+  console.log('✅ Production operations enabled:');
+  console.log('   - Health monitoring: /health, /health/live, /health/ready');
+  console.log('   - Metrics: /metrics (Prometheus), /metrics/json');
+  console.log('   - Circuit breakers: /circuit-breakers');
+  console.log('   - Graceful shutdown: SIGTERM/SIGINT handling');
+}

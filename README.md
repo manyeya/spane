@@ -140,6 +140,15 @@ PORT=3000
 
 # Optional: Database URL for persistent state (uses in-memory if not set)
 DATABASE_URL=postgresql://user:password@localhost:5432/spane
+
+# Optional: Enable/disable production operations features (enabled by default)
+ENABLE_PRODUCTION_OPS=true
+
+# Optional: Worker concurrency (defaults to 5)
+WORKER_CONCURRENCY=5
+
+# Optional: Graceful shutdown timeout in milliseconds (defaults to 30000)
+SHUTDOWN_TIMEOUT=30000
 ```
 
 ## 🚀 Quick Start
@@ -702,6 +711,165 @@ await engine.cancelBulkWorkflows(executionIds.slice(2));
 ```
 
 See [`examples/bulk-test.ts`](./examples/bulk-test.ts) for a complete example.
+
+### Example 9: Production Operations
+
+SPANE includes production-ready operational features for monitoring, reliability, and graceful degradation.
+
+#### Health Monitoring
+
+Comprehensive health checks for workers, queues, and Redis:
+
+```typescript
+import { HealthMonitor } from './health';
+
+const healthMonitor = new HealthMonitor(redis);
+
+// Detailed health check
+const health = await healthMonitor.getHealth();
+// {
+//   status: 'healthy' | 'degraded' | 'unhealthy',
+//   checks: {
+//     redis: { status: 'pass', message: 'Redis connection healthy', details: { latency: '5ms' } },
+//     workers: { status: 'pass', message: 'All workers running', details: { total: 5, running: 5 } },
+//     queues: { status: 'pass', message: 'Queues healthy', details: { queues: [...] } }
+//   },
+//   uptime: 123456
+// }
+
+// Kubernetes probes
+const liveness = await healthMonitor.getLiveness();  // { alive: true }
+const readiness = await healthMonitor.getReadiness(); // { ready: true }
+```
+
+**HTTP Endpoints:**
+- `GET /health` - Detailed health status
+- `GET /health/live` - Liveness probe (K8s)
+- `GET /health/ready` - Readiness probe (K8s)
+
+#### Metrics Collection
+
+Track workflow execution metrics in Prometheus or JSON format:
+
+```typescript
+import { MetricsCollector } from './metrics';
+
+const metricsCollector = new MetricsCollector();
+
+// Metrics are automatically collected by the engine
+// Export in Prometheus format
+const prometheus = metricsCollector.toPrometheus();
+
+// Export in JSON format
+const json = metricsCollector.toJSON();
+// {
+//   counters: {
+//     workflows_enqueued_total: 150,
+//     workflows_completed_total: 145,
+//     workflows_failed_total: 3,
+//     nodes_executed_total: 450
+//   },
+//   gauges: {
+//     workflows_active: 5,
+//     queue_waiting: 12
+//   },
+//   histograms: {
+//     workflow_duration_ms: { p50: 1200, p90: 2500, p95: 3000, p99: 5000 }
+//   }
+// }
+```
+
+**HTTP Endpoints:**
+- `GET /metrics` - Prometheus format (for Prometheus/Grafana)
+- `GET /metrics/json` - JSON format
+
+**Tracked Metrics:**
+- **Counters**: workflows enqueued/completed/failed/cancelled, nodes executed/failed, DLQ items
+- **Gauges**: active workflows, paused workflows, queue depths (waiting/active/delayed/failed)
+- **Histograms**: workflow duration, node duration, queue wait time (with p50, p90, p95, p99 percentiles)
+
+#### Circuit Breaker Pattern
+
+Prevent cascading failures with automatic circuit breakers:
+
+```typescript
+import { CircuitBreakerRegistry } from './circuit-breaker';
+
+const circuitBreakerRegistry = new CircuitBreakerRegistry();
+
+// Get or create a circuit breaker
+const breaker = circuitBreakerRegistry.getOrCreate('external-api', {
+  failureThreshold: 5,      // Open after 5 failures
+  successThreshold: 2,      // Close after 2 successes
+  timeout: 60000,           // Wait 60s before retry
+  monitoringPeriod: 120000  // Track failures over 2 minutes
+});
+
+// Use in node executor
+registry.register('api-call', async (context) => {
+  try {
+    const result = await breaker.execute(async () => {
+      return await callExternalAPI();
+    });
+    return { success: true, data: result };
+  } catch (error) {
+    // Circuit breaker will throw CircuitBreakerError if open
+    return { success: false, error: error.message };
+  }
+});
+
+// Check circuit breaker status
+const stats = circuitBreakerRegistry.getAllStats();
+// [{ name: 'external-api', state: 'CLOSED', failureCount: 0, successCount: 0 }]
+
+// Manually reset a circuit breaker
+circuitBreakerRegistry.reset('external-api');
+```
+
+**HTTP Endpoints:**
+- `GET /circuit-breakers` - View all circuit breaker states
+- `POST /circuit-breakers/:name/reset` - Manually reset a breaker
+
+**Circuit States:**
+- `CLOSED` - Normal operation, requests pass through
+- `OPEN` - Failing, requests rejected immediately
+- `HALF_OPEN` - Testing recovery, limited requests allowed
+
+#### Graceful Shutdown
+
+Proper cleanup on SIGTERM/SIGINT:
+
+```typescript
+import { GracefulShutdown } from './graceful-shutdown';
+
+const gracefulShutdown = new GracefulShutdown({
+  timeout: 30000,    // Max 30s to complete shutdown
+  forceExit: true    // Force exit after timeout
+});
+
+// Register resources for cleanup
+gracefulShutdown.registerRedis(redis);
+gracefulShutdown.registerCleanupHandler(async () => {
+  await engine.close();
+});
+
+// Shutdown is automatically triggered on SIGTERM/SIGINT
+// Or manually trigger:
+await gracefulShutdown.shutdown();
+```
+
+**Shutdown Process:**
+1. Stop accepting new jobs (close workers)
+2. Wait for active jobs to complete
+3. Run custom cleanup handlers
+4. Close all queues
+5. Close Redis connections
+6. Exit process
+
+**HTTP Endpoint:**
+- `GET /shutdown/status` - Check if shutdown is in progress
+
+See [`examples/production-ops.ts`](./examples/production-ops.ts) for a complete demonstration.
 
 ## ⚙️ Configuration
 

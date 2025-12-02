@@ -108,9 +108,33 @@ Implementation:
 - **Bulk Ops**: Use `enqueueBulkWorkflows`, `cancelBulkWorkflows`, `pauseBulkWorkflows`, `resumeBulkWorkflows`
 - **Status Check**: Use `getJobStatus(jobId)` to check if job exists and its current state
 
-12. Production Operations
+12. Production Operations (Implemented)
 
-- No health checks for workers
-- Missing graceful degradation
-- No circuit breaker pattern
-- No metrics/prometheus integration
+- ✅ **Health Checks** - Comprehensive health monitoring for workers, queues, and Redis
+- ✅ **Graceful Shutdown** - Proper cleanup on SIGTERM/SIGINT with configurable timeout
+- ✅ **Circuit Breaker Pattern** - Prevent cascading failures with automatic recovery
+- ✅ **Metrics/Prometheus Integration** - Full metrics export in Prometheus and JSON formats
+
+Implementation:
+- **Health Monitoring**: `HealthMonitor` class provides detailed health checks
+  - `/health` - Detailed health status (healthy/degraded/unhealthy)
+  - `/health/live` - Liveness probe for Kubernetes
+  - `/health/ready` - Readiness probe for Kubernetes
+- **Graceful Shutdown**: `GracefulShutdown` class handles SIGTERM/SIGINT
+  - Stops accepting new jobs
+  - Waits for active jobs to complete (configurable timeout)
+  - Closes all queues and connections cleanly
+- **Circuit Breaker**: `CircuitBreakerRegistry` manages circuit breakers per service
+  - Three states: CLOSED, OPEN, HALF_OPEN
+  - Configurable failure/success thresholds
+  - Automatic recovery attempts
+  - `/circuit-breakers` - View all circuit breaker states
+  - `/circuit-breakers/:name/reset` - Manually reset a breaker
+- **Metrics**: `MetricsCollector` tracks comprehensive metrics
+  - Counters: workflows enqueued/completed/failed/cancelled, nodes executed/failed, DLQ items
+  - Gauges: active workflows, paused workflows, queue depths
+  - Histograms: workflow duration, node duration, queue wait time (with percentiles)
+  - `/metrics` - Prometheus format export
+  - `/metrics/json` - JSON format export
+- **Configuration**: Set `ENABLE_PRODUCTION_OPS=false` to disable (enabled by default)
+- **Verification**: See `examples/production-ops.ts` for complete demo
