@@ -547,19 +547,6 @@ export class WorkflowEngine {
     }
   }
 
-  // Process a full workflow job (legacy, manual DAG traversal handles this now)
-  private async processWorkflowJob(data: WorkflowJobData, executionId: string): Promise<void> {
-    const { workflowId, initialData } = data;
-    const workflow = this.workflows.get(workflowId);
-
-    if (!workflow) {
-      throw new Error(`Workflow ${workflowId} not found`);
-    }
-
-    // This is now handled by manual DAG traversal, but kept for backward compatibility
-    console.log(`⚠️  Legacy workflow job - manual DAG traversal handles this now`);
-    await this.enqueueNode(executionId, workflowId, workflow.entryNodeId, initialData);
-  }
 
   // Cancel a running workflow
   async cancelWorkflow(executionId: string): Promise<void> {
