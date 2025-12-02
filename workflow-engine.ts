@@ -179,7 +179,12 @@ export class WorkflowEngine {
     initialData?: any,
     parentExecutionId?: string,
     depth: number = 0,
-    parentJobId?: string
+    parentJobId?: string,
+    options?: {
+      priority?: number;
+      delay?: number;
+      jobId?: string;
+    }
   ): Promise<string> {
     const workflow = this.workflows.get(workflowId);
     if (!workflow) {
@@ -198,8 +203,9 @@ export class WorkflowEngine {
     const entryNodes = workflow.nodes.filter(node => node.inputs.length === 0);
 
     // Enqueue all entry nodes, passing parent job reference if this is a sub-workflow
+    // Also pass priority and delay options to each node
     for (const node of entryNodes) {
-      await this.enqueueNode(executionId, workflowId, node.id, initialData, parentJobId);
+      await this.enqueueNode(executionId, workflowId, node.id, initialData, parentJobId, options);
     }
 
     await this.log(executionId, undefined, 'info', `Workflow ${workflowId} started (Execution ID: ${executionId})`);
@@ -260,16 +266,31 @@ export class WorkflowEngine {
     workflowId: string,
     nodeId: string,
     inputData?: any,
-    parentJobId?: string
+    parentJobId?: string,
+    options?: {
+      priority?: number;
+      delay?: number;
+      jobId?: string;
+    }
   ): Promise<string> {
     const jobOpts: any = {
-      jobId: `${executionId}-${nodeId}-manual`,
+      jobId: options?.jobId || `${executionId}-${nodeId}-manual`,
       attempts: 3,
       backoff: {
         type: 'exponential',
         delay: 1000,
       },
     };
+
+    // Add priority if specified (1-10, higher = more important)
+    if (options?.priority !== undefined) {
+      jobOpts.priority = options.priority;
+    }
+
+    // Add delay if specified (in milliseconds)
+    if (options?.delay !== undefined) {
+      jobOpts.delay = options.delay;
+    }
 
     // Add parent reference if provided (for BullMQ dependencies)
     if (parentJobId) {
@@ -1074,6 +1095,91 @@ export class WorkflowEngine {
         waiting: dlqWaiting
       }
     };
+  }
+
+  // Schedule a workflow to execute at a specific time
+  async scheduleWorkflow(
+    workflowId: string,
+    initialData: any,
+    executeAt: Date
+  ): Promise<string> {
+    const delay = executeAt.getTime() - Date.now();
+    if (delay < 0) {
+      throw new Error('Cannot schedule workflow in the past');
+    }
+
+    return this.enqueueWorkflow(workflowId, initialData, undefined, 0, undefined, { delay });
+  }
+
+  // Check if a job with the given ID exists (for deduplication)
+  async getJobStatus(jobId: string): Promise<{
+    exists: boolean;
+    status?: 'waiting' | 'active' | 'completed' | 'failed' | 'delayed' | 'paused';
+  }> {
+    // Check in node queue
+    const nodeJob = await this.nodeQueue.getJob(jobId);
+    if (nodeJob) {
+      const state = await nodeJob.getState();
+      return { exists: true, status: state as any };
+    }
+
+    // Check in workflow queue
+    const workflowJob = await this.workflowQueue.getJob(jobId);
+    if (workflowJob) {
+      const state = await workflowJob.getState();
+      return { exists: true, status: state as any };
+    }
+
+    return { exists: false };
+  }
+
+  // Enqueue multiple workflows in bulk
+  async enqueueBulkWorkflows(workflows: Array<{
+    workflowId: string;
+    initialData?: any;
+    priority?: number;
+    delay?: number;
+    jobId?: string;
+  }>): Promise<string[]> {
+    const executionIds: string[] = [];
+
+    // Process all workflows
+    for (const wf of workflows) {
+      const executionId = await this.enqueueWorkflow(
+        wf.workflowId,
+        wf.initialData,
+        undefined,
+        0,
+        undefined,
+        {
+          priority: wf.priority,
+          delay: wf.delay,
+          jobId: wf.jobId
+        }
+      );
+      executionIds.push(executionId);
+    }
+
+    console.log(`📦 Bulk enqueued ${workflows.length} workflows`);
+    return executionIds;
+  }
+
+  // Cancel multiple workflows in bulk
+  async cancelBulkWorkflows(executionIds: string[]): Promise<void> {
+    await Promise.all(executionIds.map(id => this.cancelWorkflow(id)));
+    console.log(`🚫 Bulk cancelled ${executionIds.length} workflows`);
+  }
+
+  // Pause multiple workflows in bulk
+  async pauseBulkWorkflows(executionIds: string[]): Promise<void> {
+    await Promise.all(executionIds.map(id => this.pauseWorkflow(id)));
+    console.log(`⏸️ Bulk paused ${executionIds.length} workflows`);
+  }
+
+  // Resume multiple workflows in bulk
+  async resumeBulkWorkflows(executionIds: string[]): Promise<void> {
+    await Promise.all(executionIds.map(id => this.resumeWorkflow(id)));
+    console.log(`▶️ Bulk resumed ${executionIds.length} workflows`);
   }
 
   // Graceful shutdown

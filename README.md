@@ -590,6 +590,119 @@ See [`examples/sub-workflows.ts`](./examples/sub-workflows.ts) for examples of:
 bun run examples/sub-workflows.ts
 ```
 
+### Example 8: Advanced Queue Features
+
+SPANE supports advanced queue features for fine-grained control over workflow execution.
+
+#### Job Prioritization
+
+Execute workflows based on priority (1-10, higher = more important):
+
+```typescript
+// High priority workflow executes first
+await engine.enqueueWorkflow(
+  'urgent-task',
+  { data: 'critical' },
+  undefined,
+  0,
+  undefined,
+  { priority: 10 }
+);
+
+// Normal priority
+await engine.enqueueWorkflow(
+  'normal-task',
+  { data: 'standard' },
+  undefined,
+  0,
+  undefined,
+  { priority: 5 }
+);
+```
+
+See [`examples/priority-test.ts`](./examples/priority-test.ts) for a complete example.
+
+#### Delayed/Scheduled Jobs
+
+Execute workflows after a delay or at a specific time:
+
+```typescript
+// Delay by 5 seconds (relative)
+await engine.enqueueWorkflow(
+  'delayed-task',
+  { data: 'delayed' },
+  undefined,
+  0,
+  undefined,
+  { delay: 5000 } // 5000ms = 5 seconds
+);
+
+// Schedule for specific time (absolute)
+const executeAt = new Date('2024-12-25T00:00:00Z');
+await engine.scheduleWorkflow('christmas-task', { data: 'holiday' }, executeAt);
+```
+
+See [`examples/delayed-test.ts`](./examples/delayed-test.ts) for a complete example.
+
+#### Job Deduplication
+
+Prevent duplicate workflow executions using custom job IDs:
+
+```typescript
+// First enqueue - will execute
+await engine.enqueueWorkflow(
+  'unique-task',
+  { data: 'first' },
+  undefined,
+  0,
+  undefined,
+  { jobId: 'unique-job-123' }
+);
+
+// Second enqueue with same jobId - will be deduplicated (won't execute)
+await engine.enqueueWorkflow(
+  'unique-task',
+  { data: 'duplicate' },
+  undefined,
+  0,
+  undefined,
+  { jobId: 'unique-job-123' }
+);
+
+// Check if job exists
+const status = await engine.getJobStatus('unique-job-123');
+console.log(status.exists); // true
+console.log(status.status); // 'completed' | 'waiting' | 'active' | etc.
+```
+
+See [`examples/dedup-test.ts`](./examples/dedup-test.ts) for a complete example.
+
+#### Bulk Operations
+
+Enqueue, pause, resume, or cancel multiple workflows at once:
+
+```typescript
+// Bulk enqueue
+const workflows = [
+  { workflowId: 'task-1', initialData: { id: 1 }, priority: 8 },
+  { workflowId: 'task-2', initialData: { id: 2 }, priority: 5 },
+  { workflowId: 'task-3', initialData: { id: 3 }, delay: 10000 }
+];
+
+const executionIds = await engine.enqueueBulkWorkflows(workflows);
+
+// Bulk pause
+await engine.pauseBulkWorkflows(executionIds.slice(0, 2));
+
+// Bulk resume
+await engine.resumeBulkWorkflows(executionIds.slice(0, 2));
+
+// Bulk cancel
+await engine.cancelBulkWorkflows(executionIds.slice(2));
+```
+
+See [`examples/bulk-test.ts`](./examples/bulk-test.ts) for a complete example.
+
 ## ⚙️ Configuration
 
 ### Node Configuration
@@ -719,6 +832,7 @@ Max Retries Exhausted?
 - [x] **Sub-workflows** - Reusable workflow composition (Non-blocking)
 - [x] **Observability & Debugging** - Execution logging, tracing, and replay
 - [x] **Persistent State Store** - Postgres via Drizzle ORM
+- [x] **Advanced Queue Features** - Job prioritization, delayed/scheduled jobs, deduplication, bulk operations
 - [x] REST API
 - [x] Queue statistics
 
@@ -728,12 +842,6 @@ Max Retries Exhausted?
 ### 📅 Planned Features
 
 #### High Priority
-- [ ] **Execution Logging** - Per-node execution logs and traces
-
-#### Medium Priority
-- [ ] **Job Prioritization** - Priority-based execution
-- [ ] **Bulk Operations** - Batch workflow operations
-- [ ] **Replay/Rerun** - Debug failed executions
 - [ ] **Metrics Integration** - Prometheus/Grafana support
 
 #### Low Priority
