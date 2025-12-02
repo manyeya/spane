@@ -2,6 +2,8 @@ import { Queue, Worker, Job, QueueEvents, DelayedError, FlowProducer, WaitingChi
 import { Redis } from 'ioredis';
 import type { ExecutionContext, ExecutionResult, IExecutionStateStore, WorkflowDefinition } from './types';
 import type { NodeRegistry } from './registry';
+import type { MetricsCollector } from './metrics';
+import type { CircuitBreakerRegistry } from './circuit-breaker';
 
 export interface NodeJobData {
   executionId: string;
@@ -40,7 +42,9 @@ export class WorkflowEngine {
   constructor(
     private registry: NodeRegistry,
     private stateStore: IExecutionStateStore,
-    private redisConnection: Redis
+    private redisConnection: Redis,
+    private metricsCollector?: MetricsCollector,
+    private circuitBreakerRegistry?: CircuitBreakerRegistry
   ) {
     // Initialize queues
     this.nodeQueue = new Queue<NodeJobData>('node-execution', {
@@ -70,6 +74,13 @@ export class WorkflowEngine {
     });
 
     this.setupQueueEventListeners();
+
+    // Register queues with metrics collector if available
+    if (this.metricsCollector) {
+      this.metricsCollector.registerQueue(this.nodeQueue);
+      this.metricsCollector.registerQueue(this.workflowQueue);
+      this.metricsCollector.registerQueue(this.dlqQueue);
+    }
   }
 
   // Setup event listeners for queue monitoring
@@ -198,6 +209,11 @@ export class WorkflowEngine {
     }
 
     const executionId = await this.stateStore.createExecution(workflowId, parentExecutionId, depth, initialData);
+
+    // Track metrics
+    if (this.metricsCollector) {
+      this.metricsCollector.incrementWorkflowsEnqueued();
+    }
 
     // Find all entry nodes (nodes with no inputs)
     const entryNodes = workflow.nodes.filter(node => node.inputs.length === 0);
@@ -504,6 +520,11 @@ export class WorkflowEngine {
 
     this.nodeWorker.on('completed', (job) => {
       console.log(`✓ Node worker completed job ${job.id}`);
+
+      // Track metrics
+      if (this.metricsCollector) {
+        this.metricsCollector.incrementNodesExecuted();
+      }
     });
 
     this.nodeWorker.on('failed', async (job, err) => {
@@ -516,6 +537,13 @@ export class WorkflowEngine {
 
           try {
             await this.moveToDLQ(job, err);
+
+            // Track metrics - only count permanent failures
+            if (this.metricsCollector) {
+              this.metricsCollector.incrementNodesFailed();
+              this.metricsCollector.incrementDLQItems();
+              // Note: workflowsFailed is counted in checkWorkflowCompletion to avoid double counting
+            }
 
             // Propagate error to workflow status
             const { executionId, nodeId } = job.data;
@@ -939,6 +967,12 @@ export class WorkflowEngine {
     }
 
     await this.stateStore.setExecutionStatus(executionId, 'cancelled');
+
+    // Track metrics
+    if (this.metricsCollector) {
+      this.metricsCollector.incrementWorkflowsCancelled();
+    }
+
     console.log(`🚫 Workflow execution ${executionId} cancelled`);
   }
 
@@ -1033,6 +1067,21 @@ export class WorkflowEngine {
       const anyFailed = Object.values(execution.nodeResults).some(r => !r.success);
       const newStatus = anyFailed ? 'failed' : 'completed';
       await this.stateStore.setExecutionStatus(executionId, newStatus);
+
+      // Track metrics
+      if (this.metricsCollector) {
+        if (newStatus === 'completed') {
+          this.metricsCollector.incrementWorkflowsCompleted();
+
+          // Track workflow duration
+          if (execution.startedAt) {
+            const duration = Date.now() - execution.startedAt.getTime();
+            this.metricsCollector.observeWorkflowDuration(duration);
+          }
+        } else if (newStatus === 'failed') {
+          this.metricsCollector.incrementWorkflowsFailed();
+        }
+      }
 
       console.log(`🏁 Workflow ${workflowId} (execution: ${executionId}) ${newStatus}`);
 
