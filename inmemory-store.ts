@@ -1,9 +1,9 @@
-import type { ExecutionResult, ExecutionState, IExecutionStateStore } from "./types";
+import type { ExecutionResult, ExecutionState, IExecutionStateStore, ExecutionLog, ExecutionTrace, ExecutionSpan } from "./types";
 
 export class InMemoryExecutionStore implements IExecutionStateStore {
   private executions: Map<string, ExecutionState> = new Map();
 
-  async createExecution(workflowId: string, parentExecutionId?: string, depth: number = 0): Promise<string> {
+  async createExecution(workflowId: string, parentExecutionId?: string, depth: number = 0, initialData?: any): Promise<string> {
     const executionId = `exec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const execution: ExecutionState = {
       executionId,
@@ -13,6 +13,7 @@ export class InMemoryExecutionStore implements IExecutionStateStore {
       startedAt: new Date(),
       parentExecutionId,
       depth,
+      initialData,
     };
     this.executions.set(executionId, execution);
     return executionId;
@@ -62,5 +63,49 @@ export class InMemoryExecutionStore implements IExecutionStateStore {
       return null;
     }
     return this.executions.get(execution.parentExecutionId) || null;
+  }
+
+  // Observability
+  private logs: Map<string, ExecutionLog[]> = new Map();
+  private traces: Map<string, ExecutionTrace> = new Map();
+
+  async addLog(log: ExecutionLog): Promise<void> {
+    const logs = this.logs.get(log.executionId) || [];
+    logs.push(log);
+    this.logs.set(log.executionId, logs);
+  }
+
+  async getLogs(executionId: string): Promise<ExecutionLog[]> {
+    return this.logs.get(executionId) || [];
+  }
+
+  async addSpan(executionId: string, span: ExecutionSpan): Promise<void> {
+    if (!this.traces.has(executionId)) {
+      const execution = this.executions.get(executionId);
+      if (!execution) {
+        throw new Error(`Cannot add span: execution ${executionId} not found`);
+      }
+      this.traces.set(executionId, {
+        executionId,
+        workflowId: execution.workflowId,
+        spans: []
+      });
+    }
+    this.traces.get(executionId)!.spans.push(span);
+  }
+
+  async updateSpan(executionId: string, spanId: string, update: Partial<ExecutionSpan>): Promise<void> {
+    const trace = this.traces.get(executionId);
+    if (trace) {
+      const spanIndex = trace.spans.findIndex(s => s.id === spanId);
+      if (spanIndex !== -1) {
+        const existingSpan = trace.spans[spanIndex];
+        trace.spans[spanIndex] = { ...existingSpan, ...update } as ExecutionSpan;
+      }
+    }
+  }
+
+  async getTrace(executionId: string): Promise<ExecutionTrace | null> {
+    return this.traces.get(executionId) || null;
   }
 }

@@ -58,12 +58,20 @@ Implementation:
 - **Auto-resume**: `checkWorkflowCompletion` detects child finish and re-enqueues parent with `subWorkflowStep: 'complete'`.
 - **Persistence**: Parent metadata stored in `ExecutionState.metadata` for reliable resumption.
 
-8. Observability & Debugging
+8. Observability & Debugging (Implemented)
 
-- No execution logs per node
-- Missing execution timeline/trace
-- No replay/rerun capabilities
-- Can't debug failed executions
+- ✅ **Node Execution Logging** - Detailed logs for every node execution step (See `ExecutionLog` in `types.ts`)
+- ✅ **Execution Tracing** - Spans tracking start/end times and status for performance analysis (See `ExecutionTrace` in `types.ts`)
+- ✅ **Replay Capabilities** - Ability to re-run past executions with linkage to original (See `replayWorkflow` in `workflow-engine.ts`)
+- ✅ **Debugging Context** - Error propagation and metadata storage for detailed debugging
+- ✅ **Verification** - Verified with `examples/observability.ts`
+
+Implementation:
+- **Data Model**: Added `ExecutionLog`, `ExecutionTrace`, and `ExecutionSpan` interfaces.
+- **Storage**: Updated `IExecutionStateStore` and `InMemoryExecutionStore` to support logs and traces.
+- **Instrumentation**: `WorkflowEngine` now automatically logs execution events and creates spans for node execution.
+- **Replay**: `replayWorkflow` method allows re-triggering workflows while maintaining a reference to the original execution.
+- **Persistence**: `initialData` is now stored in `ExecutionState` to ensure accurate replays.
 
 9. State Management Issues
 

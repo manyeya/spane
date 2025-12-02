@@ -92,13 +92,19 @@ export interface ExecutionResult {
 }
 
 export interface IExecutionStateStore {
-  createExecution(workflowId: string, parentExecutionId?: string, depth?: number): Promise<string>;
+  createExecution(workflowId: string, parentExecutionId?: string, depth?: number, initialData?: any): Promise<string>;
   getExecution(executionId: string): Promise<ExecutionState | null>;
   updateNodeResult(executionId: string, nodeId: string, result: ExecutionResult): Promise<void>;
   setExecutionStatus(executionId: string, status: ExecutionState['status']): Promise<void>;
   updateExecutionMetadata(executionId: string, metadata: ExecutionState['metadata']): Promise<void>;
   getChildExecutions?(executionId: string): Promise<ExecutionState[]>;
   getParentExecution?(executionId: string): Promise<ExecutionState | null>;
+  // Observability
+  addLog?(log: ExecutionLog): Promise<void>;
+  getLogs?(executionId: string): Promise<ExecutionLog[]>;
+  addSpan?(executionId: string, span: ExecutionSpan): Promise<void>;
+  updateSpan?(executionId: string, spanId: string, update: Partial<ExecutionSpan>): Promise<void>;
+  getTrace?(executionId: string): Promise<ExecutionTrace | null>;
 }
 
 export interface ExecutionState {
@@ -112,11 +118,40 @@ export interface ExecutionState {
   parentExecutionId?: string;
   /** Nesting depth (0 for root, increments for sub-workflows) */
   depth: number;
+  /** Initial data passed to the workflow execution */
+  initialData?: any;
   metadata?: {
     parentNodeId?: string;
     parentWorkflowId?: string;
     [key: string]: any;
   };
+}
+
+export interface ExecutionLog {
+  id: string;
+  executionId: string;
+  nodeId?: string;
+  level: 'info' | 'warn' | 'error' | 'debug';
+  message: string;
+  timestamp: Date;
+  metadata?: any;
+}
+
+export interface ExecutionTrace {
+  executionId: string;
+  workflowId: string;
+  spans: ExecutionSpan[];
+}
+
+export interface ExecutionSpan {
+  id: string;
+  nodeId: string;
+  name: string;
+  startTime: number;
+  endTime?: number;
+  status: 'running' | 'completed' | 'failed' | 'skipped';
+  error?: string;
+  metadata?: any;
 }
 
 export interface INodeExecutor {

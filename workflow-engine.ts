@@ -107,6 +107,26 @@ export class WorkflowEngine {
     });
   }
 
+  // Helper to log to both console and state store
+  private async log(executionId: string, nodeId: string | undefined, level: 'info' | 'warn' | 'error' | 'debug', message: string, metadata?: any): Promise<void> {
+    // Console log
+    const prefix = `[${level.toUpperCase()}] [${executionId}]${nodeId ? ` [${nodeId}]` : ''}`;
+    if (level === 'error') console.error(`${prefix} ${message}`);
+    else if (level === 'warn') console.warn(`${prefix} ${message}`);
+    else console.log(`${prefix} ${message}`);
+
+    // Store log
+    await this.stateStore.addLog({
+      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      executionId,
+      nodeId,
+      level,
+      message,
+      timestamp: new Date(),
+      metadata
+    });
+  }
+
   // Register a workflow definition
   async registerWorkflow(workflow: WorkflowDefinition): Promise<void> {
     this.workflows.set(workflow.id, workflow);
@@ -172,7 +192,7 @@ export class WorkflowEngine {
       throw new Error(`Maximum sub-workflow depth (${MAX_DEPTH}) exceeded`);
     }
 
-    const executionId = await this.stateStore.createExecution(workflowId, parentExecutionId, depth);
+    const executionId = await this.stateStore.createExecution(workflowId, parentExecutionId, depth, initialData);
 
     // Find all entry nodes (nodes with no inputs)
     const entryNodes = workflow.nodes.filter(node => node.inputs.length === 0);
@@ -183,6 +203,7 @@ export class WorkflowEngine {
     }
 
     console.log(`🚀 Workflow ${workflowId} enqueued with execution ID: ${executionId}${depth > 0 ? ` (depth: ${depth})` : ''}`);
+    await this.log(executionId, undefined, 'info', `Workflow ${workflowId} started (Execution ID: ${executionId})`);
     return executionId;
   }
 
@@ -208,6 +229,32 @@ export class WorkflowEngine {
     }
 
     return triggeredExecutionIds;
+  }
+
+  // Replay a past execution
+  async replayWorkflow(executionId: string): Promise<string> {
+    const execution = await this.stateStore.getExecution(executionId);
+    if (!execution) {
+      throw new Error(`Execution ${executionId} not found`);
+    }
+
+    console.log(`🔄 Replaying workflow execution ${executionId}`);
+
+    // Retrieve initialData from the original execution state
+    const initialData = execution.initialData;
+
+    // Start new execution
+    const newExecutionId = await this.enqueueWorkflow(execution.workflowId, initialData);
+
+    // Link to original execution
+    await this.stateStore.updateExecutionMetadata(newExecutionId, {
+      replayedFrom: executionId,
+      ...execution.metadata
+    });
+
+    await this.log(newExecutionId, undefined, 'info', `Replay of execution ${executionId}`);
+
+    return newExecutionId;
   }
 
   // Enqueue a single node execution (for manual/direct node execution)
@@ -741,24 +788,60 @@ export class WorkflowEngine {
       };
 
       console.log(`▶ Executing node ${nodeId} (type: ${node.type})`);
+      await this.log(executionId, nodeId, 'info', `Executing node ${nodeId} (type: ${node.type})`);
+
+      const spanId = `${executionId}-${nodeId}-${Date.now()}`;
+      await this.stateStore.addSpan(executionId, {
+        id: spanId,
+        nodeId,
+        name: `Execute ${node.type}`,
+        startTime: Date.now(),
+        status: 'running',
+        metadata: { inputData: processedInputData }
+      });
+
       await job.updateProgress(50);
 
       // Execute the node with timeout if configured
       let result: ExecutionResult;
       const timeoutMs = node.config?.timeout;
 
-      if (timeoutMs) {
-        let timer: ReturnType<typeof setTimeout>;
-        const timeoutPromise = new Promise<ExecutionResult>((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`Node execution timed out after ${timeoutMs}ms`)), timeoutMs);
-        });
+      try {
+        if (timeoutMs) {
+          let timer: ReturnType<typeof setTimeout>;
+          const timeoutPromise = new Promise<ExecutionResult>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`Node execution timed out after ${timeoutMs}ms`)), timeoutMs);
+          });
 
-        result = await Promise.race([
-          executor.execute(context).finally(() => clearTimeout(timer)),
-          timeoutPromise
-        ]);
+          result = await Promise.race([
+            executor.execute(context).finally(() => clearTimeout(timer)),
+            timeoutPromise
+          ]);
+        } else {
+          result = await executor.execute(context);
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        await this.stateStore.updateSpan(executionId, spanId, {
+          endTime: Date.now(),
+          status: 'failed',
+          error: errorMsg
+        });
+        await this.log(executionId, nodeId, 'error', `Node execution failed: ${errorMsg}`);
+        throw err;
+      }
+
+      await this.stateStore.updateSpan(executionId, spanId, {
+        endTime: Date.now(),
+        status: result.success ? 'completed' : 'failed',
+        error: result.error,
+        metadata: { result }
+      });
+
+      if (result.success) {
+        await this.log(executionId, nodeId, 'info', `Node execution completed successfully`);
       } else {
-        result = await executor.execute(context);
+        await this.log(executionId, nodeId, 'error', `Node execution failed: ${result.error}`);
       }
 
       // Save result to state store
