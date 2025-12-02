@@ -63,10 +63,10 @@ export class WorkflowAPIController {
     });
 
     // Register a new workflow
-    this.app.post('/api/workflows', ({ body, set }) => {
+    this.app.post('/api/workflows', async ({ body, set }) => {
       try {
         const workflow = body as WorkflowDefinition;
-        this.engine.registerWorkflow(workflow);
+        await this.engine.registerWorkflow(workflow);
 
         return {
           success: true,
@@ -148,6 +148,37 @@ export class WorkflowAPIController {
     // Health check
     this.app.get('/health', () => {
       return { status: 'ok', timestamp: new Date().toISOString() };
+    });
+
+    // Webhook endpoint (supports multi-segment paths like /foo/bar)
+    this.app.all('/api/webhooks/*', async ({ params, body, request, set }) => {
+      try {
+        const path = params['*'] || '';
+        const method = request.method;
+        const data = body || {};
+
+        const executionIds = await this.engine.triggerWebhook(path, method, data);
+
+        if (executionIds.length === 0) {
+          set.status = 404;
+          return {
+            success: false,
+            error: `No workflow registered for webhook path: ${path}`,
+          };
+        }
+
+        return {
+          success: true,
+          executionIds,
+          message: `Triggered ${executionIds.length} workflow(s)`,
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
     });
   }
 

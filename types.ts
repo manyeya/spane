@@ -16,6 +16,25 @@ export interface WorkflowDefinition {
   nodes: NodeDefinition[];
   entryNodeId: string; // Starting node for full workflow execution
   maxConcurrency?: number; // Maximum number of concurrent nodes for this workflow
+  triggers?: WorkflowTrigger[]; // Triggers that start this workflow
+}
+
+export type WorkflowTrigger = WebhookTrigger | ScheduleTrigger;
+
+export interface WebhookTrigger {
+  type: 'webhook';
+  config: {
+    path: string; // URL path segment, e.g. "user-signup" -> /api/webhooks/user-signup
+    method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; // Default POST
+  };
+}
+
+export interface ScheduleTrigger {
+  type: 'schedule';
+  config: {
+    cron: string; // Standard cron expression
+    timezone?: string;
+  };
 }
 
 /**

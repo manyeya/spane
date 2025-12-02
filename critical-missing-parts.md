@@ -37,11 +37,12 @@ Implementation: Nodes are enqueued only after all parents complete. Parent outpu
 - ✅ Rate limiting per node type via `NodeRegistry`
 
 
-6. Webhook/Trigger Support
+6. Webhook/Trigger Support (Implemented)
 
-- No entry points besides API
-- Missing cron/schedule triggers
-- No event-based workflow activation
+- ✅ Webhook triggers via `/api/webhooks/:path`
+- ✅ Cron/schedule triggers (BullMQ repeatable jobs)
+- ✅ Event-based workflow activation
+
 
 7. Sub-workflows & Reusability
 

@@ -497,6 +497,17 @@ See [`examples/parallel-limits.ts`](./examples/parallel-limits.ts) for examples 
 bun run examples/parallel-limits.ts
 ```
 
+### Example 6: Webhook & Schedule Triggers
+
+See [`examples/triggers.ts`](./examples/triggers.ts) for examples of:
+- Webhook-based workflow triggering
+- Cron schedule-based execution
+- Automatic recurring workflows
+
+```bash
+bun run examples/triggers.ts
+```
+
 ## ⚙️ Configuration
 
 ### Node Configuration
@@ -622,6 +633,7 @@ Max Retries Exhausted?
 - [x] **Data passing between nodes** - Automatic parent output passing
 - [x] **Conditional Branching** - If/else logic, switch nodes, and skipping
 - [x] **Parallel Execution Limits** - Concurrency control and rate limiting
+- [x] **Webhook/Trigger Support** - Webhook and Cron triggers
 - [x] REST API
 - [x] Queue statistics
 
@@ -633,8 +645,6 @@ Max Retries Exhausted?
 #### High Priority
 - [ ] **Sub-workflows** - Reusable workflow composition
 - [ ] **Execution Logging** - Per-node execution logs and traces
-- [ ] **Webhook Triggers** - Event-based workflow activation
-- [ ] **Cron Scheduling** - Time-based workflow triggers
 
 #### Medium Priority
 - [ ] **Job Prioritization** - Priority-based execution
