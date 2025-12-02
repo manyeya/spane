@@ -19,7 +19,7 @@ const nodeRegistry = new NodeRegistry();
 
 // Choose state store based on DATABASE_URL environment variable
 const stateStore = process.env.DATABASE_URL
-  ? new DrizzleExecutionStateStore(process.env.DATABASE_URL)
+  ? new DrizzleExecutionStateStore(process.env.DATABASE_URL, redis)
   : new InMemoryExecutionStore();
 
 console.log(`📦 Using ${process.env.DATABASE_URL ? 'Postgres' : 'in-memory'} state store`);

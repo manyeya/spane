@@ -1,6 +1,7 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and, inArray, sql } from 'drizzle-orm';
+import type { Redis } from 'ioredis';
 import type { 
   ExecutionResult, 
   ExecutionState, 
@@ -14,10 +15,14 @@ import * as schema from './schema-pg';
 export class DrizzleExecutionStateStore implements IExecutionStateStore {
   private db: ReturnType<typeof drizzle>;
   private client: ReturnType<typeof postgres>;
+  private redisCache: Redis;
+  private cacheTTL: number;
 
-  constructor(connectionString: string) {
+  constructor(connectionString: string, redisCache: Redis, cacheTTL: number = 3600) {
     this.client = postgres(connectionString);
     this.db = drizzle(this.client);
+    this.redisCache = redisCache;
+    this.cacheTTL = cacheTTL;
   }
 
   async close(): Promise<void> {
@@ -84,6 +89,77 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
       initialData: execution.initialData || undefined,
       metadata: execution.metadata as ExecutionState['metadata'] | undefined,
     };
+  }
+  async cacheNodeResult(executionId: string, nodeId: string, result: ExecutionResult): Promise<void> {
+    const cacheKey = `results:${executionId}`;
+    await this.redisCache.hset(cacheKey, nodeId, JSON.stringify(result));
+    await this.redisCache.expire(cacheKey, this.cacheTTL);
+  }
+
+  async getNodeResults(executionId: string, nodeIds: string[]): Promise<Record<string, ExecutionResult>> {
+    if (nodeIds.length === 0) return {};
+
+    const cacheKey = `results:${executionId}`;
+    const results: Record<string, ExecutionResult> = {};
+    const cacheMissNodeIds: string[] = [];
+
+    // 1. Try fetching from Redis cache first
+    if (nodeIds.length > 0) {
+      const cachedResults = await this.redisCache.hmget(cacheKey, ...nodeIds);
+      for (let i = 0; i < nodeIds.length; i++) {
+        const nodeId = nodeIds[i];
+        const cachedResult = cachedResults[i];
+        if (cachedResult) {
+          results[nodeId] = JSON.parse(cachedResult);
+        } else {
+          cacheMissNodeIds.push(nodeId);
+        }
+      }
+    }
+
+    // 2. For any cache misses, fetch from the database
+    if (cacheMissNodeIds.length > 0) {
+      const dbResults = await this.db
+        .select()
+        .from(schema.nodeResults)
+        .where(and(
+          eq(schema.nodeResults.executionId, executionId),
+          inArray(schema.nodeResults.nodeId, cacheMissNodeIds)
+        ));
+
+      const pipeline = this.redisCache.pipeline();
+      let updatedCache = false;
+
+      for (const result of dbResults) {
+        const nodeResult = {
+          success: result.success,
+          data: result.data || undefined,
+          error: result.error || undefined,
+          nextNodes: result.nextNodes as string[] | undefined,
+          skipped: result.skipped || false,
+        };
+        results[result.nodeId] = nodeResult;
+        // 3. Populate the cache for next time
+        pipeline.hset(cacheKey, result.nodeId, JSON.stringify(nodeResult));
+        updatedCache = true;
+      }
+
+      if (updatedCache) {
+        pipeline.expire(cacheKey, this.cacheTTL); // Reset TTL
+        await pipeline.exec();
+      }
+    }
+
+    return results;
+  }
+
+  async getPendingNodeCount(executionId: string, totalNodes: number): Promise<number> {
+    const [{ count }] = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.nodeResults)
+      .where(eq(schema.nodeResults.executionId, executionId));
+
+    return totalNodes - count;
   }
 
   async updateNodeResult(
