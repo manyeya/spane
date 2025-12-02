@@ -310,9 +310,6 @@ export class WorkflowEngine {
     }
   ): Promise<string> {
     const jobOpts: any = {
-      // The timestamp ensures that manual re-enqueues are unique, preventing BullMQ's
-      // deduplication. Application-level idempotency is handled by the `processNodeJob`
-      // function, which checks the node's state before execution.
       jobId: options?.jobId || `${executionId}-${nodeId}-manual-${Date.now()}`,
       attempts: 3,
       backoff: {
@@ -756,20 +753,18 @@ export class WorkflowEngine {
     }
 
     // --- IDEMPOTENCY & STATE FETCH ---
-    // --- IDEMPOTENCY & STATE FETCH ---
-    // Optimization: Fetch current node and parent results in a single batch.
-    const parentNodeIds = node.inputs;
-    const requiredNodeIds = Array.from(new Set([nodeId, ...parentNodeIds]));
-    const previousResults = await this.stateStore.getNodeResults(executionId, requiredNodeIds);
-
-    const existingResult = previousResults[nodeId];
+    // Optimization: Use getNodeResults for a lightweight idempotency check.
+    const existingResults = await this.stateStore.getNodeResults(executionId, [nodeId]);
+    const existingResult = existingResults[nodeId];
     if (existingResult && (existingResult.success || existingResult.skipped)) {
       console.log(`- Idempotency check: Node ${nodeId} already processed with status: ${existingResult.skipped ? 'skipped' : 'success'}. Skipping.`);
       return existingResult;
     }
 
-    // Fetch execution status separately, as it's not cached.
-    const executionState = await this.stateStore.getExecution(executionId);
+    // Fetch execution status separately.
+    const executionState = await this.stateStore.getExecution(executionId); // Keep for status check
+    const parentNodeIds = node.inputs;
+    const previousResults = await this.stateStore.getNodeResults(executionId, parentNodeIds);
 
     // Check execution status before running
     if (executionState?.status === 'cancelled') {
@@ -813,7 +808,7 @@ export class WorkflowEngine {
         -- Set a TTL on the concurrency key to prevent permanent deadlocks
         -- if a worker crashes. The TTL should be longer than the max expected
         -- node execution time.
-        redis.call('EXPIRE', KEYS[1], ARGV[3])
+        redis.call('EXPIRE', KEYS[1], 300)
         return 1
       `;
       const lockTTL = workflow.concurrencyLockTTL || 3600; // Default to 1 hour
@@ -1303,7 +1298,6 @@ export class WorkflowEngine {
     // Remove all listeners to prevent memory leaks
     this.nodeQueueEvents.removeAllListeners();
     this.workflowQueueEvents.removeAllListeners();
-    this.resultCacheEvents.removeAllListeners();
 
     await this.flowProducer.close();
     await this.nodeWorker?.close();
