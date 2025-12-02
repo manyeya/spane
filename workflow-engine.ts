@@ -828,6 +828,7 @@ export class WorkflowEngine {
         executionId,
         nodeId,
         inputData: processedInputData,
+        nodeConfig: node.config,
         previousResults,
         parentExecutionId: execution?.parentExecutionId,
         depth: execution?.depth || 0,

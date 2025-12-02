@@ -77,6 +77,8 @@ export interface ExecutionContext {
    * - For multiple parents: { 'parent-id': output.data, ... }
    */
   inputData: any;
+  /** The node's own configuration (from workflow definition) */
+  nodeConfig?: Record<string, any>;
   /** All completed node results, keyed by node ID */
   previousResults: Record<string, ExecutionResult>; // Results from upstream nodes
   /** ID of parent execution if this is a sub-workflow (undefined for root workflows) */
