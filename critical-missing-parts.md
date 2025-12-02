@@ -22,11 +22,13 @@
 
 Implementation: Nodes are enqueued only after all parents complete. Parent outputs are automatically fetched from state store and passed as inputData.
 
-4. Conditional Branching
+4. Conditional Branching (Implemented)
 
-- No support for "if/else" logic in DAG
-- Can't skip branches based on conditions
-- Missing switch/router node types
+- ✅ Support for "if/else" logic via `nextNodes`
+- ✅ Can skip branches based on conditions
+- ✅ Switch/router node types supported
+- ✅ Skipped nodes propagate status to children
+- ✅ Join nodes handle skipped parents correctly
 
 5. Parallel Execution Limits
 

@@ -474,6 +474,18 @@ See [`examples/cancellation-pause.ts`](./examples/cancellation-pause.ts) for exa
 bun run examples/cancellation-pause.ts
 ```
 
+### Example 4: Conditional Branching
+
+See [`examples/conditional-branching.ts`](./examples/conditional-branching.ts) for examples of:
+- Switch/Router nodes
+- Conditional execution paths
+- Skipping branches
+- Joining branches after conditional execution
+
+```bash
+bun run examples/conditional-branching.ts
+```
+
 ## ⚙️ Configuration
 
 ### Node Configuration
@@ -597,6 +609,7 @@ Max Retries Exhausted?
 - [x] Workflow cancellation
 - [x] Timeout handling
 - [x] **Data passing between nodes** - Automatic parent output passing
+- [x] **Conditional Branching** - If/else logic, switch nodes, and skipping
 - [x] REST API
 - [x] Queue statistics
 
@@ -606,7 +619,6 @@ Max Retries Exhausted?
 ### 📅 Planned Features
 
 #### High Priority
-- [ ] **Conditional Branching** - If/else logic in DAG
 - [ ] **Sub-workflows** - Reusable workflow composition
 - [ ] **Execution Logging** - Per-node execution logs and traces
 - [ ] **Webhook Triggers** - Event-based workflow activation
