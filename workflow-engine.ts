@@ -290,7 +290,7 @@ export class WorkflowEngine {
     }
   ): Promise<string> {
     const jobOpts: any = {
-      jobId: options?.jobId || `${executionId}-${nodeId}-manual`,
+      jobId: options?.jobId || `${executionId}-${nodeId}-manual-${Date.now()}`,
       attempts: 3,
       backoff: {
         type: 'exponential',
@@ -732,12 +732,22 @@ export class WorkflowEngine {
       throw new Error(`No executor registered for node type: ${node.type}`);
     }
 
-    // Gather results from upstream nodes (for nodes with dependencies)
-    const execution = await this.stateStore.getExecution(executionId);
-    const previousResults = execution?.nodeResults || {};
+    // --- IDEMPOTENCY & STATE FETCH ---
+    // Optimization: Use getNodeResults for a lightweight idempotency check.
+    const existingResults = await this.stateStore.getNodeResults(executionId, [nodeId]);
+    const existingResult = existingResults[nodeId];
+    if (existingResult && (existingResult.success || existingResult.skipped)) {
+      console.log(`- Idempotency check: Node ${nodeId} already processed with status: ${existingResult.skipped ? 'skipped' : 'success'}. Skipping.`);
+      return existingResult;
+    }
+
+    // Fetch execution status separately.
+    const executionState = await this.stateStore.getExecution(executionId); // Keep for status check
+    const parentNodeIds = node.inputs;
+    const previousResults = await this.stateStore.getNodeResults(executionId, parentNodeIds);
 
     // Check execution status before running
-    if (execution?.status === 'cancelled') {
+    if (executionState?.status === 'cancelled') {
       console.log(`🚫 Execution ${executionId} is cancelled. Skipping node ${nodeId}.`);
       return { success: false, error: 'Workflow execution cancelled' };
     }
@@ -775,6 +785,10 @@ export class WorkflowEngine {
           redis.call('SREM', KEYS[1], ARGV[1])
           return 0
         end
+        -- Set a TTL on the concurrency key to prevent permanent deadlocks
+        -- if a worker crashes. The TTL should be longer than the max expected
+        -- node execution time.
+        redis.call('EXPIRE', KEYS[1], 300)
         return 1
       `;
       const allowed = await this.redisConnection.eval(luaScript, 1, activeKey, job.id!, maxConcurrency);
@@ -830,8 +844,8 @@ export class WorkflowEngine {
         inputData: processedInputData,
         nodeConfig: node.config,
         previousResults,
-        parentExecutionId: execution?.parentExecutionId,
-        depth: execution?.depth || 0,
+        parentExecutionId: executionState?.parentExecutionId,
+        depth: executionState?.depth || 0,
       };
 
       await this.log(executionId, nodeId, 'info', `Executing node ${nodeId} (type: ${node.type})`);
@@ -890,8 +904,11 @@ export class WorkflowEngine {
         await this.log(executionId, nodeId, 'error', `Node execution failed: ${result.error}`);
       }
 
-      // Save result to state store
-      await this.stateStore.updateNodeResult(executionId, nodeId, result);
+      // --- DUAL-WRITE FIX ---
+      // Enqueue next nodes BEFORE updating the current node's state.
+      // This ensures that if the process crashes after enqueuing but before state update,
+      // the workflow can continue. The idempotency check at the start of this function
+      // will handle the re-delivered job for the current node.
 
       // If this node succeeded, check and enqueue/skip its children
       if (result.success && node.outputs.length > 0) {
@@ -913,13 +930,14 @@ export class WorkflowEngine {
           const childNode = workflow.nodes.find(n => n.id === childNodeId);
           if (!childNode) continue;
 
-          const execution = await this.stateStore.getExecution(executionId);
+          // Optimization: re-fetch only the results for the parents of the next node
+          const parentResults = await this.stateStore.getNodeResults(executionId, childNode.inputs);
 
           // A parent is "resolved" if it has a result (success, failed, or skipped)
           // We only care about success/skipped for flow control here.
           // If a parent failed, the flow usually stops anyway unless we have error handling paths (future).
           const allParentsResolved = childNode.inputs.every(parentId => {
-            const res = execution?.nodeResults[parentId];
+            const res = parentResults[parentId];
             return res !== undefined && (res.success || res.skipped);
           });
 
@@ -929,7 +947,7 @@ export class WorkflowEngine {
             // Rule: Skip if ALL parents were skipped
 
             const anyParentSucceeded = childNode.inputs.some(parentId => {
-              const res = execution?.nodeResults[parentId];
+              const res = parentResults[parentId];
               return res?.success && !res.skipped;
             });
 
@@ -945,6 +963,9 @@ export class WorkflowEngine {
           }
         }
       }
+
+      // Save result to state store AFTER enqueuing children
+      await this.stateStore.updateNodeResult(executionId, nodeId, result);
 
       // Check if workflow is complete
       await this.checkWorkflowCompletion(executionId, workflowId);
@@ -1018,30 +1039,30 @@ export class WorkflowEngine {
       const childNode = workflow.nodes.find(n => n.id === childNodeId);
       if (!childNode) continue;
 
-      const execution = await this.stateStore.getExecution(executionId);
+      // Optimization: Fetch only the results of the child's parents.
+      const parentResults = await this.stateStore.getNodeResults(executionId, childNode.inputs);
 
       // Check if all parents are resolved (completed or skipped)
       const allParentsResolved = childNode.inputs.every(parentId => {
-        const res = execution?.nodeResults[parentId];
+        const res = parentResults[parentId];
         return res !== undefined && (res.success || res.skipped);
       });
 
       if (allParentsResolved) {
-        // If all parents are resolved, check if we should skip this child too
-        // We skip if ALL parents are skipped
-        const allParentsSkipped = childNode.inputs.every(parentId => {
-          const res = execution?.nodeResults[parentId];
-          return res?.skipped;
+        // This is the "Dead Branch Elimination" or "Join" logic.
+        // A child node should run only if at least one of its parents completed successfully.
+        // If all resolved parents were skipped or failed, the child should also be skipped.
+        const anyParentSucceeded = childNode.inputs.some(parentId => {
+          const res = parentResults[parentId];
+          return res?.success && !res.skipped;
         });
 
-        if (allParentsSkipped) {
-          console.log(`⏭️ All parents of ${childNodeId} skipped, skipping recursively`);
-          await this.skipNode(executionId, workflowId, childNodeId);
-        } else {
-          // If some parents succeeded (and weren't skipped), we might need to run this node!
-          // This handles the "Join" case where one branch was skipped but another succeeded.
+        if (anyParentSucceeded) {
           console.log(`✅ Node ${childNodeId} has active parents, enqueueing despite skip from ${nodeId}`);
           await this.enqueueNode(executionId, workflowId, childNodeId);
+        } else {
+          console.log(`⏭️ All parents of ${childNodeId} were skipped or failed, so skipping this node.`);
+          await this.skipNode(executionId, workflowId, childNodeId);
         }
       }
     }
@@ -1053,19 +1074,19 @@ export class WorkflowEngine {
   // Check if all nodes in the workflow have completed
   private async checkWorkflowCompletion(executionId: string, workflowId: string): Promise<void> {
     const workflow = this.workflows.get(workflowId);
-    const execution = await this.stateStore.getExecution(executionId);
+    if (!workflow) return;
 
-    if (!workflow || !execution) return;
+    const pendingNodeCount = await this.stateStore.getPendingNodeCount(executionId, workflow.nodes.length);
 
-    // If cancelled, don't mark as completed/failed based on nodes
-    if (execution.status === 'cancelled') return;
+    if (pendingNodeCount === 0) {
+      // All nodes are completed, now fetch the full execution state to determine final status
+      const execution = await this.stateStore.getExecution(executionId);
+      if (!execution) return;
 
-    const allNodesExecuted = workflow.nodes.every(
-      node => execution.nodeResults[node.id] !== undefined
-    );
+      // If cancelled, don't mark as completed/failed based on nodes
+      if (execution.status === 'cancelled' || execution.status === 'completed' || execution.status === 'failed') return;
 
-    if (allNodesExecuted) {
-      const anyFailed = Object.values(execution.nodeResults).some(r => !r.success);
+      const anyFailed = Object.values(execution.nodeResults).some(r => !r.success && !r.skipped);
       const newStatus = anyFailed ? 'failed' : 'completed';
       await this.stateStore.setExecutionStatus(executionId, newStatus);
 
@@ -1092,6 +1113,13 @@ export class WorkflowEngine {
       const parentWorkflowId = execution.metadata?.parentWorkflowId || (execution as any).parentWorkflowId;
 
       if (parentNodeId && parentWorkflowId && execution.parentExecutionId) {
+        const idempotencyKey = `resume-${execution.parentExecutionId}-${parentNodeId}-from-${executionId}`;
+
+        if (await this.isJobIdempotent(idempotencyKey)) {
+          console.log(`- Idempotency check: Sub-workflow completion for ${parentNodeId} already processed. Skipping.`);
+          return;
+        }
+
         console.log(`🔄 Child workflow completed, resuming parent node: ${parentNodeId}`);
 
         // Re-enqueue parent node with 'complete' step to aggregate results
@@ -1232,9 +1260,23 @@ export class WorkflowEngine {
     console.log(`▶️ Bulk resumed ${executionIds.length} workflows`);
   }
 
+  /**
+   * Checks for job idempotency using a Redis key with a TTL.
+   * Returns true if the job is a duplicate, false otherwise.
+   */
+  private async isJobIdempotent(idempotencyKey: string, ttl: number = 3600): Promise<boolean> {
+    const key = `idempotency:${idempotencyKey}`;
+    const result = await this.redisConnection.set(key, '1', 'EX', ttl, 'NX');
+    return result === null;
+  }
+
   // Graceful shutdown
   async close(): Promise<void> {
     console.log('🛑 Shutting down workflow engine...');
+
+    // Remove all listeners to prevent memory leaks
+    this.nodeQueueEvents.removeAllListeners();
+    this.workflowQueueEvents.removeAllListeners();
 
     await this.flowProducer.close();
     await this.nodeWorker?.close();

@@ -30,6 +30,26 @@ export class InMemoryExecutionStore implements IExecutionStateStore {
     return this.executions.get(executionId) || null;
   }
 
+  async getNodeResults(executionId: string, nodeIds: string[]): Promise<Record<string, ExecutionResult>> {
+    const execution = this.executions.get(executionId);
+    if (!execution) return {};
+
+    const results: Record<string, ExecutionResult> = {};
+    for (const nodeId of nodeIds) {
+      if (execution.nodeResults[nodeId]) {
+        results[nodeId] = execution.nodeResults[nodeId];
+      }
+    }
+    return results;
+  }
+
+  async getPendingNodeCount(executionId: string, totalNodes: number): Promise<number> {
+    const execution = this.executions.get(executionId);
+    if (!execution) return totalNodes;
+
+    return totalNodes - Object.keys(execution.nodeResults).length;
+  }
+
   async setExecutionStatus(executionId: string, status: 'running' | 'completed' | 'failed' | 'cancelled' | 'paused'): Promise<void> {
     const execution = this.executions.get(executionId);
     if (execution) {
