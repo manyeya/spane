@@ -8,7 +8,7 @@
  * - Graceful shutdown handling
  */
 
-import { WorkflowEngine } from '../workflow-engine';
+import { WorkflowEngine } from '../engine/workflow-engine';
 import { NodeRegistry } from '../registry';
 import { InMemoryExecutionStore } from '../inmemory-store';
 import { Redis } from 'ioredis';

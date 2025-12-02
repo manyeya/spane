@@ -1,4 +1,4 @@
-import { WorkflowEngine } from '../workflow-engine';
+import { WorkflowEngine } from '../engine/workflow-engine';
 import { InMemoryExecutionStore } from '../inmemory-store';
 import { NodeRegistry } from '../registry';
 import { Redis } from 'ioredis';
@@ -86,7 +86,7 @@ async function runTest() {
             await engine.resumeWorkflow(exec2);
 
             // Wait for completion
-            await new Promise(resolve => setTimeout(resolve, 7000)); // Wait enough for retry delay (5s) + execution
+            await new Promise(resolve => setTimeout(resolve, 12000)); // Wait enough for retry delay (5s) + execution
             const state2Resumed = await store.getExecution(exec2);
             console.log(`Execution ${exec2} status (resumed): ${state2Resumed?.status}`);
 

@@ -1,5 +1,5 @@
 import { Elysia } from 'elysia';
-import type { WorkflowEngine } from './workflow-engine';
+import type { WorkflowEngine } from './engine/workflow-engine';
 import type { IExecutionStateStore, WorkflowDefinition } from './types';
 import type { HealthMonitor } from './health';
 import type { MetricsCollector } from './metrics';

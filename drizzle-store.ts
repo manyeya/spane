@@ -162,38 +162,6 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
     return totalNodes - count;
   }
 
-  async getNodeResults(executionId: string, nodeIds: string[]): Promise<Record<string, ExecutionResult>> {
-    if (nodeIds.length === 0) return {};
-
-    const results = await this.db
-      .select()
-      .from(schema.nodeResults)
-      .where(and(
-        eq(schema.nodeResults.executionId, executionId),
-        inArray(schema.nodeResults.nodeId, nodeIds)
-      ));
-
-    const nodeResultsMap: Record<string, ExecutionResult> = {};
-    for (const result of results) {
-      nodeResultsMap[result.nodeId] = {
-        success: result.success,
-        data: result.data || undefined,
-        error: result.error || undefined,
-        nextNodes: result.nextNodes as string[] | undefined,
-        skipped: result.skipped || false,
-      };
-    }
-    return nodeResultsMap;
-  }
-
-  async getPendingNodeCount(executionId: string, totalNodes: number): Promise<number> {
-    const [{ count }] = await this.db
-      .select({ count: sql<number>`count(*)` })
-      .from(schema.nodeResults)
-      .where(eq(schema.nodeResults.executionId, executionId));
-
-    return totalNodes - count;
-  }
 
   async updateNodeResult(
     executionId: string, 

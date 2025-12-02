@@ -1,4 +1,4 @@
-import { WorkflowEngine } from '../workflow-engine';
+import { WorkflowEngine } from '../engine/workflow-engine';
 import { InMemoryExecutionStore } from '../inmemory-store';
 import { NodeRegistry } from '../registry';
 import { Redis } from 'ioredis';

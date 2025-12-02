@@ -1,5 +1,5 @@
 import { Elysia } from 'elysia';
-import { WorkflowEngine } from '../workflow-engine';
+import { WorkflowEngine } from '../engine/workflow-engine';
 import { NodeRegistry } from '../registry';
 import { InMemoryExecutionStore } from '../inmemory-store';
 import IORedis from 'ioredis';
@@ -31,6 +31,13 @@ registry.register('schedule', {
     }
 });
 
+registry.register('manual', {
+    async execute(context: ExecutionContext): Promise<ExecutionResult> {
+        console.log('Manual trigger executing');
+        return { success: true, data: context.inputData };
+    }
+});
+
 registry.register('webhook', {
     async execute(context: ExecutionContext): Promise<ExecutionResult> {
         console.log('Webhook trigger executing');
@@ -42,7 +49,7 @@ registry.register('http', {
     async execute(context: ExecutionContext): Promise<ExecutionResult> {
         console.log('HTTP node executing with nodeConfig:', context.nodeConfig);
         console.log('HTTP node inputData:', context.inputData);
-        
+
         // Get HTTP configuration from node's own config (set in the UI)
         const config = context.nodeConfig || {};
         const {
@@ -87,7 +94,7 @@ registry.register('http', {
             }
 
             console.log(`HTTP ${method} request to: ${requestUrl}`);
-            
+
             // Execute the HTTP request
             const response = await fetch(requestUrl, fetchOptions);
 
@@ -143,7 +150,7 @@ registry.register('http', {
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             console.error('HTTP request failed:', errorMessage);
-            
+
             return {
                 success: false,
                 error: `HTTP request failed: ${errorMessage}`,
@@ -209,7 +216,7 @@ async function updateExecutionFromStore(executionId: string) {
         if (state) {
             const nodeStatuses: Record<string, string> = {};
             const nodeResults: Record<string, any> = {};
-            
+
             for (const [nodeId, result] of Object.entries(state.nodeResults || {})) {
                 nodeStatuses[nodeId] = result.skipped ? 'skipped' : result.success ? 'success' : 'error';
                 nodeResults[nodeId] = result;
@@ -219,7 +226,7 @@ async function updateExecutionFromStore(executionId: string) {
                 executionId: state.executionId,
                 workflowId: state.workflowId,
                 status: state.status === 'completed' ? 'success' :
-                        state.status === 'failed' ? 'error' : state.status,
+                    state.status === 'failed' ? 'error' : state.status,
                 nodeStatuses,
                 nodeResults,
                 startedAt: state.startedAt,
@@ -300,6 +307,7 @@ const app = new Elysia()
     })
 
     .get('/api/workflows/executions/:id', async ({ params }: { params: { id: string } }) => {
+        console.log(`🔍 Polling status for execution ${params.id}`);
         const execution = await updateExecutionFromStore(params.id);
 
         if (!execution) {

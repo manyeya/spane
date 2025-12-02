@@ -1,4 +1,4 @@
-import { WorkflowEngine } from '../workflow-engine';
+import { WorkflowEngine } from '../engine/workflow-engine';
 import { NodeRegistry } from '../registry';
 import { DrizzleExecutionStateStore } from '../drizzle-store';
 import type { WorkflowDefinition } from '../types';

@@ -1,4 +1,4 @@
-import { WorkflowEngine } from './workflow-engine';
+import { WorkflowEngine } from './engine/workflow-engine';
 import { WorkflowAPIController } from './api';
 import { InMemoryExecutionStore } from './inmemory-store';
 import { DrizzleExecutionStateStore } from './drizzle-store';
