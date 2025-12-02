@@ -81,7 +81,7 @@ async function run() {
         // Wait for execution to complete
         await new Promise(resolve => setTimeout(resolve, 1000));
 
-        const execution = await store.getExecution(executionIds[0]);
+        const execution = await store.getExecution(executionIds[0] ?? "");
         if (execution?.status === 'completed') {
             console.log('✅ Webhook workflow completed successfully\n');
         } else {
