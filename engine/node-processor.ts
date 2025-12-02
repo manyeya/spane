@@ -25,6 +25,7 @@ export class NodeProcessor {
     // Process a single node job
     async processNodeJob(data: NodeJobData, job: Job): Promise<ExecutionResult> {
         const { executionId, workflowId, nodeId, inputData } = data;
+        console.log(`🔧 Processing node job: executionId=${executionId}, workflowId=${workflowId}, nodeId=${nodeId}`);
 
         // Handle virtual root node (for workflows with multiple entry points)
         if (nodeId === '__root__') {

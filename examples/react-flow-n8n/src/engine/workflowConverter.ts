@@ -16,18 +16,29 @@ export interface WorkflowNode {
     name: string;
     type: string;
     config: any;
+    inputs: string[];
+    outputs: string[];
 }
 
 export function convertToWorkflow(
     nodes: any[],
     edges: Edge[]
 ): WorkflowDefinition {
-    const workflowNodes: WorkflowNode[] = nodes.map(node => ({
-        id: node.id,
-        name: node.data.label,
-        type: node.data.type || node.type,
-        config: node.data.config || {},
-    }));
+    // Create workflow nodes with inputs and outputs
+    const workflowNodes: WorkflowNode[] = nodes.map(node => {
+        // Determine inputs and outputs from edges
+        const inputs = edges.filter(e => e.target === node.id).map(e => e.source);
+        const outputs = edges.filter(e => e.source === node.id).map(e => e.target);
+
+        return {
+            id: node.id,
+            name: node.data.label,
+            type: node.data.type || node.type,
+            config: node.data.config || {},
+            inputs,
+            outputs,
+        };
+    });
 
     const triggerNode = nodes.find(n => n.type === 'trigger');
     let trigger: WorkflowDefinition['trigger'] | undefined;

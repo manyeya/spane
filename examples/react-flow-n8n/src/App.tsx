@@ -84,6 +84,7 @@ function App() {
                     data: {
                         label: template.label,
                         type: template.subType as any,
+                        config: {},
                         status: 'idle'
                     }
                 };
@@ -95,6 +96,7 @@ function App() {
                     data: {
                         label: template.label,
                         type: template.subType as any,
+                        config: {},
                         status: 'idle'
                     }
                 };
@@ -105,6 +107,7 @@ function App() {
                     position,
                     data: {
                         label: template.label,
+                        config: {},
                         status: 'idle'
                     }
                 };
@@ -138,7 +141,7 @@ function App() {
                             data: { ...node.data, ...data }
                         };
                         // Also update selectedNode if it's the same node
-                        setSelectedNode((prevSelected: any) => 
+                        setSelectedNode((prevSelected: any) =>
                             prevSelected?.id === nodeId ? updatedNode : prevSelected
                         );
                         return updatedNode;
@@ -174,10 +177,13 @@ function App() {
         );
 
         try {
+            console.log('🔄 Starting workflow execution...');
             const result = await executionManager.executeWorkflow(workflow);
+            console.log('✅ Workflow execution started, executionId:', result.executionId);
 
-            // Poll for status updates
+            // Poll for status updates with timeout
             await executionManager.pollExecutionStatus(result.executionId, (statusUpdate) => {
+                console.log('📊 Status update received:', statusUpdate);
                 setExecutionStatus(statusUpdate.status);
 
                 // Update node statuses
@@ -197,16 +203,35 @@ function App() {
                     setShowResults(true);
                 }
 
+                // Handle error cases
+                if (statusUpdate.error) {
+                    console.error('❌ Workflow error:', statusUpdate.error);
+                    setIsExecuting(false);
+                    alert('❌ Workflow error: ' + statusUpdate.error);
+                }
+
                 if (statusUpdate.status !== 'running') {
+                    console.log('🏁 Workflow completed with status:', statusUpdate.status);
                     setIsExecuting(false);
                     setShowResults(true);
                 }
-            });
+            }, 1000, 60); // 1 second interval, 60 attempts (1 minute timeout)
         } catch (error) {
-            console.error('Execution failed:', error);
+            console.error('❌ Execution failed:', error);
             setExecutionStatus('error');
             setIsExecuting(false);
-            alert('Execution failed: ' + (error as Error).message);
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            alert('❌ Execution failed: ' + errorMessage);
+            // Show error in UI
+            setNodes((nds) =>
+                nds.map((node) => ({
+                    ...node,
+                    data: {
+                        ...node.data,
+                        status: 'error'
+                    }
+                }))
+            );
         }
     };
 

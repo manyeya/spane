@@ -26,6 +26,7 @@ export class WorkerManager {
             'node-execution',
             async (job: Job<NodeJobData>) => {
                 await job.updateProgress(0);
+                console.log(`🚀 Processing node job ${job.id} of type ${job.name}`);
                 const result = await this.nodeProcessor.processNodeJob(job.data, job);
                 await job.updateProgress(100);
                 return result;

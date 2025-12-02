@@ -10,7 +10,7 @@ const redis = new Redis({
     maxRetriesPerRequest: null
 });
 const registry = new NodeRegistry();
-const store = new DrizzleExecutionStateStore(DATABASE_URL);
+const store = new DrizzleExecutionStateStore(DATABASE_URL, redis);
 const engine = new WorkflowEngine(registry, store, redis);
 
 console.log(`📦 Using Postgres persistence: ${DATABASE_URL}`);
@@ -144,7 +144,7 @@ async function runTest() {
 
     // 8. Simulate "Restart" - Create New Store Instance
     console.log('\n--- Simulating Restart (New Store Instance) ---\n');
-    const newStore = new DrizzleExecutionStateStore(DATABASE_URL);
+    const newStore = new DrizzleExecutionStateStore(DATABASE_URL, redis);
 
     const recoveredExecution = await newStore.getExecution(executionId);
     if (recoveredExecution) {

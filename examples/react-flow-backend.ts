@@ -3,16 +3,26 @@ import { WorkflowEngine } from '../engine/workflow-engine';
 import { NodeRegistry } from '../registry';
 import { InMemoryExecutionStore } from '../inmemory-store';
 import IORedis from 'ioredis';
-import type { WorkflowDefinition, NodeDefinition, ExecutionContext, ExecutionResult } from '../types';
+import type { WorkflowDefinition, NodeDefinition, ExecutionContext, ExecutionResult, WorkflowTrigger } from '../types';
 
 // Initialize Redis connection
+console.log('🔌 Connecting to Redis...');
 const redis = new IORedis({
     host: process.env.REDIS_HOST || 'localhost',
     port: parseInt(process.env.REDIS_PORT || '6379'),
     maxRetriesPerRequest: null
 });
 
+redis.on('connect', () => {
+    console.log('✅ Redis connected successfully');
+});
+
+redis.on('error', (error) => {
+    console.error('❌ Redis connection error:', error);
+});
+
 // Initialize node registry
+console.log('📋 Initializing node registry...');
 const registry = new NodeRegistry();
 
 // Register basic node handlers using the correct executor pattern
@@ -200,14 +210,18 @@ registry.register('condition', {
 const stateStore = new InMemoryExecutionStore();
 
 // Initialize the workflow engine with all required dependencies
+console.log('🚀 Initializing workflow engine...');
 const engine = new WorkflowEngine(
     registry,
     stateStore,
     redis
 );
+console.log('✅ Workflow engine initialized');
 
 // Start the workers
+console.log('👷 Starting workers...');
 engine.startWorkers(5);
+console.log('👷 Workers started');
 
 // Poll execution state from the engine store
 async function updateExecutionFromStore(executionId: string) {
@@ -241,37 +255,107 @@ async function updateExecutionFromStore(executionId: string) {
 }
 
 function convertToSpaneWorkflow(reactFlowWorkflow: any): WorkflowDefinition {
+    console.log('🔄 Converting React Flow workflow to Spane format:', JSON.stringify(reactFlowWorkflow, null, 2));
+
     const { nodes: reactFlowNodes, edges } = reactFlowWorkflow;
+
+    // Debug: Check if we have nodes
+    if (!reactFlowNodes || reactFlowNodes.length === 0) {
+        console.error('❌ No nodes found in workflow');
+        throw new Error('Workflow must contain at least one node');
+    }
 
     const spaneNodes: NodeDefinition[] = reactFlowNodes.map((node: any) => {
         // Determine inputs and outputs from edges
         const inputs = edges.filter((e: any) => e.target === node.id).map((e: any) => e.source);
         const outputs = edges.filter((e: any) => e.source === node.id).map((e: any) => e.target);
 
+        const nodeConfig = node.config || node.data?.config || {};
+        console.log(`📝 Converting node ${node.id} (${node.name || node.data?.label}):`, {
+            type: node.data?.type || node.type,
+            config: nodeConfig
+        });
+
         return {
             id: node.id,
-            type: node.data.type || node.type,
-            config: node.data.config || {},
+            type: node.data?.type || node.type,
+            config: nodeConfig,
             inputs,
             outputs,
         };
     });
 
+    // Find the trigger node to determine entry point
     const triggerNode = spaneNodes.find(n => n.type === 'trigger');
+    const entryNodeId = triggerNode?.id || spaneNodes[0]?.id || '';
+
+    if (!entryNodeId) {
+        console.error('❌ No entry node found in workflow');
+        throw new Error('Could not determine entry node for workflow');
+    }
+
+    console.log(`🎯 Entry node identified: ${entryNodeId}`);
+
+    // Convert triggers from the React Flow format to Spane format
+    const triggers: WorkflowTrigger[] = [];
+
+    // Check both reactFlowWorkflow.trigger and also look for trigger nodes in the nodes array
+    if (reactFlowWorkflow.trigger) {
+        console.log('📋 Found trigger in workflow definition:', reactFlowWorkflow.trigger);
+        if (reactFlowWorkflow.trigger.type === 'webhook') {
+            triggers.push({
+                type: 'webhook',
+                config: {
+                    path: reactFlowWorkflow.trigger.config.path || '/webhook',
+                    method: reactFlowWorkflow.trigger.config.method || 'POST'
+                }
+            });
+        } else if (reactFlowWorkflow.trigger.type === 'schedule') {
+            triggers.push({
+                type: 'schedule',
+                config: {
+                    cron: reactFlowWorkflow.trigger.config.cron || '0 * * * *',
+                    timezone: reactFlowWorkflow.trigger.config.timezone
+                }
+            });
+        }
+    } else if (triggerNode) {
+        // If no explicit trigger in workflow definition, but we found a trigger node
+        console.log('📋 Using trigger node from nodes array:', triggerNode);
+        // Create a generic trigger configuration
+        triggers.push({
+            type: 'webhook', // Default to webhook for trigger nodes
+            config: {
+                path: '/webhook',
+                method: 'POST'
+            }
+        });
+    }
 
     const workflow: WorkflowDefinition = {
         id: `workflow-${Date.now()}`,
         name: 'React Flow Workflow',
         nodes: spaneNodes,
-        entryNodeId: triggerNode?.id || '',
-        triggers: reactFlowWorkflow.trigger ? [reactFlowWorkflow.trigger] : []
+        entryNodeId: entryNodeId,
+        triggers: triggers.length > 0 ? triggers : undefined
     };
 
+    console.log('✅ Workflow conversion complete:', JSON.stringify(workflow, null, 2));
     return workflow;
 }
 
 // Create Elysia server
 const app = new Elysia()
+    .onBeforeHandle(({ set }) => {
+        // Enable CORS for all routes
+        set.headers['Access-Control-Allow-Origin'] = '*';
+        set.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
+        set.headers['Access-Control-Allow-Headers'] = 'Content-Type';
+    })
+    // Handle OPTIONS preflight requests - return empty response, headers set by onBeforeHandle
+    .options('/api/workflows/execute', () => new Response(null, { status: 204 }))
+    .options('/api/workflows/executions/:id', () => new Response(null, { status: 204 }))
+    .options('/api/health', () => new Response(null, { status: 204 }))
     .get('/api/health', () => ({ status: 'ok' }))
 
     .post('/api/workflows/execute', async ({ body }: { body: any }) => {
@@ -323,10 +407,10 @@ const app = new Elysia()
         return execution;
     })
 
-    .listen(3001);
-
-console.log(`🚀 React Flow n8n Backend running at http://localhost:3001`);
-console.log(`📊 API endpoints:`);
-console.log(`   - POST /api/workflows/execute`);
-console.log(`   - GET  /api/workflows/executions/:id`);
-console.log(`   - GET  /api/health`);
+    .listen(3001, ({ hostname, port }) => {
+        console.log(`🚀 React Flow n8n Backend running at http://${hostname}:${port}`);
+        console.log(`📊 API endpoints:`);
+        console.log(`   - POST /api/workflows/execute`);
+        console.log(`   - GET  /api/workflows/executions/:id`);
+        console.log(`   - GET  /api/health`);
+    });
