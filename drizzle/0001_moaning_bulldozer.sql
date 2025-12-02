@@ -1,0 +1,3 @@
+ALTER TABLE "logs" ADD CONSTRAINT "logs_execution_id_executions_execution_id_fk" FOREIGN KEY ("execution_id") REFERENCES "public"."executions"("execution_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "node_results" ADD CONSTRAINT "node_results_execution_id_executions_execution_id_fk" FOREIGN KEY ("execution_id") REFERENCES "public"."executions"("execution_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "spans" ADD CONSTRAINT "spans_execution_id_executions_execution_id_fk" FOREIGN KEY ("execution_id") REFERENCES "public"."executions"("execution_id") ON DELETE cascade ON UPDATE no action;

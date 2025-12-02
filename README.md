@@ -137,6 +137,9 @@ REDIS_URL=redis://localhost:6379
 
 # Optional: Custom port (defaults to 3000)
 PORT=3000
+
+# Optional: Database URL for persistent state (uses in-memory if not set)
+DATABASE_URL=postgresql://user:password@localhost:5432/spane
 ```
 
 ## 🚀 Quick Start
@@ -277,7 +280,41 @@ You can replay any past execution. The new execution will be linked to the origi
 const newExecutionId = await engine.replayWorkflow(originalExecutionId);
 ```
 
-## 9. Future Enhancements
+## 9. Persistence
+
+SPANE supports persistent state storage using **Drizzle ORM** with **Postgres**.
+
+### Database Setup
+
+Set the `DATABASE_URL` environment variable to enable persistence:
+
+```bash
+# Postgres
+DATABASE_URL=postgresql://user:password@localhost:5432/spane
+```
+
+If `DATABASE_URL` is not set, SPANE will use an in-memory store (data will be lost on restart).
+
+### Running Migrations
+
+Generate and apply database migrations using Drizzle Kit:
+
+```bash
+# Generate migration files
+bun run db:generate
+
+# Apply migrations to database
+bun run db:push
+```
+
+### What Gets Persisted
+
+- **Execution State**: Workflow status, start/completion times, depth, metadata
+- **Node Results**: Success/failure status, output data, errors
+- **Execution Logs**: Detailed logs for debugging
+- **Execution Traces**: Performance spans for each node
+
+## 10. Future Enhancements
 
 ## 🧩 Core Concepts
 
@@ -680,11 +717,13 @@ Max Retries Exhausted?
 - [x] **Parallel Execution Limits** - Concurrency control and rate limiting
 - [x] **Webhook/Trigger Support** - Webhook and Cron triggers
 - [x] **Sub-workflows** - Reusable workflow composition (Non-blocking)
+- [x] **Observability & Debugging** - Execution logging, tracing, and replay
+- [x] **Persistent State Store** - Postgres via Drizzle ORM
 - [x] REST API
 - [x] Queue statistics
 
 ### 🚧 In Progress
-- [ ] Persistent state store (Postgres/MongoDB adapter)
+- [ ] Transaction support for state updates
 
 ### 📅 Planned Features
 
