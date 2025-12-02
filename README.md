@@ -2,7 +2,7 @@
 
 **P**arallel **A**synchronous **N**ode **E**xecution
 
-> Build your own automation platform, workflow builder, or embed powerful orchestration into any application. **Includes a complete React Flow-based visual workflow builder!**
+> Build your own automation platform, workflow builder, or embed powerful orchestration into any application.
 
 > [!WARNING]
 > **Experimental Project** - SPANE is currently an experiment and proof-of-concept. It is **not production-ready** and has not been battle-tested. Use at your own risk and expect breaking changes.
@@ -10,10 +10,10 @@
 SPANE is an embeddable workflow orchestration engine built on BullMQ and Redis. It's designed to be the **infrastructure layer** that could enable you to create automation platforms, visual workflow builders, and intelligent job orchestration systems - without building the complex engine from scratch.
 
 **What makes SPANE unique:**
-- 🎨 **Complete Visual Builder** - Includes a production-ready React Flow n8n-style workflow builder
-- 🗄️ **Database Agnostic** - Works with Postgres, MySQL, or SQLite out of the box
-- 🔌 **Fully Embeddable** - Use programmatically or with the visual UI
+- 🗄️ **Postgres Persistence** - Optional persistent state storage with Postgres
+- 🔌 **Fully Embeddable** - Use programmatically in any application
 - 🏗️ **Production Ready Features** - Health checks, metrics, circuit breakers, graceful shutdown
+- 📦 **Complete Examples** - Including a React Flow n8n-style visual builder example
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 [![Bun](https://img.shields.io/badge/Bun-1.0+-orange.svg)](https://bun.sh/)
@@ -79,12 +79,11 @@ SPANE is an **experimental headless workflow engine** - exploring what it takes 
 - **📦 Bulk Operations** - Manage multiple workflows simultaneously
 
 ### 🗄️ Persistence & State
-- **🔌 Database Agnostic** - Works with Postgres, MySQL, or SQLite
-- **🔄 Auto-detection** - Automatically detects database type from connection string
-- **💾 Full State Persistence** - Execution state, node results, logs, and traces
-- **🔍 Execution Replay** - Re-run past executions with full context
-- **📊 Observability** - Comprehensive logging and tracing
-- **⚡ In-Memory Fallback** - Works without a database for development
+- 🗄️ **Postgres Persistence** - Optional persistent state storage with Postgres
+- 💾 **Full State Persistence** - Execution state, node results, logs, and traces
+- 🔍 **Execution Replay** - Re-run past executions with full context
+- 📊 **Observability** - Comprehensive logging and tracing
+- ⚡ **In-Memory Fallback** - Works without a database for development
 
 ### 🏥 Production Operations
 - **💓 Health Monitoring** - Comprehensive health checks for workers, queues, and Redis
@@ -154,7 +153,7 @@ Power your backend infrastructure or learn workflow orchestration:
 ### Prerequisites
 - [Bun](https://bun.sh/) 1.0 or higher
 - Redis 6.0 or higher
-- (Optional) Database: Postgres, MySQL, or SQLite for persistent state
+- (Optional) Postgres for persistent state
 
 ### Setup
 
@@ -169,7 +168,7 @@ bun install
 # Make sure Redis is running
 redis-server
 
-# (Optional) Set up database for persistence
+# (Optional) Set up Postgres for persistence
 # See Database Setup section below
 
 # Start the engine
@@ -178,12 +177,11 @@ bun start
 
 ### Database Setup (Optional)
 
-SPANE supports multiple databases for persistent state storage. If you don't configure a database, it will use an in-memory store (data lost on restart).
+SPANE supports Postgres for persistent state storage. If you don't configure a database, it will use an in-memory store (data lost on restart).
 
-#### Postgres
 ```bash
 # Install Postgres and create a database
-creatdb spane
+createdb spane
 
 # Set environment variable
 export DATABASE_URL="postgresql://user:password@localhost:5432/spane"
@@ -192,31 +190,6 @@ export DATABASE_URL="postgresql://user:password@localhost:5432/spane"
 bun run db:generate
 bun run db:push
 ```
-
-#### MySQL
-```bash
-# Install MySQL and create a database
-mysql -u root -p -e "CREATE DATABASE spane;"
-
-# Set environment variable
-export DATABASE_URL="mysql://user:password@localhost:3306/spane"
-
-# Run migrations
-bun run db:generate
-bun run db:push
-```
-
-#### SQLite
-```bash
-# No installation needed, just set the path
-export DATABASE_URL="sqlite://./spane.db"
-
-# Run migrations
-bun run db:generate
-bun run db:push
-```
-
-> **Note:** SPANE automatically detects the database type from the `DATABASE_URL` and configures the appropriate Drizzle ORM dialect.
 
 ### Environment Variables
 
@@ -228,12 +201,7 @@ REDIS_URL=redis://localhost:6379
 PORT=3000
 
 # Optional: Database URL for persistent state (uses in-memory if not set)
-# Postgres
 DATABASE_URL=postgresql://user:password@localhost:5432/spane
-# MySQL
-DATABASE_URL=mysql://user:password@localhost:3306/spane
-# SQLite
-DATABASE_URL=sqlite://./spane.db
 
 # Optional: Enable/disable production operations features (enabled by default)
 ENABLE_PRODUCTION_OPS=true
@@ -246,50 +214,6 @@ SHUTDOWN_TIMEOUT=30000
 ```
 
 ## 🚀 Quick Start
-
-### Option 1: Visual Workflow Builder (React Flow)
-
-The easiest way to get started is with the included visual workflow builder:
-
-#### 1. Start the Backend
-
-```bash
-# From the project root
-bun run examples/react-flow-backend.ts
-```
-
-This starts the SPANE engine with a REST API on port 4000.
-
-#### 2. Start the Frontend
-
-```bash
-# In a new terminal
-cd examples/react-flow-n8n
-bun install
-bun run dev
-```
-
-This starts the React Flow visual builder on port 5173.
-
-#### 3. Build Your First Workflow
-
-1. Open `http://localhost:5173` in your browser
-2. Drag nodes from the left palette onto the canvas
-3. Connect nodes by dragging from one handle to another
-4. Click on nodes to configure them
-5. Click "Execute" to run your workflow
-6. Watch as nodes update their status in real-time!
-
-**Available Node Types:**
-- **Triggers:** Manual, Schedule (cron), Webhook
-- **Actions:** HTTP Request, Transform (JavaScript), Send Email, Database Query
-- **Control:** Condition (if/else branching)
-
-See the [Visual Workflow Builder Example](#example-10-visual-workflow-builder-react-flow-n8n-clone) for more details.
-
----
-
-### Option 2: Programmatic API (Workflows as Code)
 
 ### 1. Define Your Node Executors
 
@@ -697,7 +621,17 @@ class WorkflowEngine {
   retryDLQItem(dlqJobId: string): Promise<boolean>
   
   // Get queue statistics
-  getQueueStats(): Promise<QueueStats>
+  getQueueStats(): Promise<{
+    waiting: number;
+    active: number;
+    completed: number;
+    failed: number;
+    delayed: number;
+    paused: number;
+  }>
+  
+  // Schedule a workflow to execute at a specific time
+  scheduleWorkflow(workflowId: string, initialData: any, executeAt: Date): Promise<string>
   
   // Graceful shutdown
   close(): Promise<void>
@@ -1082,24 +1016,6 @@ See [`examples/production-ops.ts`](./examples/production-ops.ts) for a full demo
 bun run examples/production-ops.ts
 ```
 
-### Example 10: Visual Workflow Builder (React Flow n8n Clone)
-
-SPANE includes a complete visual workflow builder inspired by n8n, built with React Flow. This is a production-ready example that demonstrates how to build a drag-and-drop workflow interface on top of the SPANE engine.
-
-#### Features
-
-- 🎨 **Drag-and-Drop Interface** - Build workflows visually by dragging nodes from the palette
-- 🎯 **Multiple Node Types** - Triggers, Actions, and Control flow nodes
-- ⚙️ **Node Configuration** - Configure each node with custom parameters
-- 🚀 **Real-time Execution** - Execute workflows and see real-time status updates
-- 💾 **Save/Load Workflows** - Export workflows as JSON
-- ✅ **Validation** - Automatic workflow validation before execution
-- 🎨 **n8n-Inspired UI** - Familiar interface for workflow automation
-
-#### Available Node Types
-
-**Triggers:**
-- **Schedule** - Run workflows on a cron schedule
 - **Webhook** - Trigger via HTTP webhook
 - **Manual** - Start workflows manually
 

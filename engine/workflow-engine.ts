@@ -328,6 +328,52 @@ export class WorkflowEngine {
         await Promise.all(executionIds.map(id => this.cancelWorkflow(id)));
     }
 
+    // Get queue statistics
+    async getQueueStats(): Promise<{
+        waiting: number;
+        active: number;
+        completed: number;
+        failed: number;
+        delayed: number;
+        paused: number;
+    }> {
+        const [nodeQueueCounts, workflowQueueCounts] = await Promise.all([
+            this.queueManager.nodeQueue.getJobCounts(),
+            this.queueManager.workflowQueue.getJobCounts()
+        ]);
+
+        return {
+            waiting: (nodeQueueCounts.waiting ?? 0) + (workflowQueueCounts.waiting ?? 0),
+            active: (nodeQueueCounts.active ?? 0) + (workflowQueueCounts.active ?? 0),
+            completed: (nodeQueueCounts.completed ?? 0) + (workflowQueueCounts.completed ?? 0),
+            failed: (nodeQueueCounts.failed ?? 0) + (workflowQueueCounts.failed ?? 0),
+            delayed: (nodeQueueCounts.delayed ?? 0) + (workflowQueueCounts.delayed ?? 0),
+            paused: (nodeQueueCounts.paused ?? 0) + (workflowQueueCounts.paused ?? 0),
+        };
+    }
+
+    // Schedule a workflow to execute at a specific time
+    async scheduleWorkflow(
+        workflowId: string,
+        initialData: any,
+        executeAt: Date
+    ): Promise<string> {
+        const delay = executeAt.getTime() - Date.now();
+
+        if (delay < 0) {
+            throw new Error('Cannot schedule workflow in the past');
+        }
+
+        return this.enqueueWorkflow(
+            workflowId,
+            initialData,
+            undefined,
+            0,
+            undefined,
+            { delay }
+        );
+    }
+
     // Graceful shutdown
     async close(): Promise<void> {
         console.log('🛑 Shutting down workflow engine...');
