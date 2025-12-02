@@ -2,12 +2,18 @@
 
 **P**arallel **A**synchronous **N**ode **E**xecution
 
-> Build your own automation platform, workflow builder, or embed powerful orchestration into any application.
+> Build your own automation platform, workflow builder, or embed powerful orchestration into any application. **Includes a complete React Flow-based visual workflow builder!**
 
 > [!WARNING]
 > **Experimental Project** - SPANE is currently an experiment and proof-of-concept. It is **not production-ready** and has not been battle-tested. Use at your own risk and expect breaking changes.
 
 SPANE is an embeddable workflow orchestration engine built on BullMQ and Redis. It's designed to be the **infrastructure layer** that could enable you to create automation platforms, visual workflow builders, and intelligent job orchestration systems - without building the complex engine from scratch.
+
+**What makes SPANE unique:**
+- 🎨 **Complete Visual Builder** - Includes a production-ready React Flow n8n-style workflow builder
+- 🗄️ **Database Agnostic** - Works with Postgres, MySQL, or SQLite out of the box
+- 🔌 **Fully Embeddable** - Use programmatically or with the visual UI
+- 🏗️ **Production Ready Features** - Health checks, metrics, circuit breakers, graceful shutdown
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
 [![Bun](https://img.shields.io/badge/Bun-1.0+-orange.svg)](https://bun.sh/)
@@ -39,8 +45,17 @@ SPANE is an **experimental headless workflow engine** - exploring what it takes 
 
 ## ✨ Features
 
-### 🎨 Developer Experience
-- **💻 Workflows as Code** - Define workflows in TypeScript, not JSON or UI
+### 🎨 Visual Workflow Builder
+- **🖱️ Drag-and-Drop Interface** - Build workflows visually with React Flow
+- **🎯 Multiple Node Types** - Triggers (Schedule, Webhook, Manual), Actions (HTTP, Transform, Email, Database), Control (Condition)
+- **⚙️ Node Configuration** - Configure each node with custom parameters
+- **🚀 Real-time Execution** - Execute workflows and see live status updates
+- **💾 Import/Export** - Save and load workflows as JSON
+- **✅ Validation** - Automatic workflow validation before execution
+- **🎨 n8n-Inspired UI** - Familiar interface for workflow automation
+
+### 💻 Developer Experience
+- **📝 Workflows as Code** - Define workflows in TypeScript, not just UI
 - **🔒 Type Safety** - Full TypeScript support with comprehensive type definitions
 - **🧪 Testable** - Unit test your workflows like any other code
 - **📝 IDE Support** - Autocomplete, refactoring, and inline documentation
@@ -55,16 +70,44 @@ SPANE is an **experimental headless workflow engine** - exploring what it takes 
 - **⏸️ Pause/Resume** - Pause and resume workflow executions on demand
 - **🚫 Cancellation** - Cancel running workflows gracefully
 - **⏱️ Timeout Handling** - Configure per-node execution timeouts
-- **📊 Real-time Monitoring** - Track queue statistics and execution states
-- **🔌 REST API** - Full HTTP API for workflow management
+- **🔀 Conditional Branching** - Dynamic routing based on execution results
+- **🔄 Sub-workflows** - Compose workflows from reusable workflow components
+- **📊 Data Passing** - Automatic data flow between nodes
+- **🎯 Priority Queues** - Prioritize critical workflows
+- **⏰ Delayed/Scheduled Jobs** - Execute workflows at specific times
+- **🔁 Job Deduplication** - Prevent duplicate executions
+- **📦 Bulk Operations** - Manage multiple workflows simultaneously
+
+### 🗄️ Persistence & State
+- **🔌 Database Agnostic** - Works with Postgres, MySQL, or SQLite
+- **🔄 Auto-detection** - Automatically detects database type from connection string
+- **💾 Full State Persistence** - Execution state, node results, logs, and traces
+- **🔍 Execution Replay** - Re-run past executions with full context
+- **📊 Observability** - Comprehensive logging and tracing
+- **⚡ In-Memory Fallback** - Works without a database for development
+
+### 🏥 Production Operations
+- **💓 Health Monitoring** - Comprehensive health checks for workers, queues, and Redis
+- **📊 Metrics Collection** - Prometheus and JSON format metrics export
+- **🔌 Circuit Breakers** - Prevent cascading failures with automatic recovery
+- **🛑 Graceful Shutdown** - Proper cleanup on SIGTERM/SIGINT
+- **☸️ Kubernetes Ready** - Liveness and readiness probes
+- **📈 Real-time Monitoring** - Track queue statistics and execution states
+
+### 🔌 Integration & API
+- **🌐 REST API** - Full HTTP API for workflow management
+- **🪝 Webhook Triggers** - Start workflows via HTTP webhooks
+- **⏰ Cron Triggers** - Schedule workflows with cron expressions
+- **🔄 React Flow Integration** - Complete visual builder example
+- **🔧 Extensible** - Plugin-based node executor system
 
 ### 🏗️ Architecture
 - **BullMQ Integration** - Manual DAG traversal with Redis-backed job queues
 - **Redis-backed** - Persistent job queues with Redis
 - **Embeddable** - Drop into any Node.js/Bun application
-- **Extensible** - Plugin-based node executor system
+- **Modular Design** - Separated concerns (QueueManager, DLQManager, NodeProcessor, WorkerManager)
 - **Error Handling** - DLQ, retries, and graceful shutdown
-- **Lightweight** - Minimal dependencies, no UI overhead
+- **Lightweight** - Minimal dependencies, optional UI
 
 ## 🎨 What Can You Build? (Experimentally)
 
@@ -111,6 +154,7 @@ Power your backend infrastructure or learn workflow orchestration:
 ### Prerequisites
 - [Bun](https://bun.sh/) 1.0 or higher
 - Redis 6.0 or higher
+- (Optional) Database: Postgres, MySQL, or SQLite for persistent state
 
 ### Setup
 
@@ -125,9 +169,54 @@ bun install
 # Make sure Redis is running
 redis-server
 
+# (Optional) Set up database for persistence
+# See Database Setup section below
+
 # Start the engine
 bun start
 ```
+
+### Database Setup (Optional)
+
+SPANE supports multiple databases for persistent state storage. If you don't configure a database, it will use an in-memory store (data lost on restart).
+
+#### Postgres
+```bash
+# Install Postgres and create a database
+creatdb spane
+
+# Set environment variable
+export DATABASE_URL="postgresql://user:password@localhost:5432/spane"
+
+# Run migrations
+bun run db:generate
+bun run db:push
+```
+
+#### MySQL
+```bash
+# Install MySQL and create a database
+mysql -u root -p -e "CREATE DATABASE spane;"
+
+# Set environment variable
+export DATABASE_URL="mysql://user:password@localhost:3306/spane"
+
+# Run migrations
+bun run db:generate
+bun run db:push
+```
+
+#### SQLite
+```bash
+# No installation needed, just set the path
+export DATABASE_URL="sqlite://./spane.db"
+
+# Run migrations
+bun run db:generate
+bun run db:push
+```
+
+> **Note:** SPANE automatically detects the database type from the `DATABASE_URL` and configures the appropriate Drizzle ORM dialect.
 
 ### Environment Variables
 
@@ -139,7 +228,12 @@ REDIS_URL=redis://localhost:6379
 PORT=3000
 
 # Optional: Database URL for persistent state (uses in-memory if not set)
+# Postgres
 DATABASE_URL=postgresql://user:password@localhost:5432/spane
+# MySQL
+DATABASE_URL=mysql://user:password@localhost:3306/spane
+# SQLite
+DATABASE_URL=sqlite://./spane.db
 
 # Optional: Enable/disable production operations features (enabled by default)
 ENABLE_PRODUCTION_OPS=true
@@ -152,6 +246,50 @@ SHUTDOWN_TIMEOUT=30000
 ```
 
 ## 🚀 Quick Start
+
+### Option 1: Visual Workflow Builder (React Flow)
+
+The easiest way to get started is with the included visual workflow builder:
+
+#### 1. Start the Backend
+
+```bash
+# From the project root
+bun run examples/react-flow-backend.ts
+```
+
+This starts the SPANE engine with a REST API on port 4000.
+
+#### 2. Start the Frontend
+
+```bash
+# In a new terminal
+cd examples/react-flow-n8n
+bun install
+bun run dev
+```
+
+This starts the React Flow visual builder on port 5173.
+
+#### 3. Build Your First Workflow
+
+1. Open `http://localhost:5173` in your browser
+2. Drag nodes from the left palette onto the canvas
+3. Connect nodes by dragging from one handle to another
+4. Click on nodes to configure them
+5. Click "Execute" to run your workflow
+6. Watch as nodes update their status in real-time!
+
+**Available Node Types:**
+- **Triggers:** Manual, Schedule (cron), Webhook
+- **Actions:** HTTP Request, Transform (JavaScript), Send Email, Database Query
+- **Control:** Condition (if/else branching)
+
+See the [Visual Workflow Builder Example](#example-10-visual-workflow-builder-react-flow-n8n-clone) for more details.
+
+---
+
+### Option 2: Programmatic API (Workflows as Code)
 
 ### 1. Define Your Node Executors
 
@@ -459,7 +597,65 @@ GET /api/executions/:executionId
 GET /api/stats
 ```
 
-#### Health Check
+#### Execute Single Node
+```http
+POST /api/workflows/:workflowId/nodes/:nodeId/execute
+Content-Type: application/json
+
+{
+  "executionId": "exec_123",
+  "inputData": {
+    "key": "value"
+  }
+}
+```
+
+#### Webhook Trigger
+```http
+POST /api/webhooks/:path
+Content-Type: application/json
+
+{
+  "data": "your webhook payload"
+}
+```
+
+#### Health Check (Detailed)
+```http
+GET /health
+```
+
+#### Liveness Probe (Kubernetes)
+```http
+GET /health/live
+```
+
+#### Readiness Probe (Kubernetes)
+```http
+GET /health/ready
+```
+
+#### Metrics (Prometheus Format)
+```http
+GET /metrics
+```
+
+#### Metrics (JSON Format)
+```http
+GET /metrics/json
+```
+
+#### Circuit Breaker Status
+```http
+GET /circuit-breakers
+```
+
+#### Reset Circuit Breaker
+```http
+POST /circuit-breakers/:name/reset
+```
+
+#### Shutdown Status
 ```http
 GET /health
 ```
@@ -858,7 +1054,7 @@ gracefulShutdown.registerCleanupHandler(async () => {
 });
 
 // Shutdown is automatically triggered on SIGTERM/SIGINT
-// Or manually trigger:
+// Or manually:
 await gracefulShutdown.shutdown();
 ```
 
@@ -873,7 +1069,152 @@ await gracefulShutdown.shutdown();
 **HTTP Endpoint:**
 - `GET /shutdown/status` - Check if shutdown is in progress
 
-See [`examples/production-ops.ts`](./examples/production-ops.ts) for a complete demonstration.
+**Features:**
+- Stops accepting new jobs
+- Waits for active jobs to complete (with timeout)
+- Closes all queues and connections cleanly
+- Configurable timeout and force exit
+
+**Complete Example:**
+See [`examples/production-ops.ts`](./examples/production-ops.ts) for a full demonstration of all production operations features.
+
+```bash
+bun run examples/production-ops.ts
+```
+
+### Example 10: Visual Workflow Builder (React Flow n8n Clone)
+
+SPANE includes a complete visual workflow builder inspired by n8n, built with React Flow. This is a production-ready example that demonstrates how to build a drag-and-drop workflow interface on top of the SPANE engine.
+
+#### Features
+
+- 🎨 **Drag-and-Drop Interface** - Build workflows visually by dragging nodes from the palette
+- 🎯 **Multiple Node Types** - Triggers, Actions, and Control flow nodes
+- ⚙️ **Node Configuration** - Configure each node with custom parameters
+- 🚀 **Real-time Execution** - Execute workflows and see real-time status updates
+- 💾 **Save/Load Workflows** - Export workflows as JSON
+- ✅ **Validation** - Automatic workflow validation before execution
+- 🎨 **n8n-Inspired UI** - Familiar interface for workflow automation
+
+#### Available Node Types
+
+**Triggers:**
+- **Schedule** - Run workflows on a cron schedule
+- **Webhook** - Trigger via HTTP webhook
+- **Manual** - Start workflows manually
+
+**Actions:**
+- **HTTP Request** - Make HTTP API calls
+- **Transform** - Transform data with JavaScript code
+- **Send Email** - Send email notifications
+- **Database** - Query databases
+
+**Control:**
+- **Condition** - Branch based on conditions (if/else logic)
+
+#### Running the Visual Builder
+
+**1. Start the Backend:**
+
+```bash
+# From the project root
+bun run examples/react-flow-backend.ts
+```
+
+This starts the SPANE engine with a REST API on port 4000.
+
+**2. Start the Frontend:**
+
+```bash
+# In a new terminal
+cd examples/react-flow-n8n
+bun install
+bun run dev
+```
+
+This starts the React Flow visual builder on port 5173.
+
+**3. Open in Browser:**
+
+Navigate to `http://localhost:5173` and start building workflows!
+
+#### Usage
+
+1. **Add nodes** - Drag nodes from the left palette onto the canvas
+2. **Connect nodes** - Click and drag from one node's handle to another to create connections
+3. **Configure nodes** - Click on a node to open its configuration panel
+4. **Execute workflow** - Click the "Execute" button to run your workflow
+5. **Monitor execution** - Watch as nodes update their status in real-time
+
+#### Example Workflows
+
+**Simple HTTP Workflow:**
+1. Add a "Manual" trigger
+2. Add an "HTTP Request" action
+3. Connect trigger to HTTP action
+4. Configure HTTP action with a URL
+5. Execute and see results
+
+**Conditional Workflow:**
+1. Add a "Manual" trigger
+2. Add a "Transform" action to prepare data
+3. Add a "Condition" node
+4. Add two different actions for true/false branches
+5. Connect and configure
+6. Execute to see conditional branching
+
+#### Architecture
+
+- **Frontend**: React + Vite + React Flow
+- **Backend**: Elysia + SPANE workflow engine
+- **State Management**: React hooks
+- **Workflow Execution**: BullMQ + Redis
+- **Real-time Updates**: Polling-based status updates
+
+#### API Endpoints
+
+The backend provides these endpoints:
+- `POST /api/workflows/execute` - Execute a workflow
+- `GET /api/workflows/executions/:id` - Get execution status
+- `GET /api/health` - Health check
+
+#### Project Structure
+
+```
+react-flow-n8n/
+├── src/
+│   ├── components/
+│   │   ├── NodePalette.tsx      # Draggable node templates
+│   │   └── NodeConfigPanel.tsx  # Node configuration UI
+│   ├── nodes/
+│   │   ├── TriggerNode.tsx      # Trigger node component
+│   │   ├── ActionNode.tsx       # Action node component
+│   │   └── ConditionNode.tsx    # Condition node component
+│   ├── engine/
+│   │   ├── workflowConverter.ts # Convert React Flow to SPANE
+│   │   └── executionManager.ts  # Handle workflow execution
+│   ├── styles/
+│   │   ├── app.css              # Application styles
+│   │   └── nodes.css            # Node styles
+│   ├── App.tsx                  # Main application
+│   └── main.tsx                 # Entry point
+├── index.html
+├── package.json
+├── tsconfig.json
+└── vite.config.ts
+```
+
+#### Building for Production
+
+```bash
+cd examples/react-flow-n8n
+bun run build
+```
+
+The built files will be in the `dist/` directory.
+
+**Learn More:**
+See [`examples/react-flow-n8n/README.md`](./examples/react-flow-n8n/README.md) for detailed documentation.
 
 ## ⚙️ Configuration
 
