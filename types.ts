@@ -100,6 +100,8 @@ export interface ExecutionResult {
 export interface IExecutionStateStore {
   createExecution(workflowId: string, parentExecutionId?: string, depth?: number, initialData?: any): Promise<string>;
   getExecution(executionId: string): Promise<ExecutionState | null>;
+  getNodeResults(executionId: string, nodeIds: string[]): Promise<Record<string, ExecutionResult>>;
+  getPendingNodeCount(executionId: string, totalNodes: number): Promise<number>;
   updateNodeResult(executionId: string, nodeId: string, result: ExecutionResult): Promise<void>;
   setExecutionStatus(executionId: string, status: ExecutionState['status']): Promise<void>;
   updateExecutionMetadata(executionId: string, metadata: ExecutionState['metadata']): Promise<void>;
