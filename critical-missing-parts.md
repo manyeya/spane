@@ -94,12 +94,19 @@ Implementation:
 - No secrets management for node configs
 - No input validation/sanitization
 
-11. Advanced Queue Features
+11. Advanced Queue Features (Implemented)
 
-- No job prioritization
-- Missing delayed/scheduled jobs
-- No job deduplication
-- Missing bulk operations
+- ✅ **Job Prioritization** - Priority-based execution (1-10, higher = more important)
+- ✅ **Delayed/Scheduled Jobs** - Relative delays and absolute time scheduling
+- ✅ **Job Deduplication** - Custom jobId prevents duplicate executions
+- ✅ **Bulk Operations** - Enqueue, pause, resume, cancel multiple workflows
+
+Implementation:
+- **Priority**: Pass `priority` option to `enqueueWorkflow` (leverages BullMQ's native priority queue)
+- **Delay**: Pass `delay` (ms) option or use `scheduleWorkflow(workflowId, data, executeAt: Date)`
+- **Deduplication**: Pass `jobId` option to ensure unique execution (BullMQ auto-deduplicates)
+- **Bulk Ops**: Use `enqueueBulkWorkflows`, `cancelBulkWorkflows`, `pauseBulkWorkflows`, `resumeBulkWorkflows`
+- **Status Check**: Use `getJobStatus(jobId)` to check if job exists and its current state
 
 12. Production Operations
 

@@ -17,6 +17,10 @@ export interface WorkflowDefinition {
   entryNodeId: string; // Starting node for full workflow execution
   maxConcurrency?: number; // Maximum number of concurrent nodes for this workflow
   triggers?: WorkflowTrigger[]; // Triggers that start this workflow
+  // Advanced Queue Features
+  priority?: number; // Job priority (1-10, higher = more important, default: 5)
+  delay?: number; // Delay in milliseconds before execution
+  jobId?: string; // Custom job ID for deduplication (prevents duplicate executions)
 }
 
 export type WorkflowTrigger = WebhookTrigger | ScheduleTrigger;
@@ -152,6 +156,17 @@ export interface ExecutionSpan {
   status: 'running' | 'completed' | 'failed' | 'skipped';
   error?: string;
   metadata?: any;
+}
+
+/**
+ * Configuration for bulk workflow enqueue operations
+ */
+export interface BulkWorkflowEnqueue {
+  workflowId: string;
+  initialData?: any;
+  priority?: number; // Job priority (1-10, higher = more important)
+  delay?: number; // Delay in milliseconds before execution
+  jobId?: string; // Custom job ID for deduplication
 }
 
 export interface INodeExecutor {
