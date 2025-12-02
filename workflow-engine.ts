@@ -1,4 +1,4 @@
-import { Queue, Worker, Job, QueueEvents, DelayedError } from 'bullmq';
+import { Queue, Worker, Job, QueueEvents, DelayedError, FlowProducer, WaitingChildrenError } from 'bullmq';
 import { Redis } from 'ioredis';
 import type { ExecutionContext, ExecutionResult, IExecutionStateStore, WorkflowDefinition } from './types';
 import type { NodeRegistry } from './registry';
@@ -8,6 +8,9 @@ export interface NodeJobData {
   workflowId: string;
   nodeId: string;
   inputData?: any;
+  // Sub-workflow execution state
+  subWorkflowStep?: 'initial' | 'waiting-children' | 'complete';
+  childExecutionId?: string;
 }
 
 export interface WorkflowJobData {
@@ -27,6 +30,7 @@ export class WorkflowEngine {
   private nodeQueue: Queue<NodeJobData>;
   private workflowQueue: Queue<WorkflowJobData>;
   private dlqQueue: Queue<DLQItem>; // Dead Letter Queue
+  private flowProducer: FlowProducer; // For parent-child job dependencies
   private nodeQueueEvents: QueueEvents;
   private workflowQueueEvents: QueueEvents;
   private nodeWorker?: Worker<NodeJobData>;
@@ -48,6 +52,11 @@ export class WorkflowEngine {
     });
 
     this.dlqQueue = new Queue<DLQItem>('dlq-execution', {
+      connection: redisConnection,
+    });
+
+    // Initialize FlowProducer for parent-child job dependencies
+    this.flowProducer = new FlowProducer({
       connection: redisConnection,
     });
 
@@ -145,23 +154,35 @@ export class WorkflowEngine {
   }
 
   // Enqueue a full workflow execution
-  async enqueueWorkflow(workflowId: string, initialData?: any): Promise<string> {
+  async enqueueWorkflow(
+    workflowId: string,
+    initialData?: any,
+    parentExecutionId?: string,
+    depth: number = 0,
+    parentJobId?: string
+  ): Promise<string> {
     const workflow = this.workflows.get(workflowId);
     if (!workflow) {
       throw new Error(`Workflow ${workflowId} not found`);
     }
 
-    const executionId = await this.stateStore.createExecution(workflowId);
+    // Depth limit to prevent infinite recursion
+    const MAX_DEPTH = 10;
+    if (depth >= MAX_DEPTH) {
+      throw new Error(`Maximum sub-workflow depth (${MAX_DEPTH}) exceeded`);
+    }
+
+    const executionId = await this.stateStore.createExecution(workflowId, parentExecutionId, depth);
 
     // Find all entry nodes (nodes with no inputs)
     const entryNodes = workflow.nodes.filter(node => node.inputs.length === 0);
 
-    // Enqueue all entry nodes
+    // Enqueue all entry nodes, passing parent job reference if this is a sub-workflow
     for (const node of entryNodes) {
-      await this.enqueueNode(executionId, workflowId, node.id, initialData);
+      await this.enqueueNode(executionId, workflowId, node.id, initialData, parentJobId);
     }
 
-    console.log(`🚀 Workflow ${workflowId} enqueued with execution ID: ${executionId}`);
+    console.log(`🚀 Workflow ${workflowId} enqueued with execution ID: ${executionId}${depth > 0 ? ` (depth: ${depth})` : ''}`);
     return executionId;
   }
 
@@ -194,22 +215,195 @@ export class WorkflowEngine {
     executionId: string,
     workflowId: string,
     nodeId: string,
-    inputData?: any
+    inputData?: any,
+    parentJobId?: string
   ): Promise<string> {
+    const jobOpts: any = {
+      jobId: `${executionId}-${nodeId}-manual`,
+      attempts: 3,
+      backoff: {
+        type: 'exponential',
+        delay: 1000,
+      },
+    };
+
+    // Add parent reference if provided (for BullMQ dependencies)
+    if (parentJobId) {
+      jobOpts.parent = {
+        id: parentJobId,
+        queue: 'node-execution',
+      };
+    }
+
     const job = await this.nodeQueue.add(
       'run-node',
       { executionId, workflowId, nodeId, inputData },
-      {
-        jobId: `${executionId}-${nodeId}-manual`,
-        attempts: 3,
-        backoff: {
-          type: 'exponential',
-          delay: 1000,
-        },
-      }
+      jobOpts
     );
 
     return job.id!;
+  }
+
+  // Execute a sub-workflow using Checkpoint & Resume pattern (fully non-blocking)
+  // 
+  // Pattern:
+  // 1. Initial step: Save checkpoint, enqueue child workflow, return immediately
+  // 2. Parent job completes and frees worker (no blocking!)
+  // 3. When child workflow completes, workflow completion hook re-enqueues parent node
+  // 4. Parent node job runs again with 'complete' step, aggregates results
+  private async executeSubWorkflow(
+    parentExecutionId: string,
+    parentWorkflowId: string,
+    parentNodeId: string,
+    parentJobId: string,
+    config: { workflowId: string; inputMapping?: Record<string, string>; outputMapping?: Record<string, string> },
+    inputData: any,
+    depth: number,
+    step: 'initial' | 'waiting-children' | 'complete',
+    childExecutionId?: string
+  ): Promise<ExecutionResult & { checkpoint?: boolean; childExecutionId?: string }> {
+    const { workflowId, inputMapping, outputMapping } = config;
+
+    // Validate sub-workflow exists
+    if (!this.workflows.has(workflowId)) {
+      return {
+        success: false,
+        error: `Sub-workflow '${workflowId}' not found`
+      };
+    }
+
+    try {
+      // Step 1: Initial - start child and checkpoint immediately (NO WAITING)
+      if (step === 'initial') {
+        // Apply input mapping
+        let mappedInput = inputData;
+        if (inputMapping && typeof inputData === 'object' && inputData !== null) {
+          mappedInput = {};
+          for (const [targetKey, sourceKey] of Object.entries(inputMapping)) {
+            if (sourceKey in inputData) {
+              mappedInput[targetKey] = inputData[sourceKey];
+            }
+          }
+        }
+
+        console.log(`🔀 Sub-workflow ${workflowId} starting (parent: ${parentExecutionId}, depth: ${depth + 1})`);
+
+        // Start child workflow (normal enqueue, no parent reference needed)
+        const newChildExecutionId = await this.enqueueWorkflow(
+          workflowId,
+          mappedInput,
+          parentExecutionId,
+          depth + 1
+        );
+
+        // CRITICAL: Store parent node info in execution metadata for resume callback
+        // This will be used by the completion hook to re-enqueue the parent node
+        const metadata = {
+          parentNodeId,
+          parentWorkflowId
+        };
+        await this.stateStore.updateExecutionMetadata(newChildExecutionId, metadata);
+
+        console.log(`✅ Sub-workflow checkpoint: ${workflowId} started, parent node will resume when child completes`);
+
+        // Return with checkpoint flag - parent job will complete and free the worker!
+        return {
+          success: true,
+          checkpoint: true,
+          childExecutionId: newChildExecutionId,
+          data: { childExecutionId: newChildExecutionId }
+        };
+      }
+
+      // Step 2: Resume/Complete - child finished, aggregate results
+      if (step === 'complete' && childExecutionId) {
+        const childExecution = await this.stateStore.getExecution(childExecutionId);
+
+        if (!childExecution) {
+          return {
+            success: false,
+            error: `Sub-workflow execution ${childExecutionId} not found`
+          };
+        }
+
+        if (childExecution.status === 'completed') {
+          // Aggregate results from final nodes
+          const workflow = this.workflows.get(workflowId)!;
+          const finalNodes = workflow.nodes.filter(node => node.outputs.length === 0);
+
+          let aggregatedResult: any = {};
+
+          if (finalNodes.length === 1 && finalNodes[0]) {
+            const finalNodeId = finalNodes[0].id;
+            const result = childExecution.nodeResults[finalNodeId];
+            aggregatedResult = result?.data;
+          } else if (finalNodes.length > 1) {
+            for (const node of finalNodes) {
+              const result = childExecution.nodeResults[node.id];
+              if (result?.success && result.data !== undefined) {
+                aggregatedResult[node.id] = result.data;
+              }
+            }
+          }
+
+          // Apply output mapping
+          let mappedOutput = aggregatedResult;
+          if (outputMapping && typeof aggregatedResult === 'object' && aggregatedResult !== null) {
+            mappedOutput = {};
+            for (const [targetKey, sourceKey] of Object.entries(outputMapping)) {
+              if (sourceKey in aggregatedResult) {
+                mappedOutput[targetKey] = aggregatedResult[sourceKey];
+              }
+            }
+          }
+
+          console.log(`✅ Sub-workflow ${workflowId} completed (execution: ${childExecutionId})`);
+          return {
+            success: true,
+            data: mappedOutput
+          };
+        }
+
+        if (childExecution.status === 'failed') {
+          console.error(`❌ Sub-workflow ${workflowId} failed (execution: ${childExecutionId})`);
+          return {
+            success: false,
+            error: `Sub-workflow '${workflowId}' failed`,
+            data: childExecution.nodeResults
+          };
+        }
+
+        if (childExecution.status === 'cancelled') {
+          console.log(`🚫 Sub-workflow ${workflowId} cancelled (execution: ${childExecutionId})`);
+          return {
+            success: false,
+            error: `Sub-workflow '${workflowId}' was cancelled`
+          };
+        }
+
+        // Child still running - this shouldn't happen in checkpoint-resume
+        // but if it does, just return success and it will be retried
+        console.log(`⏳ Sub-workflow ${workflowId} still running, will check again`);
+        return {
+          success: true,
+          checkpoint: true,
+          childExecutionId,
+          data: { status: 'waiting' }
+        };
+      }
+
+      return {
+        success: false,
+        error: 'Invalid sub-workflow execution step'
+      };
+
+    } catch (error) {
+      console.error(`❌ Sub-workflow ${workflowId} error:`, error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
   }
 
   // Start worker processes
@@ -352,6 +546,93 @@ export class WorkflowEngine {
       throw new Error(`Node ${nodeId} not found in workflow ${workflowId}`);
     }
 
+    // Special handling for sub-workflow node type (before regular execution checks)
+    if (node.type === 'sub-workflow') {
+      // Gather results from upstream nodes
+      const execution = await this.stateStore.getExecution(executionId);
+      const previousResults = execution?.nodeResults || {};
+
+      const config = node.config as { workflowId: string; inputMapping?: Record<string, string>; outputMapping?: Record<string, string> };
+
+      if (!config.workflowId) {
+        return {
+          success: false,
+          error: 'Sub-workflow node missing workflowId in config'
+        };
+      }
+
+      // Process input data for sub-workflow (same logic as regular nodes)
+      let processedInputData: any = inputData;
+
+      if (node.inputs.length === 1) {
+        const parentId = node.inputs[0];
+        if (parentId) {
+          const parentResult = previousResults[parentId];
+          if (parentResult?.success && parentResult.data !== undefined) {
+            processedInputData = parentResult.data;
+          } else {
+            processedInputData = undefined;
+          }
+        }
+      } else if (node.inputs.length > 1) {
+        const mergedData: Record<string, any> = {};
+        for (const parentId of node.inputs) {
+          const parentResult = previousResults[parentId];
+          if (parentResult?.success && parentResult.data !== undefined) {
+            mergedData[parentId] = parentResult.data;
+          }
+        }
+        processedInputData = mergedData;
+      }
+
+      // Determine execution step based on job data
+      const currentStep = data.subWorkflowStep || 'initial';
+      const existingChildExecutionId = data.childExecutionId;
+
+      // Execute sub-workflow with step-based approach
+      const result = await this.executeSubWorkflow(
+        executionId,
+        workflowId,
+        nodeId,
+        job.id!,
+        config,
+        processedInputData,
+        execution?.depth || 0,
+        currentStep,
+        existingChildExecutionId
+      );
+
+      // If checkpoint requested, parent job completes immediately (non-blocking!)
+      if (result.checkpoint) {
+        // Save checkpoint state with child execution ID
+        // The completion hook will detect when child finishes and re-enqueue this node
+        await this.stateStore.updateNodeResult(executionId, nodeId, {
+          success: true,
+          data: {
+            checkpointed: true,
+            childExecutionId: result.childExecutionId,
+            subWorkflowStep: 'waiting-children'
+          }
+        });
+
+        console.log(`💾 Checkpoint saved: Node ${nodeId} waiting for child ${result.childExecutionId}`);
+
+        // Return success - job completes and frees the worker!
+        return {
+          success: true,
+          data: {
+            checkpointed: true,
+            childExecutionId: result.childExecutionId
+          }
+        };
+      }
+
+      // If no checkpoint (or resumed from checkpoint), save and return result
+      await this.stateStore.updateNodeResult(executionId, nodeId, result);
+      return result;
+    }
+
+    // Regular node execution
     const executor = this.registry.get(node.type);
 
     if (!executor) {
@@ -455,6 +736,8 @@ export class WorkflowEngine {
         nodeId,
         inputData: processedInputData,
         previousResults,
+        parentExecutionId: execution?.parentExecutionId,
+        depth: execution?.depth || 0,
       };
 
       console.log(`▶ Executing node ${nodeId} (type: ${node.type})`);
@@ -652,6 +935,26 @@ export class WorkflowEngine {
       await this.stateStore.setExecutionStatus(executionId, newStatus);
 
       console.log(`🏁 Workflow ${workflowId} (execution: ${executionId}) ${newStatus}`);
+
+      // CHECKPOINT-RESUME: Check if this is a child workflow that needs to resume parent
+      // Fallback to legacy properties for backward compatibility with in-flight executions
+      const parentNodeId = execution.metadata?.parentNodeId || (execution as any).parentNodeId;
+      const parentWorkflowId = execution.metadata?.parentWorkflowId || (execution as any).parentWorkflowId;
+
+      if (parentNodeId && parentWorkflowId && execution.parentExecutionId) {
+        console.log(`🔄 Child workflow completed, resuming parent node: ${parentNodeId}`);
+
+        // Re-enqueue parent node with 'complete' step to aggregate results
+        await this.enqueueNode(
+          execution.parentExecutionId,
+          parentWorkflowId,
+          parentNodeId,
+          {
+            subWorkflowStep: 'complete',
+            childExecutionId: executionId
+          }
+        );
+      }
     }
   }
 
@@ -698,6 +1001,7 @@ export class WorkflowEngine {
   async close(): Promise<void> {
     console.log('🛑 Shutting down workflow engine...');
 
+    await this.flowProducer.close();
     await this.nodeWorker?.close();
     await this.workflowWorker?.close();
     await this.nodeQueueEvents.close();
