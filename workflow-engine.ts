@@ -311,130 +311,177 @@ export class WorkflowEngine {
       throw new DelayedError();
     }
 
-    // Process input data based on parent nodes
-    let processedInputData: any = inputData;
+    // --- Rate Limiting Check ---
+    const rateLimit = this.registry.getRateLimit(node.type);
+    if (rateLimit) {
+      const key = `rate-limit:${node.type}:${Math.floor(Date.now() / 1000)}`;
+      const current = await this.redisConnection.incr(key);
+      if (current === 1) {
+        await this.redisConnection.expire(key, 2); // Expire after 2 seconds to be safe
+      }
 
-    if (node.inputs.length === 1) {
-      // Single parent: fetch parent's output data
-      const parentId = node.inputs[0];
-      if (!parentId) {
-        processedInputData = undefined;
-      } else {
-        const parentResult = previousResults[parentId];
+      if (current > rateLimit) {
+        console.log(`⏳ Rate limit exceeded for ${node.type}. Re-queueing.`);
+        await job.moveToDelayed(Date.now() + 1000, job.token);
+        throw new DelayedError();
+      }
+    }
 
-        if (parentResult?.success && parentResult.data !== undefined) {
-          processedInputData = parentResult.data;
-          console.log(`📥 Node ${nodeId} receiving data from parent ${parentId}`);
-        } else {
-          console.log(`⚠️  Node ${nodeId}: Parent ${parentId} has no output data`);
+    // --- Concurrency Check ---
+    const maxConcurrency = workflow.maxConcurrency;
+    if (maxConcurrency) {
+      const activeKey = `workflow:active:${executionId}`;
+      const luaScript = `
+        local added = redis.call('SADD', KEYS[1], ARGV[1])
+        local count = redis.call('SCARD', KEYS[1])
+        if count > tonumber(ARGV[2]) then
+          redis.call('SREM', KEYS[1], ARGV[1])
+          return 0
+        end
+        return 1
+      `;
+      const allowed = await this.redisConnection.eval(luaScript, 1, activeKey, job.id!, maxConcurrency);
+
+      if (allowed === 0) {
+        console.log(`🚦 Max concurrency (${maxConcurrency}) reached for workflow ${executionId}. Re-queueing.`);
+        await job.moveToDelayed(Date.now() + 2000, job.token);
+        throw new DelayedError();
+      }
+    }
+
+    try {
+
+      // Process input data based on parent nodes
+      let processedInputData: any = inputData;
+
+      if (node.inputs.length === 1) {
+        // Single parent: fetch parent's output data
+        const parentId = node.inputs[0];
+        if (!parentId) {
           processedInputData = undefined;
+        } else {
+          const parentResult = previousResults[parentId];
+
+          if (parentResult?.success && parentResult.data !== undefined) {
+            processedInputData = parentResult.data;
+            console.log(`📥 Node ${nodeId} receiving data from parent ${parentId}`);
+          } else {
+            console.log(`⚠️  Node ${nodeId}: Parent ${parentId} has no output data`);
+            processedInputData = undefined;
+          }
         }
-      }
-    } else if (node.inputs.length > 1) {
-      // Multiple parents: merge parent outputs into object
-      const mergedData: Record<string, any> = {};
+      } else if (node.inputs.length > 1) {
+        // Multiple parents: merge parent outputs into object
+        const mergedData: Record<string, any> = {};
 
-      for (const parentId of node.inputs) {
-        const parentResult = previousResults[parentId];
-        if (parentResult?.success && parentResult.data !== undefined) {
-          mergedData[parentId] = parentResult.data;
+        for (const parentId of node.inputs) {
+          const parentResult = previousResults[parentId];
+          if (parentResult?.success && parentResult.data !== undefined) {
+            mergedData[parentId] = parentResult.data;
+          }
         }
+
+        processedInputData = mergedData;
+        console.log(`📥 Node ${nodeId} receiving merged data from ${node.inputs.length} parents`);
       }
+      // If node has no inputs, use the provided inputData (for entry nodes)
 
-      processedInputData = mergedData;
-      console.log(`📥 Node ${nodeId} receiving merged data from ${node.inputs.length} parents`);
-    }
-    // If node has no inputs, use the provided inputData (for entry nodes)
+      const context: ExecutionContext = {
+        workflowId,
+        executionId,
+        nodeId,
+        inputData: processedInputData,
+        previousResults,
+      };
 
-    const context: ExecutionContext = {
-      workflowId,
-      executionId,
-      nodeId,
-      inputData: processedInputData,
-      previousResults,
-    };
+      console.log(`▶ Executing node ${nodeId} (type: ${node.type})`);
+      await job.updateProgress(50);
 
-    console.log(`▶ Executing node ${nodeId} (type: ${node.type})`);
-    await job.updateProgress(50);
+      // Execute the node with timeout if configured
+      let result: ExecutionResult;
+      const timeoutMs = node.config?.timeout;
 
-    // Execute the node with timeout if configured
-    let result: ExecutionResult;
-    const timeoutMs = node.config?.timeout;
-
-    if (timeoutMs) {
-      let timer: ReturnType<typeof setTimeout>;
-      const timeoutPromise = new Promise<ExecutionResult>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`Node execution timed out after ${timeoutMs}ms`)), timeoutMs);
-      });
-
-      result = await Promise.race([
-        executor.execute(context).finally(() => clearTimeout(timer)),
-        timeoutPromise
-      ]);
-    } else {
-      result = await executor.execute(context);
-    }
-
-    // Save result to state store
-    await this.stateStore.updateNodeResult(executionId, nodeId, result);
-
-    // If this node succeeded, check and enqueue/skip its children
-    if (result.success && node.outputs.length > 0) {
-      console.log(`📤 Node ${nodeId} completed successfully, checking ${node.outputs.length} children`);
-
-      // Determine which children to execute and which to skip
-      const nextNodes = result.nextNodes || node.outputs;
-      const nodesToSkip = node.outputs.filter(id => !nextNodes.includes(id));
-
-      // 1. Handle skipped nodes
-      for (const skippedNodeId of nodesToSkip) {
-        console.log(`⏭️ Skipping branch starting at ${skippedNodeId}`);
-        await this.skipNode(executionId, workflowId, skippedNodeId);
-      }
-
-      // 2. Handle next nodes
-      for (const childNodeId of nextNodes) {
-        // Check if all parents of this child have completed (or been skipped)
-        const childNode = workflow.nodes.find(n => n.id === childNodeId);
-        if (!childNode) continue;
-
-        const execution = await this.stateStore.getExecution(executionId);
-
-        // A parent is "resolved" if it has a result (success, failed, or skipped)
-        // We only care about success/skipped for flow control here.
-        // If a parent failed, the flow usually stops anyway unless we have error handling paths (future).
-        const allParentsResolved = childNode.inputs.every(parentId => {
-          const res = execution?.nodeResults[parentId];
-          return res !== undefined && (res.success || res.skipped);
+      if (timeoutMs) {
+        let timer: ReturnType<typeof setTimeout>;
+        const timeoutPromise = new Promise<ExecutionResult>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Node execution timed out after ${timeoutMs}ms`)), timeoutMs);
         });
 
-        if (allParentsResolved) {
-          // Check if we should run this child or skip it based on parents
-          // Rule: Run if AT LEAST ONE parent succeeded (and wasn't skipped)
-          // Rule: Skip if ALL parents were skipped
+        result = await Promise.race([
+          executor.execute(context).finally(() => clearTimeout(timer)),
+          timeoutPromise
+        ]);
+      } else {
+        result = await executor.execute(context);
+      }
 
-          const anyParentSucceeded = childNode.inputs.some(parentId => {
+      // Save result to state store
+      await this.stateStore.updateNodeResult(executionId, nodeId, result);
+
+      // If this node succeeded, check and enqueue/skip its children
+      if (result.success && node.outputs.length > 0) {
+        console.log(`📤 Node ${nodeId} completed successfully, checking ${node.outputs.length} children`);
+
+        // Determine which children to execute and which to skip
+        const nextNodes = result.nextNodes || node.outputs;
+        const nodesToSkip = node.outputs.filter(id => !nextNodes.includes(id));
+
+        // 1. Handle skipped nodes
+        for (const skippedNodeId of nodesToSkip) {
+          console.log(`⏭️ Skipping branch starting at ${skippedNodeId}`);
+          await this.skipNode(executionId, workflowId, skippedNodeId);
+        }
+
+        // 2. Handle next nodes
+        for (const childNodeId of nextNodes) {
+          // Check if all parents of this child have completed (or been skipped)
+          const childNode = workflow.nodes.find(n => n.id === childNodeId);
+          if (!childNode) continue;
+
+          const execution = await this.stateStore.getExecution(executionId);
+
+          // A parent is "resolved" if it has a result (success, failed, or skipped)
+          // We only care about success/skipped for flow control here.
+          // If a parent failed, the flow usually stops anyway unless we have error handling paths (future).
+          const allParentsResolved = childNode.inputs.every(parentId => {
             const res = execution?.nodeResults[parentId];
-            return res?.success && !res.skipped;
+            return res !== undefined && (res.success || res.skipped);
           });
 
-          if (anyParentSucceeded) {
-            console.log(`✅ All parents of ${childNodeId} resolved, enqueueing`);
-            await this.enqueueNode(executionId, workflowId, childNodeId);
+          if (allParentsResolved) {
+            // Check if we should run this child or skip it based on parents
+            // Rule: Run if AT LEAST ONE parent succeeded (and wasn't skipped)
+            // Rule: Skip if ALL parents were skipped
+
+            const anyParentSucceeded = childNode.inputs.some(parentId => {
+              const res = execution?.nodeResults[parentId];
+              return res?.success && !res.skipped;
+            });
+
+            if (anyParentSucceeded) {
+              console.log(`✅ All parents of ${childNodeId} resolved, enqueueing`);
+              await this.enqueueNode(executionId, workflowId, childNodeId);
+            } else {
+              console.log(`⏭️ All parents of ${childNodeId} were skipped, skipping this node too`);
+              await this.skipNode(executionId, workflowId, childNodeId);
+            }
           } else {
-            console.log(`⏭️ All parents of ${childNodeId} were skipped, skipping this node too`);
-            await this.skipNode(executionId, workflowId, childNodeId);
+            console.log(`⏳ Waiting for other parents of ${childNodeId} to complete`);
           }
-        } else {
-          console.log(`⏳ Waiting for other parents of ${childNodeId} to complete`);
         }
       }
+
+      // Check if workflow is complete
+      await this.checkWorkflowCompletion(executionId, workflowId);
+
+      return result;
+    } finally {
+      // --- Concurrency Cleanup ---
+      if (workflow.maxConcurrency) {
+        const activeKey = `workflow:active:${executionId}`;
+        await this.redisConnection.srem(activeKey, job.id!);
+      }
     }
-
-    // Check if workflow is complete
-    await this.checkWorkflowCompletion(executionId, workflowId);
-
-    return result;
   }
 
   // Process a full workflow job (legacy, manual DAG traversal handles this now)

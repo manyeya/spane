@@ -486,6 +486,17 @@ See [`examples/conditional-branching.ts`](./examples/conditional-branching.ts) f
 bun run examples/conditional-branching.ts
 ```
 
+### Example 5: Parallel Execution Limits
+
+See [`examples/parallel-limits.ts`](./examples/parallel-limits.ts) for examples of:
+- Limiting workflow concurrency
+- Rate limiting specific node types
+- Handling backpressure via delayed retries
+
+```bash
+bun run examples/parallel-limits.ts
+```
+
 ## ⚙️ Configuration
 
 ### Node Configuration
@@ -610,6 +621,7 @@ Max Retries Exhausted?
 - [x] Timeout handling
 - [x] **Data passing between nodes** - Automatic parent output passing
 - [x] **Conditional Branching** - If/else logic, switch nodes, and skipping
+- [x] **Parallel Execution Limits** - Concurrency control and rate limiting
 - [x] REST API
 - [x] Queue statistics
 
@@ -625,7 +637,6 @@ Max Retries Exhausted?
 - [ ] **Cron Scheduling** - Time-based workflow triggers
 
 #### Medium Priority
-- [ ] **Rate Limiting** - Per-node type rate limits
 - [ ] **Job Prioritization** - Priority-based execution
 - [ ] **Bulk Operations** - Batch workflow operations
 - [ ] **Replay/Rerun** - Debug failed executions

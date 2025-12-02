@@ -18,4 +18,18 @@ export class NodeRegistry {
   has(nodeType: string): boolean {
     return this.executors.has(nodeType);
   }
+
+  // Rate limiting support
+  private rateLimits: Map<string, number> = new Map();
+
+  registerRateLimit(nodeType: string, limitPerSecond: number): void {
+    if (!Number.isFinite(limitPerSecond) || limitPerSecond <= 0) {
+      throw new Error(`Invalid rate limit: ${limitPerSecond}. Must be a positive finite number.`);
+    }
+    this.rateLimits.set(nodeType, limitPerSecond);
+  }
+
+  getRateLimit(nodeType: string): number | undefined {
+    return this.rateLimits.get(nodeType);
+  }
 }
