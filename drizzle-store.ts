@@ -2,19 +2,19 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { eq, and, inArray, sql } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
-import type { 
-  ExecutionResult, 
-  ExecutionState, 
-  IExecutionStateStore, 
-  ExecutionLog, 
-  ExecutionTrace, 
-  ExecutionSpan 
+import type {
+  ExecutionResult,
+  ExecutionState,
+  IExecutionStateStore,
+  ExecutionLog,
+  ExecutionTrace,
+  ExecutionSpan
 } from './types';
 import * as schema from './schema-pg';
 
 export class DrizzleExecutionStateStore implements IExecutionStateStore {
   private db: ReturnType<typeof drizzle>;
-  private client: ReturnType<typeof postgres>;
+  private client: any; // postgres client type
   private redisCache: Redis;
   private cacheTTL: number;
 
@@ -30,13 +30,13 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
   }
 
   async createExecution(
-    workflowId: string, 
-    parentExecutionId?: string, 
-    depth: number = 0, 
+    workflowId: string,
+    parentExecutionId?: string,
+    depth: number = 0,
     initialData?: any
   ): Promise<string> {
     const executionId = `exec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
+
     await this.db.insert(schema.executions).values({
       executionId,
       workflowId,
@@ -91,6 +91,11 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
     };
   }
   async cacheNodeResult(executionId: string, nodeId: string, result: ExecutionResult): Promise<void> {
+    // CRITICAL FIX: Update database first (source of truth), then cache
+    // This prevents data loss when cache expires
+    await this.updateNodeResult(executionId, nodeId, result);
+
+    // Then update cache for fast reads
     const cacheKey = `results:${executionId}`;
     await this.redisCache.hset(cacheKey, nodeId, JSON.stringify(result));
     await this.redisCache.expire(cacheKey, this.cacheTTL);
@@ -109,9 +114,9 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
       for (let i = 0; i < nodeIds.length; i++) {
         const nodeId = nodeIds[i];
         const cachedResult = cachedResults[i];
-        if (cachedResult) {
+        if (cachedResult && nodeId) {
           results[nodeId] = JSON.parse(cachedResult);
-        } else {
+        } else if (nodeId) {
           cacheMissNodeIds.push(nodeId);
         }
       }
@@ -154,18 +159,19 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
   }
 
   async getPendingNodeCount(executionId: string, totalNodes: number): Promise<number> {
-    const [{ count }] = await this.db
+    const result = await this.db
       .select({ count: sql<number>`count(*)` })
       .from(schema.nodeResults)
       .where(eq(schema.nodeResults.executionId, executionId));
 
+    const count = result[0]?.count ?? 0;
     return totalNodes - count;
   }
 
 
   async updateNodeResult(
-    executionId: string, 
-    nodeId: string, 
+    executionId: string,
+    nodeId: string,
     result: ExecutionResult
   ): Promise<void> {
     // Check if result already exists
@@ -205,14 +211,19 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
         skipped: result.skipped || false,
       });
     }
+
+    // Invalidate cache to ensure consistency
+    // This prevents stale data when updateNodeResult is called directly
+    const cacheKey = `results:${executionId}`;
+    await this.redisCache.hdel(cacheKey, nodeId);
   }
 
   async setExecutionStatus(
-    executionId: string, 
+    executionId: string,
     status: ExecutionState['status']
   ): Promise<void> {
     const updateData: any = { status };
-    
+
     if (status === 'completed' || status === 'failed' || status === 'cancelled') {
       updateData.completedAt = new Date();
     }
@@ -224,7 +235,7 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
   }
 
   async updateExecutionMetadata(
-    executionId: string, 
+    executionId: string,
     metadata: ExecutionState['metadata']
   ): Promise<void> {
     await this.db

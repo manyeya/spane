@@ -289,9 +289,11 @@ You can replay any past execution. The new execution will be linked to the origi
 const newExecutionId = await engine.replayWorkflow(originalExecutionId);
 ```
 
-## 9. Persistence
+## 9. Persistence ⚠️
 
-SPANE supports persistent state storage using **Drizzle ORM** with **Postgres**.
+> **⚠️ WARNING**: The Drizzle store implementation is currently **not working** and should not be used in production. SPANE currently uses an in-memory store by default.
+
+SPANE supports persistent state storage using **Drizzle ORM** with **Postgres**, but this feature is currently **experimental and not functional**.
 
 ### Database Setup
 
@@ -322,6 +324,8 @@ bun run db:push
 - **Node Results**: Success/failure status, output data, errors
 - **Execution Logs**: Detailed logs for debugging
 - **Execution Traces**: Performance spans for each node
+
+> **⚠️ IMPORTANT**: The Drizzle store implementation has known issues and is not currently functional. Use the in-memory store for development and testing purposes only.
 
 ## 10. Future Enhancements
 
@@ -999,18 +1003,19 @@ Max Retries Exhausted?
 - [x] **Webhook/Trigger Support** - Webhook and Cron triggers
 - [x] **Sub-workflows** - Reusable workflow composition (Non-blocking)
 - [x] **Observability & Debugging** - Execution logging, tracing, and replay
-- [x] **Persistent State Store** - Postgres via Drizzle ORM
 - [x] **Advanced Queue Features** - Job prioritization, delayed/scheduled jobs, deduplication, bulk operations
 - [x] REST API
 - [x] Queue statistics
 
-### 🚧 In Progress
+### ⚠️ Known Issues
+- [ ] **Drizzle Store Not Working** - The Postgres persistence implementation via Drizzle ORM is currently not functional. SPANE uses in-memory store by default.
 - [ ] Transaction support for state updates
 
 ### 📅 Planned Features
 
 #### High Priority
 - [ ] **Metrics Integration** - Prometheus/Grafana support
+- [ ] **Fix Drizzle Store** - Complete and test Postgres persistence implementation
 
 #### Low Priority
 - [ ] **Multi-tenancy** - Tenant isolation
@@ -1020,6 +1025,8 @@ Max Retries Exhausted?
 - [ ] **Health Checks** - Worker health monitoring
 
 See [`critical-missing-parts.md`](./critical-missing-parts.md) for detailed feature breakdown.
+
+> **📅 Last Updated**: December 2, 2025 - Added clear documentation about Drizzle store issues and updated roadmap priorities.
 
 ## 🤝 Contributing
 
