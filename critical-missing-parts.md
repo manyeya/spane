@@ -73,11 +73,19 @@ Implementation:
 - **Replay**: `replayWorkflow` method allows re-triggering workflows while maintaining a reference to the original execution.
 - **Persistence**: `initialData` is now stored in `ExecutionState` to ensure accurate replays.
 
-9. State Management Issues
+9. State Management (Implemented)
 
-- In-memory store loses data on restart
-- No transaction support
-- Missing optimistic locking for concurrent updates
+- ✅ **Persistent State Store** - Postgres adapter via Drizzle ORM
+- ✅ **Automatic Fallback** - Uses in-memory store if DATABASE_URL not provided
+- ✅ **Full Persistence** - Execution state, node results, logs, and traces
+- ⚠️ **Transaction Support** - Not yet implemented (future enhancement)
+- ⚠️ **Optimistic Locking** - Not yet implemented for concurrent updates
+
+Implementation:
+- **Drizzle ORM**: Modern, type-safe ORM for Postgres
+- **Schema**: Tables for executions, node_results, logs, and spans
+- **Store**: `DrizzleExecutionStateStore` implements `IExecutionStateStore`
+- **Configuration**: Set `DATABASE_URL` environment variable to enable persistence
 
 10. Security & Multi-tenancy
 

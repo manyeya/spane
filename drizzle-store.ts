@@ -1,0 +1,276 @@
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
+import { eq, and } from 'drizzle-orm';
+import type { 
+  ExecutionResult, 
+  ExecutionState, 
+  IExecutionStateStore, 
+  ExecutionLog, 
+  ExecutionTrace, 
+  ExecutionSpan 
+} from './types';
+import * as schema from './schema-pg';
+
+export class DrizzleExecutionStateStore implements IExecutionStateStore {
+  private db: ReturnType<typeof drizzle>;
+
+  constructor(connectionString: string) {
+    const client = postgres(connectionString);
+    this.db = drizzle(client);
+  }
+
+  async createExecution(
+    workflowId: string, 
+    parentExecutionId?: string, 
+    depth: number = 0, 
+    initialData?: any
+  ): Promise<string> {
+    const executionId = `exec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    await this.db.insert(schema.executions).values({
+      executionId,
+      workflowId,
+      status: 'running',
+      startedAt: new Date(),
+      parentExecutionId: parentExecutionId || null,
+      depth,
+      initialData: initialData || null,
+      metadata: null,
+    });
+
+    return executionId;
+  }
+
+  async getExecution(executionId: string): Promise<ExecutionState | null> {
+    const [execution] = await this.db
+      .select()
+      .from(schema.executions)
+      .where(eq(schema.executions.executionId, executionId))
+      .limit(1);
+
+    if (!execution) return null;
+
+    // Fetch all node results for this execution
+    const results = await this.db
+      .select()
+      .from(schema.nodeResults)
+      .where(eq(schema.nodeResults.executionId, executionId));
+
+    const nodeResultsMap: Record<string, ExecutionResult> = {};
+    for (const result of results) {
+      nodeResultsMap[result.nodeId] = {
+        success: result.success,
+        data: result.data || undefined,
+        error: result.error || undefined,
+        nextNodes: result.nextNodes as string[] | undefined,
+        skipped: result.skipped || false,
+      };
+    }
+
+    return {
+      executionId: execution.executionId,
+      workflowId: execution.workflowId,
+      status: execution.status as ExecutionState['status'],
+      nodeResults: nodeResultsMap,
+      startedAt: execution.startedAt,
+      completedAt: execution.completedAt || undefined,
+      parentExecutionId: execution.parentExecutionId || undefined,
+      depth: execution.depth,
+      initialData: execution.initialData || undefined,
+      metadata: execution.metadata as ExecutionState['metadata'] | undefined,
+    };
+  }
+
+  async updateNodeResult(
+    executionId: string, 
+    nodeId: string, 
+    result: ExecutionResult
+  ): Promise<void> {
+    // Check if result already exists
+    const [existing] = await this.db
+      .select()
+      .from(schema.nodeResults)
+      .where(and(
+        eq(schema.nodeResults.executionId, executionId),
+        eq(schema.nodeResults.nodeId, nodeId)
+      ))
+      .limit(1);
+
+    if (existing) {
+      // Update existing result
+      await this.db
+        .update(schema.nodeResults)
+        .set({
+          success: result.success,
+          data: result.data || null,
+          error: result.error || null,
+          nextNodes: result.nextNodes || null,
+          skipped: result.skipped || false,
+        })
+        .where(and(
+          eq(schema.nodeResults.executionId, executionId),
+          eq(schema.nodeResults.nodeId, nodeId)
+        ));
+    } else {
+      // Insert new result
+      await this.db.insert(schema.nodeResults).values({
+        executionId,
+        nodeId,
+        success: result.success,
+        data: result.data || null,
+        error: result.error || null,
+        nextNodes: result.nextNodes || null,
+        skipped: result.skipped || false,
+      });
+    }
+  }
+
+  async setExecutionStatus(
+    executionId: string, 
+    status: ExecutionState['status']
+  ): Promise<void> {
+    const updateData: any = { status };
+    
+    if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+      updateData.completedAt = new Date();
+    }
+
+    await this.db
+      .update(schema.executions)
+      .set(updateData)
+      .where(eq(schema.executions.executionId, executionId));
+  }
+
+  async updateExecutionMetadata(
+    executionId: string, 
+    metadata: ExecutionState['metadata']
+  ): Promise<void> {
+    await this.db
+      .update(schema.executions)
+      .set({ metadata: metadata || null })
+      .where(eq(schema.executions.executionId, executionId));
+  }
+
+  async getChildExecutions(executionId: string): Promise<ExecutionState[]> {
+    const children = await this.db
+      .select()
+      .from(schema.executions)
+      .where(eq(schema.executions.parentExecutionId, executionId));
+
+    const childStates: ExecutionState[] = [];
+    for (const child of children) {
+      const state = await this.getExecution(child.executionId);
+      if (state) childStates.push(state);
+    }
+
+    return childStates;
+  }
+
+  async getParentExecution(executionId: string): Promise<ExecutionState | null> {
+    const [execution] = await this.db
+      .select()
+      .from(schema.executions)
+      .where(eq(schema.executions.executionId, executionId))
+      .limit(1);
+
+    if (!execution || !execution.parentExecutionId) {
+      return null;
+    }
+
+    return this.getExecution(execution.parentExecutionId);
+  }
+
+  // Observability
+  async addLog(log: ExecutionLog): Promise<void> {
+    await this.db.insert(schema.logs).values({
+      id: log.id,
+      executionId: log.executionId,
+      nodeId: log.nodeId || null,
+      level: log.level,
+      message: log.message,
+      timestamp: log.timestamp,
+      metadata: log.metadata || null,
+    });
+  }
+
+  async getLogs(executionId: string): Promise<ExecutionLog[]> {
+    const logRecords = await this.db
+      .select()
+      .from(schema.logs)
+      .where(eq(schema.logs.executionId, executionId));
+
+    return logRecords.map(log => ({
+      id: log.id,
+      executionId: log.executionId,
+      nodeId: log.nodeId || undefined,
+      level: log.level as ExecutionLog['level'],
+      message: log.message,
+      timestamp: log.timestamp,
+      metadata: log.metadata || undefined,
+    }));
+  }
+
+  async addSpan(executionId: string, span: ExecutionSpan): Promise<void> {
+    await this.db.insert(schema.spans).values({
+      id: span.id,
+      executionId,
+      nodeId: span.nodeId,
+      name: span.name,
+      startTime: span.startTime,
+      endTime: span.endTime || null,
+      status: span.status,
+      error: span.error || null,
+      metadata: span.metadata || null,
+    });
+  }
+
+  async updateSpan(
+    executionId: string, 
+    spanId: string, 
+    update: Partial<ExecutionSpan>
+  ): Promise<void> {
+    const updateData: any = {};
+    
+    if (update.endTime !== undefined) updateData.endTime = update.endTime;
+    if (update.status !== undefined) updateData.status = update.status;
+    if (update.error !== undefined) updateData.error = update.error;
+    if (update.metadata !== undefined) updateData.metadata = update.metadata;
+
+    await this.db
+      .update(schema.spans)
+      .set(updateData)
+      .where(eq(schema.spans.id, spanId));
+  }
+
+  async getTrace(executionId: string): Promise<ExecutionTrace | null> {
+    const [execution] = await this.db
+      .select()
+      .from(schema.executions)
+      .where(eq(schema.executions.executionId, executionId))
+      .limit(1);
+
+    if (!execution) return null;
+
+    const spanRecords = await this.db
+      .select()
+      .from(schema.spans)
+      .where(eq(schema.spans.executionId, executionId));
+
+    const spansList: ExecutionSpan[] = spanRecords.map(span => ({
+      id: span.id,
+      nodeId: span.nodeId,
+      name: span.name,
+      startTime: span.startTime,
+      endTime: span.endTime || undefined,
+      status: span.status as ExecutionSpan['status'],
+      error: span.error || undefined,
+      metadata: span.metadata || undefined,
+    }));
+
+    return {
+      executionId: execution.executionId,
+      workflowId: execution.workflowId,
+      spans: spansList,
+    };
+  }
+}
