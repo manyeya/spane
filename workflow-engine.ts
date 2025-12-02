@@ -99,8 +99,45 @@ export class WorkflowEngine {
   }
 
   // Register a workflow definition
-  registerWorkflow(workflow: WorkflowDefinition): void {
+  async registerWorkflow(workflow: WorkflowDefinition): Promise<void> {
     this.workflows.set(workflow.id, workflow);
+
+    // Handle Schedule Triggers
+    if (workflow.triggers) {
+      for (const trigger of workflow.triggers) {
+        if (trigger.type === 'schedule') {
+          const jobId = `schedule:${workflow.id}:${trigger.config.cron}`;
+
+          try {
+            // Remove existing job to make registration idempotent
+            const existingJobs = await this.workflowQueue.getRepeatableJobs();
+            const existingJob = existingJobs.find(job => job.id === jobId);
+            if (existingJob) {
+              await this.workflowQueue.removeRepeatableByKey(existingJob.key);
+              console.log(`🔄 Removed existing schedule for workflow ${workflow.id}`);
+            }
+
+            // Add new repeatable job
+            await this.workflowQueue.add(
+              'workflow-execution',
+              { workflowId: workflow.id },
+              {
+                jobId,
+                repeat: {
+                  pattern: trigger.config.cron,
+                  ...(trigger.config.timezone && { tz: trigger.config.timezone }),
+                } as any, // BullMQ RepeatOptions type may not include tz in all versions
+              }
+            );
+            console.log(`⏰ Registered schedule for workflow ${workflow.id}: ${trigger.config.cron}`);
+          } catch (error) {
+            const errorMsg = `Failed to register schedule trigger for workflow ${workflow.id}: ${error instanceof Error ? error.message : String(error)}`;
+            console.error(`❌ ${errorMsg}`);
+            throw new Error(errorMsg);
+          }
+        }
+      }
+    }
   }
 
   getWorkflow(workflowId: string): WorkflowDefinition | undefined {
@@ -126,6 +163,30 @@ export class WorkflowEngine {
 
     console.log(`🚀 Workflow ${workflowId} enqueued with execution ID: ${executionId}`);
     return executionId;
+  }
+
+  // Trigger workflows via webhook path
+  async triggerWebhook(path: string, method: string, data: any): Promise<string[]> {
+    const triggeredExecutionIds: string[] = [];
+
+    for (const workflow of this.workflows.values()) {
+      if (workflow.triggers) {
+        for (const trigger of workflow.triggers) {
+          if (trigger.type === 'webhook' && trigger.config.path === path) {
+            // Check method if specified
+            if (trigger.config.method && trigger.config.method !== method) {
+              continue;
+            }
+
+            console.log(`🔗 Webhook triggered workflow ${workflow.id} (path: ${path})`);
+            const executionId = await this.enqueueWorkflow(workflow.id, data);
+            triggeredExecutionIds.push(executionId);
+          }
+        }
+      }
+    }
+
+    return triggeredExecutionIds;
   }
 
   // Enqueue a single node execution (for manual/direct node execution)
@@ -172,7 +233,9 @@ export class WorkflowEngine {
     this.workflowWorker = new Worker<WorkflowJobData>(
       'workflow-execution',
       async (job: Job<WorkflowJobData>) => {
-        return this.processWorkflowJob(job.data, job.id!);
+        console.log(`⏰ Processing workflow job ${job.id} for ${job.data.workflowId}`);
+        // Start a new execution for this workflow
+        await this.enqueueWorkflow(job.data.workflowId, job.data.initialData);
       },
       {
         connection: this.redisConnection,
