@@ -1,4 +1,4 @@
-import { Queue, Worker, Job, QueueEvents,  DelayedError } from 'bullmq';
+import { Queue, Worker, Job, QueueEvents, DelayedError } from 'bullmq';
 import { Redis } from 'ioredis';
 import type { ExecutionContext, ExecutionResult, IExecutionStateStore, WorkflowDefinition } from './types';
 import type { NodeRegistry } from './registry';
@@ -378,23 +378,53 @@ export class WorkflowEngine {
     // Save result to state store
     await this.stateStore.updateNodeResult(executionId, nodeId, result);
 
-    // If this node succeeded, check and enqueue its children
+    // If this node succeeded, check and enqueue/skip its children
     if (result.success && node.outputs.length > 0) {
       console.log(`📤 Node ${nodeId} completed successfully, checking ${node.outputs.length} children`);
 
-      for (const childNodeId of node.outputs) {
-        // Check if all parents of this child have completed
+      // Determine which children to execute and which to skip
+      const nextNodes = result.nextNodes || node.outputs;
+      const nodesToSkip = node.outputs.filter(id => !nextNodes.includes(id));
+
+      // 1. Handle skipped nodes
+      for (const skippedNodeId of nodesToSkip) {
+        console.log(`⏭️ Skipping branch starting at ${skippedNodeId}`);
+        await this.skipNode(executionId, workflowId, skippedNodeId);
+      }
+
+      // 2. Handle next nodes
+      for (const childNodeId of nextNodes) {
+        // Check if all parents of this child have completed (or been skipped)
         const childNode = workflow.nodes.find(n => n.id === childNodeId);
         if (!childNode) continue;
 
         const execution = await this.stateStore.getExecution(executionId);
-        const allParentsComplete = childNode.inputs.every(
-          parentId => execution?.nodeResults[parentId]?.success === true
-        );
 
-        if (allParentsComplete) {
-          console.log(`✅ All parents of ${childNodeId} complete, enqueueing`);
-          await this.enqueueNode(executionId, workflowId, childNodeId);
+        // A parent is "resolved" if it has a result (success, failed, or skipped)
+        // We only care about success/skipped for flow control here.
+        // If a parent failed, the flow usually stops anyway unless we have error handling paths (future).
+        const allParentsResolved = childNode.inputs.every(parentId => {
+          const res = execution?.nodeResults[parentId];
+          return res !== undefined && (res.success || res.skipped);
+        });
+
+        if (allParentsResolved) {
+          // Check if we should run this child or skip it based on parents
+          // Rule: Run if AT LEAST ONE parent succeeded (and wasn't skipped)
+          // Rule: Skip if ALL parents were skipped
+
+          const anyParentSucceeded = childNode.inputs.some(parentId => {
+            const res = execution?.nodeResults[parentId];
+            return res?.success && !res.skipped;
+          });
+
+          if (anyParentSucceeded) {
+            console.log(`✅ All parents of ${childNodeId} resolved, enqueueing`);
+            await this.enqueueNode(executionId, workflowId, childNodeId);
+          } else {
+            console.log(`⏭️ All parents of ${childNodeId} were skipped, skipping this node too`);
+            await this.skipNode(executionId, workflowId, childNodeId);
+          }
         } else {
           console.log(`⏳ Waiting for other parents of ${childNodeId} to complete`);
         }
@@ -452,6 +482,57 @@ export class WorkflowEngine {
 
     await this.stateStore.setExecutionStatus(executionId, 'running');
     console.log(`▶️ Workflow execution ${executionId} resumed`);
+  }
+
+  // Skip a node and recursively skip its children if needed
+  private async skipNode(executionId: string, workflowId: string, nodeId: string): Promise<void> {
+    // Mark as skipped in state store
+    await this.stateStore.updateNodeResult(executionId, nodeId, {
+      success: true,
+      skipped: true
+    });
+
+    const workflow = this.workflows.get(workflowId);
+    if (!workflow) return;
+
+    const node = workflow.nodes.find(n => n.id === nodeId);
+    if (!node) return;
+
+    // Propagate skip to children
+    for (const childNodeId of node.outputs) {
+      const childNode = workflow.nodes.find(n => n.id === childNodeId);
+      if (!childNode) continue;
+
+      const execution = await this.stateStore.getExecution(executionId);
+
+      // Check if all parents are resolved (completed or skipped)
+      const allParentsResolved = childNode.inputs.every(parentId => {
+        const res = execution?.nodeResults[parentId];
+        return res !== undefined && (res.success || res.skipped);
+      });
+
+      if (allParentsResolved) {
+        // If all parents are resolved, check if we should skip this child too
+        // We skip if ALL parents are skipped
+        const allParentsSkipped = childNode.inputs.every(parentId => {
+          const res = execution?.nodeResults[parentId];
+          return res?.skipped;
+        });
+
+        if (allParentsSkipped) {
+          console.log(`⏭️ All parents of ${childNodeId} skipped, skipping recursively`);
+          await this.skipNode(executionId, workflowId, childNodeId);
+        } else {
+          // If some parents succeeded (and weren't skipped), we might need to run this node!
+          // This handles the "Join" case where one branch was skipped but another succeeded.
+          console.log(`✅ Node ${childNodeId} has active parents, enqueueing despite skip from ${nodeId}`);
+          await this.enqueueNode(executionId, workflowId, childNodeId);
+        }
+      }
+    }
+
+    // Check for workflow completion even after skipping
+    await this.checkWorkflowCompletion(executionId, workflowId);
   }
 
   // Check if all nodes in the workflow have completed

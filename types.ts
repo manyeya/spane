@@ -51,6 +51,10 @@ export interface ExecutionResult {
   success: boolean;
   data?: any;
   error?: string;
+  /** IDs of nodes to execute next. If undefined, all outputs are executed. */
+  nextNodes?: string[];
+  /** Indicates if the node was skipped (not executed) */
+  skipped?: boolean;
 }
 
 export interface IExecutionStateStore {
