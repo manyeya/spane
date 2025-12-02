@@ -247,6 +247,38 @@ const stats = await engine.getQueueStats();
 console.log(stats);
 ```
 
+## 8. Observability & Debugging
+
+The engine provides built-in observability features to track and debug workflow executions.
+
+### Logging
+Execution logs are automatically generated for every node execution, capturing start, success, and failure events.
+
+```typescript
+const logs = await store.getLogs(executionId);
+// [INFO] Executing node node1 (type: http-request)
+// [INFO] Node execution completed successfully
+```
+
+### Tracing
+Performance traces are created for each execution, with spans for individual nodes tracking duration and status.
+
+```typescript
+const trace = await store.getTrace(executionId);
+// Trace ID: exec_123
+// Spans: 2
+//   - Span: Execute http-request (completed) [150ms]
+```
+
+### Replay
+You can replay any past execution. The new execution will be linked to the original via metadata, allowing for historical analysis.
+
+```typescript
+const newExecutionId = await engine.replayWorkflow(originalExecutionId);
+```
+
+## 9. Future Enhancements
+
 ## 🧩 Core Concepts
 
 ### Workflows
