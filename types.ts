@@ -21,6 +21,16 @@ export interface WorkflowDefinition {
 
 export type WorkflowTrigger = WebhookTrigger | ScheduleTrigger;
 
+/**
+ * Configuration for sub-workflow node type
+ * Allows calling another workflow as a reusable component
+ */
+export interface SubWorkflowConfig {
+  workflowId: string; // ID of the sub-workflow to execute
+  inputMapping?: Record<string, string>; // Map parent data keys to sub-workflow input keys
+  outputMapping?: Record<string, string>; // Map sub-workflow output keys to parent data keys
+}
+
 export interface WebhookTrigger {
   type: 'webhook';
   config: {
@@ -65,6 +75,10 @@ export interface ExecutionContext {
   inputData: any;
   /** All completed node results, keyed by node ID */
   previousResults: Record<string, ExecutionResult>; // Results from upstream nodes
+  /** ID of parent execution if this is a sub-workflow (undefined for root workflows) */
+  parentExecutionId?: string;
+  /** Nesting depth (0 for root workflows, increments for each sub-workflow level) */
+  depth: number;
 }
 
 export interface ExecutionResult {
@@ -78,10 +92,13 @@ export interface ExecutionResult {
 }
 
 export interface IExecutionStateStore {
-  createExecution(workflowId: string): Promise<string>;
-  updateNodeResult(executionId: string, nodeId: string, result: ExecutionResult): Promise<void>;
+  createExecution(workflowId: string, parentExecutionId?: string, depth?: number): Promise<string>;
   getExecution(executionId: string): Promise<ExecutionState | null>;
-  setExecutionStatus(executionId: string, status: 'running' | 'completed' | 'failed' | 'cancelled' | 'paused'): Promise<void>;
+  updateNodeResult(executionId: string, nodeId: string, result: ExecutionResult): Promise<void>;
+  setExecutionStatus(executionId: string, status: ExecutionState['status']): Promise<void>;
+  updateExecutionMetadata(executionId: string, metadata: ExecutionState['metadata']): Promise<void>;
+  getChildExecutions?(executionId: string): Promise<ExecutionState[]>;
+  getParentExecution?(executionId: string): Promise<ExecutionState | null>;
 }
 
 export interface ExecutionState {
@@ -91,6 +108,15 @@ export interface ExecutionState {
   nodeResults: Record<string, ExecutionResult>;
   startedAt: Date;
   completedAt?: Date;
+  /** ID of parent execution if this is a sub-workflow */
+  parentExecutionId?: string;
+  /** Nesting depth (0 for root, increments for sub-workflows) */
+  depth: number;
+  metadata?: {
+    parentNodeId?: string;
+    parentWorkflowId?: string;
+    [key: string]: any;
+  };
 }
 
 export interface INodeExecutor {

@@ -3,7 +3,7 @@ import type { ExecutionResult, ExecutionState, IExecutionStateStore } from "./ty
 export class InMemoryExecutionStore implements IExecutionStateStore {
   private executions: Map<string, ExecutionState> = new Map();
 
-  async createExecution(workflowId: string): Promise<string> {
+  async createExecution(workflowId: string, parentExecutionId?: string, depth: number = 0): Promise<string> {
     const executionId = `exec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const execution: ExecutionState = {
       executionId,
@@ -11,6 +11,8 @@ export class InMemoryExecutionStore implements IExecutionStateStore {
       status: 'running',
       nodeResults: {},
       startedAt: new Date(),
+      parentExecutionId,
+      depth,
     };
     this.executions.set(executionId, execution);
     return executionId;
@@ -35,5 +37,30 @@ export class InMemoryExecutionStore implements IExecutionStateStore {
         execution.completedAt = new Date();
       }
     }
+  }
+
+  async updateExecutionMetadata(executionId: string, metadata: ExecutionState['metadata']): Promise<void> {
+    const execution = this.executions.get(executionId);
+    if (execution) {
+      execution.metadata = metadata;
+    }
+  }
+
+  async getChildExecutions(executionId: string): Promise<ExecutionState[]> {
+    const children: ExecutionState[] = [];
+    for (const execution of this.executions.values()) {
+      if (execution.parentExecutionId === executionId) {
+        children.push(execution);
+      }
+    }
+    return children;
+  }
+
+  async getParentExecution(executionId: string): Promise<ExecutionState | null> {
+    const execution = this.executions.get(executionId);
+    if (!execution || !execution.parentExecutionId) {
+      return null;
+    }
+    return this.executions.get(execution.parentExecutionId) || null;
   }
 }

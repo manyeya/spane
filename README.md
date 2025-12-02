@@ -505,7 +505,20 @@ See [`examples/triggers.ts`](./examples/triggers.ts) for examples of:
 - Automatic recurring workflows
 
 ```bash
+
 bun run examples/triggers.ts
+```
+
+### Example 7: Sub-workflows (Reusable Workflows)
+
+See [`examples/sub-workflows.ts`](./examples/sub-workflows.ts) for examples of:
+- Composing workflows from other workflows
+- Passing data between parent and child workflows
+- Non-blocking execution (Checkpoint & Resume pattern)
+- Handling child workflow failures
+
+```bash
+bun run examples/sub-workflows.ts
 ```
 
 ## ⚙️ Configuration
@@ -634,6 +647,7 @@ Max Retries Exhausted?
 - [x] **Conditional Branching** - If/else logic, switch nodes, and skipping
 - [x] **Parallel Execution Limits** - Concurrency control and rate limiting
 - [x] **Webhook/Trigger Support** - Webhook and Cron triggers
+- [x] **Sub-workflows** - Reusable workflow composition (Non-blocking)
 - [x] REST API
 - [x] Queue statistics
 
@@ -643,7 +657,6 @@ Max Retries Exhausted?
 ### 📅 Planned Features
 
 #### High Priority
-- [ ] **Sub-workflows** - Reusable workflow composition
 - [ ] **Execution Logging** - Per-node execution logs and traces
 
 #### Medium Priority

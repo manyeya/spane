@@ -44,11 +44,19 @@ Implementation: Nodes are enqueued only after all parents complete. Parent outpu
 - ✅ Event-based workflow activation
 
 
-7. Sub-workflows & Reusability
+7. Sub-workflows (Implemented)
 
-- Can't call workflows from within workflows
-- No workflow templates/composition
-- Missing node grouping/sub-flows
+- ✅ **Sub-workflow node type** - `sub-workflow` node type registered in `NodeRegistry`
+- ✅ **Checkpoint & Resume Pattern** - Non-blocking execution (See `executeSubWorkflow` in `workflow-engine.ts`)
+- ✅ **Completion Hooks** - Auto-resume parent on child completion (See `checkWorkflowCompletion` in `workflow-engine.ts`)
+- ✅ **Depth Limiting** - Max 10 levels to prevent recursion (See `enqueueWorkflow` in `workflow-engine.ts`)
+- ✅ **Data Mapping** - Input/Output mapping between parent and child (See `executeSubWorkflow` in `workflow-engine.ts`)
+- ✅ **Error Propagation** - Child failures propagate to parent (See `executeSubWorkflow` in `workflow-engine.ts`)
+
+Implementation:
+- **Non-blocking**: Parent nodes save state and return `checkpoint: true` immediately, freeing workers.
+- **Auto-resume**: `checkWorkflowCompletion` detects child finish and re-enqueues parent with `subWorkflowStep: 'complete'`.
+- **Persistence**: Parent metadata stored in `ExecutionState.metadata` for reliable resumption.
 
 8. Observability & Debugging
 
