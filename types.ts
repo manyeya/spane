@@ -17,12 +17,34 @@ export interface WorkflowDefinition {
   entryNodeId: string; // Starting node for full workflow execution
 }
 
+/**
+ * Parent outputs when a node has multiple parents (merge scenario)
+ * Keys are parent node IDs, values are their execution results
+ */
+export type ParentOutputs = Record<string, any>;
+
+/**
+ * Execution context provided to node executors
+ * 
+ * Data Passing Behavior:
+ * - Entry nodes: `inputData` contains the initial workflow data
+ * - Single parent nodes: `inputData` contains the parent's output data directly
+ * - Multiple parent nodes: `inputData` contains an object with parent node IDs as keys
+ * - All nodes: `previousResults` contains all completed node results for complex scenarios
+ */
 export interface ExecutionContext {
   workflowId: string;
   executionId: string;
   nodeId: string;
+  /** 
+   * Input data for this node:
+   * - For entry nodes: initial workflow data
+   * - For single parent: parent's output.data
+   * - For multiple parents: { 'parent-id': output.data, ... }
+   */
   inputData: any;
-  previousResults: Record<string, any>; // Results from upstream nodes
+  /** All completed node results, keyed by node ID */
+  previousResults: Record<string, ExecutionResult>; // Results from upstream nodes
 }
 
 export interface ExecutionResult {

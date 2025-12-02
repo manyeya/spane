@@ -1,6 +1,6 @@
-import { Queue, Worker, Job, QueueEvents, FlowProducer, DelayedError } from 'bullmq';
+import { Queue, Worker, Job, QueueEvents,  DelayedError } from 'bullmq';
 import { Redis } from 'ioredis';
-import type { ExecutionContext, ExecutionResult, IExecutionStateStore, NodeDefinition, WorkflowDefinition } from './types';
+import type { ExecutionContext, ExecutionResult, IExecutionStateStore, WorkflowDefinition } from './types';
 import type { NodeRegistry } from './registry';
 
 export interface NodeJobData {
@@ -29,7 +29,6 @@ export class WorkflowEngine {
   private dlqQueue: Queue<DLQItem>; // Dead Letter Queue
   private nodeQueueEvents: QueueEvents;
   private workflowQueueEvents: QueueEvents;
-  private flowProducer: FlowProducer;
   private nodeWorker?: Worker<NodeJobData>;
   private workflowWorker?: Worker<WorkflowJobData>;
   private workflows: Map<string, WorkflowDefinition> = new Map();
@@ -58,11 +57,6 @@ export class WorkflowEngine {
     });
 
     this.workflowQueueEvents = new QueueEvents('workflow-execution', {
-      connection: redisConnection,
-    });
-
-    // Initialize FlowProducer for managing job flows and dependencies
-    this.flowProducer = new FlowProducer({
       connection: redisConnection,
     });
 
@@ -113,7 +107,7 @@ export class WorkflowEngine {
     return this.workflows.get(workflowId);
   }
 
-  // Enqueue a full workflow execution using FlowProducer
+  // Enqueue a full workflow execution
   async enqueueWorkflow(workflowId: string, initialData?: any): Promise<string> {
     const workflow = this.workflows.get(workflowId);
     if (!workflow) {
@@ -122,58 +116,16 @@ export class WorkflowEngine {
 
     const executionId = await this.stateStore.createExecution(workflowId);
 
-    // Build the flow tree structure for BullMQ FlowProducer
-    const flowTree = await this.buildFlowTree(workflow, executionId, initialData);
+    // Find all entry nodes (nodes with no inputs)
+    const entryNodes = workflow.nodes.filter(node => node.inputs.length === 0);
 
-    // Add the flow to BullMQ
-    await this.flowProducer.add(flowTree);
+    // Enqueue all entry nodes
+    for (const node of entryNodes) {
+      await this.enqueueNode(executionId, workflowId, node.id, initialData);
+    }
 
     console.log(`🚀 Workflow ${workflowId} enqueued with execution ID: ${executionId}`);
     return executionId;
-  }
-
-  // Build a flow tree for FlowProducer based on workflow DAG
-  private async buildFlowTree(
-    workflow: WorkflowDefinition,
-    executionId: string,
-    initialData?: any
-  ): Promise<any> {
-    const nodeMap = new Map<string, NodeDefinition>();
-    workflow.nodes.forEach(node => nodeMap.set(node.id, node));
-
-    const buildNodeFlow = (nodeId: string): any => {
-      const node = nodeMap.get(nodeId);
-      if (!node) return null;
-
-      const jobData: NodeJobData = {
-        executionId,
-        workflowId: workflow.id,
-        nodeId: node.id,
-        inputData: nodeId === workflow.entryNodeId ? initialData : undefined,
-      };
-
-      // Build children flows recursively
-      const children = node.outputs.map(outputId => buildNodeFlow(outputId)).filter(Boolean);
-
-      return {
-        name: `node-${nodeId}`,
-        queueName: 'node-execution',
-        data: jobData,
-        opts: {
-          jobId: `${executionId}-${nodeId}`,
-          attempts: 3,
-          backoff: {
-            type: 'exponential',
-            delay: 1000,
-          },
-          timeout: node.config?.timeout || undefined, // Add timeout from node config
-        },
-        children: children.length > 0 ? children : undefined,
-      };
-    };
-
-    // Start with entry node
-    return buildNodeFlow(workflow.entryNodeId);
   }
 
   // Enqueue a single node execution (for manual/direct node execution)
@@ -319,6 +271,12 @@ export class WorkflowEngine {
   // Process a single node job
   private async processNodeJob(data: NodeJobData, job: Job): Promise<ExecutionResult> {
     const { executionId, workflowId, nodeId, inputData } = data;
+
+    // Handle virtual root node (for workflows with multiple entry points)
+    if (nodeId === '__root__') {
+      return { success: true, data: { message: 'Virtual root node' } };
+    }
+
     const workflow = this.workflows.get(workflowId);
 
     if (!workflow) {
@@ -353,11 +311,46 @@ export class WorkflowEngine {
       throw new DelayedError();
     }
 
+    // Process input data based on parent nodes
+    let processedInputData: any = inputData;
+
+    if (node.inputs.length === 1) {
+      // Single parent: fetch parent's output data
+      const parentId = node.inputs[0];
+      if (!parentId) {
+        processedInputData = undefined;
+      } else {
+        const parentResult = previousResults[parentId];
+
+        if (parentResult?.success && parentResult.data !== undefined) {
+          processedInputData = parentResult.data;
+          console.log(`📥 Node ${nodeId} receiving data from parent ${parentId}`);
+        } else {
+          console.log(`⚠️  Node ${nodeId}: Parent ${parentId} has no output data`);
+          processedInputData = undefined;
+        }
+      }
+    } else if (node.inputs.length > 1) {
+      // Multiple parents: merge parent outputs into object
+      const mergedData: Record<string, any> = {};
+
+      for (const parentId of node.inputs) {
+        const parentResult = previousResults[parentId];
+        if (parentResult?.success && parentResult.data !== undefined) {
+          mergedData[parentId] = parentResult.data;
+        }
+      }
+
+      processedInputData = mergedData;
+      console.log(`📥 Node ${nodeId} receiving merged data from ${node.inputs.length} parents`);
+    }
+    // If node has no inputs, use the provided inputData (for entry nodes)
+
     const context: ExecutionContext = {
       workflowId,
       executionId,
       nodeId,
-      inputData,
+      inputData: processedInputData,
       previousResults,
     };
 
@@ -385,13 +378,36 @@ export class WorkflowEngine {
     // Save result to state store
     await this.stateStore.updateNodeResult(executionId, nodeId, result);
 
+    // If this node succeeded, check and enqueue its children
+    if (result.success && node.outputs.length > 0) {
+      console.log(`📤 Node ${nodeId} completed successfully, checking ${node.outputs.length} children`);
+
+      for (const childNodeId of node.outputs) {
+        // Check if all parents of this child have completed
+        const childNode = workflow.nodes.find(n => n.id === childNodeId);
+        if (!childNode) continue;
+
+        const execution = await this.stateStore.getExecution(executionId);
+        const allParentsComplete = childNode.inputs.every(
+          parentId => execution?.nodeResults[parentId]?.success === true
+        );
+
+        if (allParentsComplete) {
+          console.log(`✅ All parents of ${childNodeId} complete, enqueueing`);
+          await this.enqueueNode(executionId, workflowId, childNodeId);
+        } else {
+          console.log(`⏳ Waiting for other parents of ${childNodeId} to complete`);
+        }
+      }
+    }
+
     // Check if workflow is complete
     await this.checkWorkflowCompletion(executionId, workflowId);
 
     return result;
   }
 
-  // Process a full workflow job (legacy, FlowProducer handles this now)
+  // Process a full workflow job (legacy, manual DAG traversal handles this now)
   private async processWorkflowJob(data: WorkflowJobData, executionId: string): Promise<void> {
     const { workflowId, initialData } = data;
     const workflow = this.workflows.get(workflowId);
@@ -400,8 +416,8 @@ export class WorkflowEngine {
       throw new Error(`Workflow ${workflowId} not found`);
     }
 
-    // This is now handled by FlowProducer, but kept for backward compatibility
-    console.log(`⚠️  Legacy workflow job - consider using FlowProducer instead`);
+    // This is now handled by manual DAG traversal, but kept for backward compatibility
+    console.log(`⚠️  Legacy workflow job - manual DAG traversal handles this now`);
     await this.enqueueNode(executionId, workflowId, workflow.entryNodeId, initialData);
   }
 
@@ -508,7 +524,6 @@ export class WorkflowEngine {
     await this.workflowWorker?.close();
     await this.nodeQueueEvents.close();
     await this.workflowQueueEvents.close();
-    await this.flowProducer.close();
     await this.nodeQueue.close();
     await this.workflowQueue.close();
     await this.dlqQueue.close();

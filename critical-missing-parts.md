@@ -12,11 +12,15 @@
 - No pause/resume functionality
 - No timeout handling for long-running nodes
 
-3. Data Passing Between Nodes
+3. Data Passing Between Nodes (Implemented)
 
-- FlowProducer doesn't automatically pass output from parent to child
-- Need to fetch parent results from state store
-- Missing data transformation pipeline
+- ✅ Automatic parent output passing
+- ✅ Single parent: child receives parent.data directly
+- ✅ Multiple parents: child receives merged object { 'parent-id': data }
+- ✅ Entry nodes receive initial workflow data
+- ✅ Sequential execution ensures data availability
+
+Implementation: Nodes are enqueued only after all parents complete. Parent outputs are automatically fetched from state store and passed as inputData.
 
 4. Conditional Branching
 

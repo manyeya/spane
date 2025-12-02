@@ -59,7 +59,7 @@ SPANE is an **experimental headless workflow engine** - exploring what it takes 
 - **🔌 REST API** - Full HTTP API for workflow management
 
 ### 🏗️ Architecture
-- **BullMQ Integration** - Leverages BullMQ's FlowProducer for job orchestration
+- **BullMQ Integration** - Manual DAG traversal with Redis-backed job queues
 - **Redis-backed** - Persistent job queues with Redis
 - **Embeddable** - Drop into any Node.js/Bun application
 - **Extensible** - Plugin-based node executor system
@@ -269,17 +269,69 @@ A **node** represents a single unit of work in your workflow:
 
 **Executors** contain the business logic for each node type. They receive:
 - **Execution Context** - Workflow ID, execution ID, node ID
-- **Input Data** - Data passed to this node
+- **Input Data** - Data passed to this node (see Data Passing below)
 - **Previous Results** - Results from all upstream nodes
+
+### Data Passing
+
+SPANE automatically passes data between nodes based on their parent-child relationships:
+
+#### **Entry Nodes** (No Parents)
+Receive the initial workflow data as `inputData`:
+```typescript
+const executionId = await engine.enqueueWorkflow('my-workflow', {
+  userId: 123,
+  email: 'user@example.com'
+});
+
+// Entry node receives: { userId: 123, email: 'user@example.com' }
+```
+
+#### **Single Parent Nodes**
+Automatically receive the parent's output `data` as `inputData`:
+```typescript
+class ProcessorNode implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    // context.inputData contains parent's output.data directly
+    const value = context.inputData.value; // From parent
+    return { success: true, data: { processed: value * 2 } };
+  }
+}
+```
+
+#### **Multiple Parent Nodes** (Merge Scenario)
+Receive an object with parent node IDs as keys:
+```typescript
+class MergeNode implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    // context.inputData = { 'node-a': {...}, 'node-b': {...} }
+    const dataA = context.inputData['node-a'];
+    const dataB = context.inputData['node-b'];
+    
+    return { 
+      success: true, 
+      data: { merged: dataA.value + dataB.value } 
+    };
+  }
+}
+```
+
+#### **Accessing All Results**
+For complex scenarios, use `previousResults` to access any node's output:
+```typescript
+const allResults = context.previousResults;
+const specificNode = allResults['some-node-id'];
+```
 
 ### Execution Flow
 
 1. **Enqueue** - Workflow is submitted to the engine
-2. **DAG Resolution** - Engine builds execution tree using FlowProducer
-3. **Parallel Execution** - Independent nodes run concurrently
-4. **Dependency Management** - Nodes wait for upstream dependencies
-5. **Result Aggregation** - Results stored in state store
-6. **Completion** - Workflow marked as completed/failed
+2. **Entry Nodes** - All nodes with no inputs are enqueued
+3. **Sequential Execution** - Child nodes wait for all parents to complete
+4. **Data Passing** - Parent outputs automatically passed to children
+5. **Parallel Branches** - Independent branches execute concurrently
+6. **Result Aggregation** - Results stored in state store
+7. **Completion** - Workflow marked as completed/failed
 
 ## 📡 API Reference
 
@@ -394,12 +446,23 @@ See [`examples/dlq.ts`](./examples/dlq.ts) for a complete example demonstrating:
 - Automatic retries with exponential backoff
 - DLQ population after retry exhaustion
 - Error propagation to workflow status
-
-```bash
+```
 bun run examples/dlq.ts
 ```
 
-### Example 2: Pause/Resume/Cancel
+### Example 2: Data Passing Between Nodes
+
+See [`examples/data-passing.ts`](./examples/data-passing.ts) for examples of:
+- Simple chain data passing (A → B → C)
+- Multiple parent merge scenario (A → C, B → C)
+- Automatic parent output passing
+- Handling merged data from multiple parents
+
+```bash
+bun run examples/data-passing.ts
+```
+
+### Example 3: Pause/Resume/Cancel
 
 See [`examples/cancellation-pause.ts`](./examples/cancellation-pause.ts) for examples of:
 - Pausing running workflows
@@ -470,8 +533,8 @@ this.nodeQueue = new Queue<NodeJobData>('node-execution', {
 ┌─────────────────────────────────────────────────────────┐
 │                   WorkflowEngine                        │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
-│  │ FlowProducer │  │ Node Queue   │  │  DLQ Queue   │  │
-│  └──────────────┘  └──────────────┘  └──────────────┘  │
+│  │ Manual DAG   │  │ Node Queue   │  │  DLQ Queue   │  │
+│  │ Traversal    │  └──────────────┘  └──────────────┘  │
 │  ┌──────────────┐  ┌──────────────┐                    │
 │  │ Node Worker  │  │ Queue Events │                    │
 │  └──────────────┘  └──────────────┘                    │
@@ -494,13 +557,14 @@ this.nodeQueue = new Queue<NodeJobData>('node-execution', {
 
 1. **API Request** → `WorkflowAPIController` receives HTTP request
 2. **Workflow Enqueue** → `WorkflowEngine.enqueueWorkflow()` called
-3. **DAG Building** → `buildFlowTree()` creates BullMQ flow structure
-4. **Job Creation** → `FlowProducer` adds jobs with dependencies to Redis
+3. **Entry Detection** → Find all nodes with no inputs (entry nodes)
+4. **Job Creation** → Manually enqueue entry nodes to Redis queues
 5. **Worker Processing** → `NodeWorker` picks up jobs and executes
 6. **Node Execution** → `NodeRegistry` provides executor for node type
-7. **Result Storage** → Results saved to `ExecutionStateStore`
-8. **Completion Check** → Engine checks if all nodes completed
-9. **Status Update** → Workflow marked as completed/failed
+7. **Child Enqueueing** → Check and enqueue child nodes when all parents complete
+8. **Result Storage** → Results saved to `ExecutionStateStore`
+9. **Completion Check** → Engine checks if all nodes completed
+10. **Status Update** → Workflow marked as completed/failed
 
 ### Error Handling Flow
 
@@ -532,11 +596,11 @@ Max Retries Exhausted?
 - [x] Pause/Resume workflows
 - [x] Workflow cancellation
 - [x] Timeout handling
+- [x] **Data passing between nodes** - Automatic parent output passing
 - [x] REST API
 - [x] Queue statistics
 
 ### 🚧 In Progress
-- [ ] Data passing between nodes (currently requires manual fetching from state store)
 - [ ] Persistent state store (Postgres/MongoDB adapter)
 
 ### 📅 Planned Features
