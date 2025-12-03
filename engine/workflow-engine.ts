@@ -1,5 +1,6 @@
 import { Redis } from 'ioredis';
 import type { JobType } from 'bullmq';
+import { LRUCache } from 'lru-cache';
 import { NodeRegistry } from './registry';
 import type { IExecutionStateStore, WorkflowDefinition } from '../types';
 import { MetricsCollector } from '../utils/metrics';
@@ -12,6 +13,11 @@ import type { DLQItem } from './types';
 import { TimeoutMonitor } from '../utils/timeout-monitor';
 import { HealthMonitor } from '../utils/health-monitor';
 
+export interface WorkflowCacheOptions {
+    maxSize?: number;      // Max number of workflows to cache (default: 500)
+    ttlMs?: number;        // Time-to-live in milliseconds (default: 1 hour)
+}
+
 export class WorkflowEngine {
     private queueManager: QueueManager;
     private dlqManager: DLQManager;
@@ -19,16 +25,25 @@ export class WorkflowEngine {
     private workerManager: WorkerManager;
     private timeoutMonitor?: TimeoutMonitor;
     private healthMonitor?: HealthMonitor;
-    // In-memory cache for performance (backed by database)
-    private workflowCache: Map<string, WorkflowDefinition> = new Map();
+    // LRU cache for workflows - bounded memory with automatic eviction
+    private workflowCache: LRUCache<string, WorkflowDefinition>;
 
     constructor(
         private registry: NodeRegistry,
         private stateStore: IExecutionStateStore,
         private redisConnection: Redis,
         private metricsCollector?: MetricsCollector,
-        private circuitBreakerRegistry?: CircuitBreakerRegistry
+        private circuitBreakerRegistry?: CircuitBreakerRegistry,
+        cacheOptions?: WorkflowCacheOptions
     ) {
+        // Initialize LRU cache with configurable limits
+        const { maxSize = 500, ttlMs = 3600000 } = cacheOptions || {};
+        this.workflowCache = new LRUCache<string, WorkflowDefinition>({
+            max: maxSize,
+            ttl: ttlMs,
+            updateAgeOnGet: true, // Reset TTL on access
+        });
+
         // Initialize components
         this.queueManager = new QueueManager(redisConnection, stateStore, metricsCollector);
         this.dlqManager = new DLQManager(this.queueManager);
@@ -39,7 +54,7 @@ export class WorkflowEngine {
             stateStore,
             redisConnection,
             this.queueManager,
-            this.workflowCache, // Pass cache reference to NodeProcessor
+            this.workflowCache, // Pass LRU cache reference to NodeProcessor
             this.enqueueWorkflow.bind(this)
         );
 
@@ -170,14 +185,34 @@ export class WorkflowEngine {
     }
 
     getAllWorkflows(): Map<string, WorkflowDefinition> {
-        return this.workflowCache;
+        // Convert LRU cache entries to Map for backwards compatibility
+        const map = new Map<string, WorkflowDefinition>();
+        for (const [key, value] of this.workflowCache.entries()) {
+            map.set(key, value);
+        }
+        return map;
+    }
+
+    /**
+     * Get cache statistics for monitoring
+     */
+    getCacheStats(): { size: number; maxSize: number; hitRate?: number } {
+        return {
+            size: this.workflowCache.size,
+            maxSize: this.workflowCache.max,
+        };
     }
 
     /**
      * Get all workflows from database (ensures persistence across restarts)
+     * Supports pagination for memory efficiency
      */
-    async getAllWorkflowsFromDatabase(activeOnly: boolean = true): Promise<WorkflowDefinition[]> {
-        return await this.stateStore.listWorkflows(activeOnly);
+    async getAllWorkflowsFromDatabase(
+        activeOnly: boolean = true,
+        limit: number = 100,
+        offset: number = 0
+    ): Promise<WorkflowDefinition[]> {
+        return await this.stateStore.listWorkflows(activeOnly, limit, offset);
     }
 
     // Get workflow from database (optionally specific version)

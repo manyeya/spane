@@ -1,5 +1,6 @@
 import { Job, DelayedError } from 'bullmq';
 import { Redis } from 'ioredis';
+import { LRUCache } from 'lru-cache';
 import { NodeRegistry } from './registry';
 import type { IExecutionStateStore, WorkflowDefinition, ExecutionResult } from '../types';
 import type { NodeJobData } from './types';
@@ -13,6 +14,9 @@ export type EnqueueWorkflowFn = (
     depth?: number
 ) => Promise<string>;
 
+// Cache interface that works with both Map and LRUCache
+type WorkflowCache = Map<string, WorkflowDefinition> | LRUCache<string, WorkflowDefinition>;
+
 export class NodeProcessor {
     private distributedLock: DistributedLock;
 
@@ -21,7 +25,7 @@ export class NodeProcessor {
         private stateStore: IExecutionStateStore,
         private redisConnection: Redis,
         private queueManager: QueueManager,
-        private workflows: Map<string, WorkflowDefinition>,
+        private workflows: WorkflowCache,
         private enqueueWorkflow: EnqueueWorkflowFn
     ) {
         this.distributedLock = new DistributedLock(redisConnection);

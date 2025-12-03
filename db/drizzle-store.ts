@@ -596,34 +596,68 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
     return workflowRecord?.currentVersionId || null;
   }
 
-  async listWorkflows(activeOnly: boolean = true): Promise<any[]> {
+  async listWorkflows(activeOnly: boolean = true, limit: number = 100, offset: number = 0): Promise<any[]> {
     const conditions = activeOnly
       ? eq(schema.workflows.isActive, true)
       : undefined;
 
+    // Fetch workflows with pagination
     const workflowRecords = await this.db
       .select()
       .from(schema.workflows)
       .where(conditions)
-      .orderBy(schema.workflows.updatedAt);
+      .orderBy(desc(schema.workflows.updatedAt))
+      .limit(limit)
+      .offset(offset);
 
+    if (workflowRecords.length === 0) return [];
+
+    // Collect all version IDs to fetch in a single query (fixes N+1)
+    const versionIds = workflowRecords
+      .map(r => r.currentVersionId)
+      .filter((id): id is number => id !== null);
+
+    if (versionIds.length === 0) return [];
+
+    // Batch fetch all versions in one query
+    const versionRecords = await this.db
+      .select()
+      .from(schema.workflowVersions)
+      .where(inArray(schema.workflowVersions.id, versionIds));
+
+    // Create a map for quick lookup
+    const versionMap = new Map(
+      versionRecords.map(v => [v.id, v.definition])
+    );
+
+    // Build result array maintaining order
     const workflows: any[] = [];
-
     for (const record of workflowRecords) {
       if (record.currentVersionId) {
-        const [versionRecord] = await this.db
-          .select()
-          .from(schema.workflowVersions)
-          .where(eq(schema.workflowVersions.id, record.currentVersionId))
-          .limit(1);
-
-        if (versionRecord?.definition) {
-          workflows.push(versionRecord.definition);
+        const definition = versionMap.get(record.currentVersionId);
+        if (definition) {
+          workflows.push(definition);
         }
       }
     }
 
     return workflows;
+  }
+
+  /**
+   * Get total count of workflows (for pagination)
+   */
+  async getWorkflowCount(activeOnly: boolean = true): Promise<number> {
+    const conditions = activeOnly
+      ? eq(schema.workflows.isActive, true)
+      : undefined;
+
+    const result = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.workflows)
+      .where(conditions);
+
+    return result[0]?.count ?? 0;
   }
 
   async deactivateWorkflow(workflowId: string): Promise<void> {
@@ -907,9 +941,13 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
   // ============================================================================
 
   /**
-   * List executions with optional workflow filter
+   * List executions with optional workflow filter and pagination
    */
-  async listExecutions(workflowId?: string, limit: number = 100): Promise<Array<{
+  async listExecutions(
+    workflowId?: string, 
+    limit: number = 100,
+    offset: number = 0
+  ): Promise<Array<{
     executionId: string;
     workflowId: string;
     status: string;
@@ -935,7 +973,8 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
       .from(schema.executions)
       .where(conditions)
       .orderBy(desc(schema.executions.startedAt))
-      .limit(limit);
+      .limit(limit)
+      .offset(offset);
 
     return executionRecords.map(record => ({
       executionId: record.executionId,
@@ -946,6 +985,22 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
       initialData: record.initialData || undefined,
       metadata: record.metadata || undefined,
     }));
+  }
+
+  /**
+   * Get total count of executions (for pagination)
+   */
+  async getExecutionCount(workflowId?: string): Promise<number> {
+    const conditions = workflowId 
+      ? eq(schema.executions.workflowId, workflowId)
+      : undefined;
+
+    const result = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.executions)
+      .where(conditions);
+
+    return result[0]?.count ?? 0;
   }
 
   /**

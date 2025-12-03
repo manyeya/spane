@@ -445,14 +445,29 @@ const app = new Elysia()
     // DURABILITY & RELIABILITY ENDPOINTS
     // ============================================================================
 
-    // List all workflows
-    .get('/api/workflows', async () => {
+    // List all workflows with pagination
+    .get('/api/workflows', async ({ query }: { query: any }) => {
         try {
-            const workflows = await engine.getAllWorkflowsFromDatabase();
+            const limit = Math.min(parseInt(query.limit || '100'), 500); // Cap at 500
+            const offset = parseInt(query.offset || '0');
+            const activeOnly = query.activeOnly !== 'false';
+
+            const workflows = await engine.getAllWorkflowsFromDatabase(activeOnly, limit, offset);
+            
+            // Get total count for pagination
+            let total = workflows.length;
+            if ('getWorkflowCount' in stateStore) {
+                total = await (stateStore as any).getWorkflowCount(activeOnly);
+            }
+
             return {
                 success: true,
-                workflows: Array.from(workflows.values()),
-                count: workflows.length
+                workflows,
+                count: workflows.length,
+                total,
+                limit,
+                offset,
+                hasMore: offset + workflows.length < total
             };
         } catch (error) {
             return {
@@ -827,16 +842,29 @@ const app = new Elysia()
         }
     })
 
-    // List all executions with optional workflow filter (Task 14.3)
+    // List all executions with optional workflow filter and pagination (Task 14.3)
     .get('/api/executions', async ({ query }: { query: any }) => {
         try {
-            const workflowId = query.workflowId;
-            const executions = await stateStore.listExecutions(workflowId);
+            const workflowId = query.workflowId || undefined;
+            const limit = Math.min(parseInt(query.limit || '100'), 500); // Cap at 500
+            const offset = parseInt(query.offset || '0');
+
+            const executions = await stateStore.listExecutions(workflowId, limit, offset);
             
+            // Get total count for pagination
+            let total = executions.length;
+            if ('getExecutionCount' in stateStore) {
+                total = await (stateStore as any).getExecutionCount(workflowId);
+            }
+
             return {
                 success: true,
                 executions,
-                count: executions.length
+                count: executions.length,
+                total,
+                limit,
+                offset,
+                hasMore: offset + executions.length < total
             };
         } catch (error) {
             console.error('Failed to list executions:', error);

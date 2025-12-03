@@ -150,8 +150,45 @@ export class InMemoryExecutionStore implements IExecutionStateStore {
     return null; // No version tracking in memory
   }
 
-  async listWorkflows(activeOnly?: boolean): Promise<any[]> {
+  async listWorkflows(activeOnly?: boolean, limit?: number, offset?: number): Promise<any[]> {
     return []; // No workflows stored in memory
+  }
+
+  async getWorkflowCount(activeOnly?: boolean): Promise<number> {
+    return 0;
+  }
+
+  async listExecutions(workflowId?: string, limit: number = 100, offset: number = 0): Promise<Array<{
+    executionId: string;
+    workflowId: string;
+    status: string;
+    startedAt: Date;
+    completedAt?: Date;
+  }>> {
+    let executions = Array.from(this.executions.values());
+    
+    if (workflowId) {
+      executions = executions.filter(e => e.workflowId === workflowId);
+    }
+    
+    // Sort by startedAt descending
+    executions.sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime());
+    
+    // Apply pagination
+    return executions.slice(offset, offset + limit).map(e => ({
+      executionId: e.executionId,
+      workflowId: e.workflowId,
+      status: e.status,
+      startedAt: e.startedAt,
+      completedAt: e.completedAt,
+    }));
+  }
+
+  async getExecutionCount(workflowId?: string): Promise<number> {
+    if (workflowId) {
+      return Array.from(this.executions.values()).filter(e => e.workflowId === workflowId).length;
+    }
+    return this.executions.size;
   }
 
   async deactivateWorkflow(workflowId: string): Promise<void> {

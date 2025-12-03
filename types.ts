@@ -110,12 +110,25 @@ export interface IExecutionStateStore {
   getChildExecutions?(executionId: string): Promise<ExecutionState[]>;
   getParentExecution?(executionId: string): Promise<ExecutionState | null>;
 
-  // Workflow Persistence (NEW)
+  // Workflow Persistence (with pagination support)
   saveWorkflow(workflow: WorkflowDefinition, changeNotes?: string, createdBy?: string): Promise<number>; // Returns version ID
   getWorkflow(workflowId: string, version?: number): Promise<WorkflowDefinition | null>;
   getWorkflowVersion(workflowId: string): Promise<number | null>; // Get current version ID
-  listWorkflows(activeOnly?: boolean): Promise<WorkflowDefinition[]>;
+  listWorkflows(activeOnly?: boolean, limit?: number, offset?: number): Promise<WorkflowDefinition[]>;
   deactivateWorkflow(workflowId: string): Promise<void>;
+  
+  // Execution listing (with pagination support)
+  listExecutions?(workflowId?: string, limit?: number, offset?: number): Promise<Array<{
+    executionId: string;
+    workflowId: string;
+    status: string;
+    startedAt: Date;
+    completedAt?: Date;
+  }>>;
+  
+  // Count methods for pagination
+  getWorkflowCount?(activeOnly?: boolean): Promise<number>;
+  getExecutionCount?(workflowId?: string): Promise<number>;
 
   // Observability
   addLog(log: ExecutionLog): Promise<void>;
