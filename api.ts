@@ -9,7 +9,7 @@ import { fromTypes, openapi } from '@elysiajs/openapi'
 
 export class WorkflowAPIController {
   private app = new Elysia().use(openapi({
-    references: fromTypes() ,
+    references: fromTypes(),
     swagger: {
       autoDarkMode: true,
     },
@@ -106,9 +106,9 @@ export class WorkflowAPIController {
     });
 
     // Get workflow definition
-    this.app.get('/api/workflows/:workflowId', ({ params, set }) => {
+    this.app.get('/api/workflows/:workflowId', async ({ params, set }) => {
       const { workflowId } = params;
-      const workflow = this.engine.getWorkflow(workflowId);
+      const workflow = await this.engine.getWorkflow(workflowId);
 
       if (!workflow) {
         set.status = 404;
@@ -329,11 +329,12 @@ export class WorkflowAPIController {
     // Get all workflows
     this.app.get('/api/workflows', async ({ set }) => {
       try {
-        const workflows = this.engine.getAllWorkflows();
+        // Load from database to ensure persistence across restarts
+        const workflows = await this.engine.getAllWorkflowsFromDatabase();
         return {
           success: true,
-          workflows: Array.from(workflows.values()),
-          count: workflows.size,
+          workflows,
+          count: workflows.length,
         };
       } catch (error: any) {
         set.status = 500;

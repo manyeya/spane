@@ -172,6 +172,13 @@ export class WorkflowEngine {
         return this.workflowCache;
     }
 
+    /**
+     * Get all workflows from database (ensures persistence across restarts)
+     */
+    async getAllWorkflowsFromDatabase(activeOnly: boolean = true): Promise<WorkflowDefinition[]> {
+        return await this.stateStore.listWorkflows(activeOnly);
+    }
+
     // Get workflow from database (optionally specific version)
     async getWorkflowFromDatabase(workflowId: string, version?: number): Promise<WorkflowDefinition | null> {
         return await this.stateStore.getWorkflow(workflowId, version);
