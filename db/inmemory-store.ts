@@ -1,4 +1,4 @@
-import type { ExecutionResult, ExecutionState, IExecutionStateStore, ExecutionLog, ExecutionTrace, ExecutionSpan } from "./types";
+import type { ExecutionResult, ExecutionState, IExecutionStateStore, ExecutionLog, ExecutionTrace, ExecutionSpan } from "../types";
 
 export class InMemoryExecutionStore implements IExecutionStateStore {
   private executions: Map<string, ExecutionState> = new Map();
@@ -132,5 +132,26 @@ export class InMemoryExecutionStore implements IExecutionStateStore {
 
   async getTrace(executionId: string): Promise<ExecutionTrace | null> {
     return this.traces.get(executionId) || null;
+  }
+
+  // Workflow Persistence - Not supported in memory store
+  async saveWorkflow(workflow: any, changeNotes?: string, createdBy?: string): Promise<number> {
+    throw new Error('Workflow persistence not supported in InMemoryExecutionStore. Use DrizzleExecutionStateStore with DATABASE_URL.');
+  }
+
+  async getWorkflow(workflowId: string, version?: number): Promise<any | null> {
+    throw new Error('Workflow persistence not supported in InMemoryExecutionStore. Use DrizzleExecutionStateStore with DATABASE_URL.');
+  }
+
+  async getWorkflowVersion(workflowId: string): Promise<number | null> {
+    return null; // No version tracking in memory
+  }
+
+  async listWorkflows(activeOnly?: boolean): Promise<any[]> {
+    return []; // No workflows stored in memory
+  }
+
+  async deactivateWorkflow(workflowId: string): Promise<void> {
+    // No-op in memory store
   }
 }

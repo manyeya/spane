@@ -4,6 +4,7 @@ import { NodeRegistry } from '../registry';
 import type { IExecutionStateStore, WorkflowDefinition, ExecutionResult } from '../types';
 import type { NodeJobData } from './types';
 import { QueueManager } from './queue-manager';
+import { DistributedLock } from '../utils/distributed-lock';
 
 export type EnqueueWorkflowFn = (
     workflowId: string,
@@ -13,6 +14,8 @@ export type EnqueueWorkflowFn = (
 ) => Promise<string>;
 
 export class NodeProcessor {
+    private distributedLock: DistributedLock;
+
     constructor(
         private registry: NodeRegistry,
         private stateStore: IExecutionStateStore,
@@ -20,7 +23,29 @@ export class NodeProcessor {
         private queueManager: QueueManager,
         private workflows: Map<string, WorkflowDefinition>,
         private enqueueWorkflow: EnqueueWorkflowFn
-    ) { }
+    ) {
+        this.distributedLock = new DistributedLock(redisConnection);
+    }
+
+    /**
+     * Get workflow with lazy loading from database if not in cache
+     */
+    private async getWorkflowWithLazyLoad(workflowId: string): Promise<WorkflowDefinition | null> {
+        // Check cache first
+        let workflow = this.workflows.get(workflowId);
+
+        // If not in cache, try to load from database
+        if (!workflow) {
+            const dbWorkflow = await this.stateStore.getWorkflow(workflowId);
+            if (dbWorkflow) {
+                // Cache it for future use
+                this.workflows.set(workflowId, dbWorkflow);
+                workflow = dbWorkflow;
+            }
+        }
+
+        return workflow || null;
+    }
 
     // Process a single node job
     async processNodeJob(data: NodeJobData, job: Job): Promise<ExecutionResult> {
@@ -32,18 +57,20 @@ export class NodeProcessor {
             return { success: true, data: { message: 'Virtual root node' } };
         }
 
-        const workflow = this.workflows.get(workflowId);
+        // Lazy load workflow from database if not in cache
+        const workflow = await this.getWorkflowWithLazyLoad(workflowId);
 
         if (!workflow) {
             console.error(`❌ Workflow ${workflowId} not found in NodeProcessor.`);
-            console.error(`Available workflows: ${Array.from(this.workflows.keys()).join(', ')}`);
+            console.error(`Available workflows in cache: ${Array.from(this.workflows.keys()).join(', ')}`);
             throw new Error(`Workflow ${workflowId} not found`);
         }
 
         const node = workflow.nodes.find(n => n.id === nodeId);
 
         if (!node) {
-            throw new Error(`Node ${nodeId} not found in workflow ${workflowId}`);
+            console.error(`❌ Node ${nodeId} not found in workflow ${workflowId}`);
+            throw new Error(`Node ${nodeId} not found in workflow ${workflowId}`); // Keep throw for logical correctness
         }
 
         // Special handling for sub-workflow node type (before regular execution checks)
@@ -252,7 +279,7 @@ export class NodeProcessor {
     }
 
     private async checkAndEnqueueChildren(executionId: string, workflowId: string, node: any, nextNodes?: string[]): Promise<void> {
-        const workflow = this.workflows.get(workflowId);
+        const workflow = await this.getWorkflowWithLazyLoad(workflowId);
         if (!workflow) return;
 
         for (const childNodeId of node.outputs) {
@@ -320,8 +347,32 @@ export class NodeProcessor {
         });
     }
 
+    private async areAllParentsResolved(executionId: string, workflowId: string, nodeId: string): Promise<boolean> {
+        const workflow = await this.getWorkflowWithLazyLoad(workflowId);
+        if (!workflow) return false;
+
+        // Check if already failed/cancelled
+        const currentExecution = await this.stateStore.getExecution(executionId);
+        if (currentExecution?.status === 'failed' || currentExecution?.status === 'cancelled') {
+            return false; // Changed to return false as per Promise<boolean>
+        }
+
+        const node = workflow.nodes.find(n => n.id === nodeId);
+        if (!node) return false;
+
+        const parentIds = node.inputs;
+        if (parentIds.length === 0) return true; // No parents, so considered resolved
+
+        const parentResults = await this.stateStore.getNodeResults(executionId, parentIds);
+
+        return parentIds.every(pid => {
+            const res = parentResults[pid];
+            return res && (res.success || res.skipped);
+        });
+    }
+
     private async checkWorkflowCompletion(executionId: string, workflowId: string): Promise<void> {
-        const workflow = this.workflows.get(workflowId);
+        const workflow = await this.getWorkflowWithLazyLoad(workflowId);
         if (!workflow) return;
 
         // Check if already failed/cancelled

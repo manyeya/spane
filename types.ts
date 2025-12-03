@@ -109,6 +109,14 @@ export interface IExecutionStateStore {
   updateExecutionMetadata(executionId: string, metadata: ExecutionState['metadata']): Promise<void>;
   getChildExecutions?(executionId: string): Promise<ExecutionState[]>;
   getParentExecution?(executionId: string): Promise<ExecutionState | null>;
+
+  // Workflow Persistence (NEW)
+  saveWorkflow(workflow: WorkflowDefinition, changeNotes?: string, createdBy?: string): Promise<number>; // Returns version ID
+  getWorkflow(workflowId: string, version?: number): Promise<WorkflowDefinition | null>;
+  getWorkflowVersion(workflowId: string): Promise<number | null>; // Get current version ID
+  listWorkflows(activeOnly?: boolean): Promise<WorkflowDefinition[]>;
+  deactivateWorkflow(workflowId: string): Promise<void>;
+
   // Observability
   addLog(log: ExecutionLog): Promise<void>;
   getLogs(executionId: string): Promise<ExecutionLog[]>;

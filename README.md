@@ -68,23 +68,37 @@ SPANE is an **experimental headless workflow engine** - exploring what it takes 
 - **🔁 Job Deduplication** - Prevent duplicate executions
 - **📦 Bulk Operations** - Manage multiple workflows simultaneously
 
-### 🗄️ Persistence & State
-- 🗄️ **Postgres Persistence** - Optional persistent state storage with Postgres
-- 💾 **Full State Persistence** - Execution state, node results, logs, and traces
+### 🗄️ Persistence & Durability
+- 🗄️ **Postgres Persistence** - Production-ready persistent state storage
+- 📚 **Workflow Versioning** - Full version history with rollback support
+- 💾 **Full State Persistence** - Executions, node results, logs, and traces
+- 🔒 **ACID Transactions** - Atomic operations for data integrity
+- ⏰ **Timeout Monitoring** - Automatic detection and cleanup of stuck executions
+- 💚 **Health Monitoring** - Real-time system health checks (Redis, DB, queues, executions)
+- 🔐 **Distributed Locks** - Multi-instance safe execution (prevents duplicates)
+- 🔄 **Retry Helpers** - Exponential backoff with jitter for transient failures
+- 📊 **Audit Trail** - Complete state change history
+- 💀 **Persistent DLQ** - Dead letter queue survives restarts
 - 🔍 **Execution Replay** - Re-run past executions with full context
-- 📊 **Observability** - Comprehensive logging and tracing
 - ⚡ **In-Memory Fallback** - Works without a database for development
 
 ### 🏥 Production Operations
-- **💓 Health Monitoring** - Comprehensive health checks for workers, queues, and Redis
+- **💓 Health Monitoring** - Comprehensive health checks for all components
 - **📊 Metrics Collection** - Prometheus and JSON format metrics export
 - **🔌 Circuit Breakers** - Prevent cascading failures with automatic recovery
 - **🛑 Graceful Shutdown** - Proper cleanup on SIGTERM/SIGINT
 - **☸️ Kubernetes Ready** - Liveness and readiness probes
 - **📈 Real-time Monitoring** - Track queue statistics and execution states
+- **⏰ Timeout Protection** - Automatic cleanup of long-running executions
+- **🔐 Multi-Instance Safe** - Distributed locks prevent duplicate execution
 
 ### 🔌 Integration & API
 - **🌐 REST API** - Full HTTP API for workflow management
+- **📚 Versioning API** - Manage workflow versions via API
+- **💚 Health API** - System health and component status endpoints
+- **⏰ Timeout API** - Set/clear execution timeouts
+- **💀 DLQ API** - Manage dead letter queue items
+- **⏸️ Control API** - Pause/resume/cancel executions
 - **🪝 Webhook Triggers** - Start workflows via HTTP webhooks
 - **⏰ Cron Triggers** - Schedule workflows with cron expressions
 - **🔄 React Flow Integration** - Complete visual builder example
@@ -93,6 +107,7 @@ SPANE is an **experimental headless workflow engine** - exploring what it takes 
 ### 🏗️ Architecture
 - **BullMQ Integration** - Manual DAG traversal with Redis-backed job queues
 - **Redis-backed** - Persistent job queues with Redis
+- **Postgres-backed** - Optional persistent state with PostgreSQL
 - **Embeddable** - Drop into any Node.js/Bun application
 - **Modular Design** - Separated concerns (QueueManager, DLQManager, NodeProcessor, WorkerManager)
 - **Error Handling** - DLQ, retries, and graceful shutdown

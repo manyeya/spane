@@ -1,6 +1,6 @@
 import { Queue, QueueEvents, FlowProducer } from 'bullmq';
 import { Redis } from 'ioredis';
-import { MetricsCollector } from '../metrics';
+import { MetricsCollector } from '../utils/metrics';
 import type { NodeJobData, WorkflowJobData, DLQItem } from './types';
 import type { IExecutionStateStore } from '../types';
 

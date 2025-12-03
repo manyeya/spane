@@ -1,13 +1,13 @@
 import { WorkflowEngine } from './engine/workflow-engine';
 import { WorkflowAPIController } from './api';
-import { InMemoryExecutionStore } from './inmemory-store';
-import { DrizzleExecutionStateStore } from './drizzle-store';
+import { InMemoryExecutionStore } from './db/inmemory-store';
+import { DrizzleExecutionStateStore } from './db/drizzle-store';
 import { NodeRegistry } from './registry';
 import { Redis } from 'ioredis';
-import { HealthMonitor } from './health';
-import { MetricsCollector } from './metrics';
-import { CircuitBreakerRegistry } from './circuit-breaker';
-import { GracefulShutdown } from './graceful-shutdown';
+import { HealthMonitor } from './utils/health';
+import { MetricsCollector } from './utils/metrics';
+import { CircuitBreakerRegistry } from './utils/circuit-breaker';
+import { GracefulShutdown } from './utils/graceful-shutdown';
 
 // Initialize Redis connection
 const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {

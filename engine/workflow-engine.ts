@@ -1,20 +1,25 @@
 import { Redis } from 'ioredis';
 import { NodeRegistry } from '../registry';
 import type { IExecutionStateStore, WorkflowDefinition } from '../types';
-import { MetricsCollector } from '../metrics';
-import { CircuitBreakerRegistry } from '../circuit-breaker';
+import { MetricsCollector } from '../utils/metrics';
+import { CircuitBreakerRegistry } from '../utils/circuit-breaker';
 import { QueueManager } from './queue-manager';
 import { DLQManager } from './dlq-manager';
 import { NodeProcessor } from './node-processor';
 import { WorkerManager } from './worker-manager';
 import type { DLQItem } from './types';
+import { TimeoutMonitor } from '../utils/timeout-monitor';
+import { HealthMonitor } from '../utils/health-monitor';
 
 export class WorkflowEngine {
     private queueManager: QueueManager;
     private dlqManager: DLQManager;
     private nodeProcessor: NodeProcessor;
     private workerManager: WorkerManager;
-    private workflows: Map<string, WorkflowDefinition> = new Map();
+    private timeoutMonitor?: TimeoutMonitor;
+    private healthMonitor?: HealthMonitor;
+    // In-memory cache for performance (backed by database)
+    private workflowCache: Map<string, WorkflowDefinition> = new Map();
 
     constructor(
         private registry: NodeRegistry,
@@ -33,7 +38,7 @@ export class WorkflowEngine {
             stateStore,
             redisConnection,
             this.queueManager,
-            this.workflows,
+            this.workflowCache, // Pass cache reference to NodeProcessor
             this.enqueueWorkflow.bind(this)
         );
 
@@ -46,7 +51,18 @@ export class WorkflowEngine {
             this.enqueueWorkflow.bind(this),
             metricsCollector
         );
+
+        // Initialize monitors (optional, only if using DrizzleStore)
+        if ('findTimedOutExecutions' in stateStore) {
+            this.timeoutMonitor = new TimeoutMonitor(stateStore, redisConnection, 60000);
+            this.healthMonitor = new HealthMonitor(stateStore, redisConnection, this.queueManager, 30000);
+        }
+
+        // Note: Workflows are now loaded lazily on-demand from database
+        // This improves startup time and memory usage
     }
+
+
 
     // Helper to log to both console and state store
     private async log(executionId: string, nodeId: string | undefined, level: 'info' | 'warn' | 'error' | 'debug', message: string, metadata?: any): Promise<void> {
@@ -68,9 +84,24 @@ export class WorkflowEngine {
         });
     }
 
-    // Register a workflow definition
-    async registerWorkflow(workflow: WorkflowDefinition): Promise<void> {
-        this.workflows.set(workflow.id, workflow);
+    // Register a workflow definition (saves to database with versioning)
+    async registerWorkflow(workflow: WorkflowDefinition, changeNotes?: string): Promise<void> {
+        try {
+            // Save to database (with versioning)
+            const versionId = await this.stateStore.saveWorkflow(workflow, changeNotes);
+            console.log(`✅ Saved workflow ${workflow.id} to database (version ID: ${versionId})`);
+        } catch (error) {
+            // If database doesn't support workflow persistence, just log and continue
+            if (error instanceof Error && error.message.includes('not supported')) {
+                console.log(`💡 Workflow ${workflow.id} registered in-memory only (no database persistence)`);
+            } else {
+                console.error(`Failed to save workflow ${workflow.id} to database:`, error);
+                // Don't throw - allow in-memory registration to proceed
+            }
+        }
+
+        // Update in-memory cache
+        this.workflowCache.set(workflow.id, workflow);
 
         // Handle Schedule Triggers
         if (workflow.triggers) {
@@ -110,8 +141,40 @@ export class WorkflowEngine {
         }
     }
 
-    getWorkflow(workflowId: string): WorkflowDefinition | undefined {
-        return this.workflows.get(workflowId);
+    /**
+     * Get workflow definition (lazy loads from database if not cached)
+     */
+    async getWorkflow(workflowId: string): Promise<WorkflowDefinition | undefined> {
+        // Check cache first
+        let workflow = this.workflowCache.get(workflowId);
+
+        // If not in cache, try to load from database
+        if (!workflow) {
+            const dbWorkflow = await this.stateStore.getWorkflow(workflowId);
+            if (dbWorkflow) {
+                // Cache it for future use
+                this.workflowCache.set(workflowId, dbWorkflow);
+                workflow = dbWorkflow;
+            }
+        }
+
+        return workflow;
+    }
+
+    /**
+     * Get workflow from cache only (synchronous)
+     */
+    getWorkflowFromCache(workflowId: string): WorkflowDefinition | undefined {
+        return this.workflowCache.get(workflowId);
+    }
+
+    getAllWorkflows(): Map<string, WorkflowDefinition> {
+        return this.workflowCache;
+    }
+
+    // Get workflow from database (optionally specific version)
+    async getWorkflowFromDatabase(workflowId: string, version?: number): Promise<WorkflowDefinition | null> {
+        return await this.stateStore.getWorkflow(workflowId, version);
     }
 
     // Enqueue a full workflow execution
@@ -127,7 +190,8 @@ export class WorkflowEngine {
             jobId?: string;
         }
     ): Promise<string> {
-        const workflow = this.workflows.get(workflowId);
+        // Lazy load workflow from database if not in cache
+        const workflow = await this.getWorkflow(workflowId);
         if (!workflow) {
             throw new Error(`Workflow ${workflowId} not found`);
         }
@@ -211,7 +275,7 @@ export class WorkflowEngine {
     async triggerWebhook(path: string, method: string, data: any): Promise<string[]> {
         const triggeredExecutionIds: string[] = [];
 
-        for (const workflow of this.workflows.values()) {
+        for (const workflow of this.workflowCache.values()) {
             if (workflow.triggers) {
                 for (const trigger of workflow.triggers) {
                     if (trigger.type === 'webhook' && trigger.config.path === path) {
@@ -258,6 +322,14 @@ export class WorkflowEngine {
     // Start worker processes
     startWorkers(concurrency: number = 5): void {
         this.workerManager.startWorkers(concurrency);
+
+        // Start monitors
+        if (this.timeoutMonitor) {
+            this.timeoutMonitor.start();
+        }
+        if (this.healthMonitor) {
+            this.healthMonitor.start();
+        }
     }
 
     // Get items from DLQ
@@ -377,6 +449,15 @@ export class WorkflowEngine {
     // Graceful shutdown
     async close(): Promise<void> {
         console.log('🛑 Shutting down workflow engine...');
+
+        // Stop monitors
+        if (this.timeoutMonitor) {
+            this.timeoutMonitor.stop();
+        }
+        if (this.healthMonitor) {
+            this.healthMonitor.stop();
+        }
+
         await this.workerManager.close();
         await this.queueManager.close();
         console.log('✓ Workflow engine shutdown complete');

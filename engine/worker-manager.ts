@@ -1,6 +1,6 @@
 import { Worker, Job, DelayedError } from 'bullmq';
 import { Redis } from 'ioredis';
-import { MetricsCollector } from '../metrics';
+import { MetricsCollector } from '../utils/metrics';
 import type { NodeJobData, WorkflowJobData } from './types';
 import { NodeProcessor, type EnqueueWorkflowFn } from './node-processor';
 import { DLQManager } from './dlq-manager';
@@ -73,27 +73,40 @@ export class WorkerManager {
                 if (job.attemptsMade >= (job.opts.attempts || 1)) {
                     console.log(`💀 Job ${job.id} has exhausted all retries. Moving to DLQ.`);
 
+                    const { executionId, nodeId } = job.data;
+
                     try {
-                        await this.dlqManager.moveToDLQ(job, err);
+                        // Use transactional method for atomic DLQ + state update + error log
+                        // Check if stateStore supports handlePermanentFailure (DrizzleStore)
+                        if ('handlePermanentFailure' in this.stateStore && typeof (this.stateStore as any).handlePermanentFailure === 'function') {
+                            await (this.stateStore as any).handlePermanentFailure(
+                                executionId,
+                                nodeId,
+                                job.data,
+                                err.message,
+                                job.attemptsMade
+                            );
+                        } else {
+                            // Fallback for InMemoryStore (non-transactional)
+                            await this.dlqManager.moveToDLQ(job, err);
+                            await this.stateStore.updateNodeResult(executionId, nodeId, {
+                                success: false,
+                                error: err.message
+                            });
+                        }
 
                         // Track metrics - only count permanent failures
                         if (this.metricsCollector) {
                             this.metricsCollector.incrementNodesFailed();
                             this.metricsCollector.incrementDLQItems();
-                            // Note: workflowsFailed is counted in checkWorkflowCompletion to avoid double counting
                         }
 
                         // Propagate error to workflow status
-                        const { executionId, nodeId } = job.data;
-                        await this.stateStore.updateNodeResult(executionId, nodeId, {
-                            success: false,
-                            error: err.message
-                        });
-
                         await this.nodeProcessor.handleWorkflowError(executionId, err.message);
-                    } catch (dlqError) {
-                        console.error(`CRITICAL: Failed to process DLQ/State update for job ${job.id} (Execution: ${job.data.executionId}):`, dlqError);
-                        // Do not rethrow to prevent crashing the worker listener
+                    } catch (criticalError) {
+                        console.error(`CRITICAL: Permanent failure handling failed for job ${job.id} (Execution: ${executionId}):`, criticalError);
+                        // Log to external monitoring system if available
+                        // TODO: Send to external alerting system (e.g., Sentry, DataDog)
                     }
                 }
             }

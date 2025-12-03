@@ -1,10 +1,10 @@
 import { Elysia } from 'elysia';
 import type { WorkflowEngine } from './engine/workflow-engine';
 import type { IExecutionStateStore, WorkflowDefinition } from './types';
-import type { HealthMonitor } from './health';
-import type { MetricsCollector } from './metrics';
-import type { CircuitBreakerRegistry } from './circuit-breaker';
-import type { GracefulShutdown } from './graceful-shutdown';
+import type { HealthMonitor } from './utils/health';
+import type { MetricsCollector } from './utils/metrics';
+import type { CircuitBreakerRegistry } from './utils/circuit-breaker';
+import type { GracefulShutdown } from './utils/graceful-shutdown';
 
 export class WorkflowAPIController {
   private app = new Elysia();
@@ -308,6 +308,261 @@ export class WorkflowAPIController {
       return {
         shutdownInProgress: this.gracefulShutdown.isShutdownInProgress(),
       };
+    });
+
+    // ============================================================================
+    // DURABILITY & RELIABILITY ENDPOINTS
+    // ============================================================================
+
+    // Get all workflows
+    this.app.get('/api/workflows', async ({ set }) => {
+      try {
+        const workflows = this.engine.getAllWorkflows();
+        return {
+          success: true,
+          workflows: Array.from(workflows.values()),
+          count: workflows.size,
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    });
+
+    // Get workflow version history
+    this.app.get('/api/workflows/:workflowId/versions', async ({ params, set }) => {
+      try {
+        const { workflowId } = params;
+
+        if ('getWorkflowVersions' in this.stateStore) {
+          const versions = await (this.stateStore as any).getWorkflowVersions(workflowId);
+          return {
+            success: true,
+            versions,
+          };
+        }
+
+        set.status = 501;
+        return {
+          success: false,
+          error: 'Workflow versioning not supported with current state store',
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    });
+
+    // Get specific workflow version
+    this.app.get('/api/workflows/:workflowId/versions/:version', async ({ params, set }) => {
+      try {
+        const { workflowId, version } = params;
+        const workflow = await this.engine.getWorkflowFromDatabase(workflowId, parseInt(version));
+
+        if (!workflow) {
+          set.status = 404;
+          return {
+            success: false,
+            error: 'Workflow version not found',
+          };
+        }
+
+        return {
+          success: true,
+          workflow,
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    });
+
+    // System health (new HealthMonitor)
+    this.app.get('/api/health', async ({ set }) => {
+      try {
+        // Try to get health from new HealthMonitor in engine
+        if ('healthMonitor' in this.engine && (this.engine as any).healthMonitor) {
+          const healthMonitor = (this.engine as any).healthMonitor;
+          const health = healthMonitor.getLastHealthStatus();
+
+          if (health) {
+            if (health.overall === 'unhealthy') {
+              set.status = 503;
+            }
+            return {
+              success: true,
+              ...health,
+            };
+          }
+        }
+
+        // Fallback to basic health check
+        return {
+          success: true,
+          overall: 'healthy',
+          timestamp: new Date(),
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    });
+
+    // Timeout management
+    this.app.post('/api/executions/:executionId/timeout', async ({ params, body, set }) => {
+      try {
+        const { executionId } = params;
+        const { timeoutMs } = body as any;
+
+        if (!timeoutMs || timeoutMs <= 0) {
+          set.status = 400;
+          return {
+            success: false,
+            error: 'timeoutMs must be a positive number',
+          };
+        }
+
+        if ('timeoutMonitor' in this.engine && (this.engine as any).timeoutMonitor) {
+          const timeoutMonitor = (this.engine as any).timeoutMonitor;
+          await timeoutMonitor.setExecutionTimeout(executionId, timeoutMs);
+
+          return {
+            success: true,
+            message: `Timeout set for execution ${executionId}`,
+            timeoutAt: new Date(Date.now() + timeoutMs),
+          };
+        }
+
+        set.status = 501;
+        return {
+          success: false,
+          error: 'Timeout monitoring not available',
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    });
+
+    // DLQ operations
+    this.app.get('/api/dlq', async ({ query, set }) => {
+      try {
+        const start = parseInt(query.start as string || '0');
+        const end = parseInt(query.end as string || '10');
+
+        const items = await this.engine.getDLQItems(start, end);
+
+        return {
+          success: true,
+          items,
+          count: items.length,
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    });
+
+    // Retry DLQ item
+    this.app.post('/api/dlq/:dlqJobId/retry', async ({ params, set }) => {
+      try {
+        const { dlqJobId } = params;
+        const success = await this.engine.retryDLQItem(dlqJobId);
+
+        if (!success) {
+          set.status = 404;
+          return {
+            success: false,
+            error: 'DLQ item not found',
+          };
+        }
+
+        return {
+          success: true,
+          message: 'DLQ item retried',
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    });
+
+    // Pause workflow execution
+    this.app.post('/api/executions/:executionId/pause', async ({ params, set }) => {
+      try {
+        const { executionId } = params;
+        await this.engine.pauseWorkflow(executionId);
+
+        return {
+          success: true,
+          message: 'Workflow paused',
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    });
+
+    // Resume workflow execution
+    this.app.post('/api/executions/:executionId/resume', async ({ params, set }) => {
+      try {
+        const { executionId } = params;
+        await this.engine.resumeWorkflow(executionId);
+
+        return {
+          success: true,
+          message: 'Workflow resumed',
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    });
+
+    // Cancel workflow execution
+    this.app.post('/api/executions/:executionId/cancel', async ({ params, set }) => {
+      try {
+        const { executionId } = params;
+        await this.engine.cancelWorkflow(executionId);
+
+        return {
+          success: true,
+          message: 'Workflow cancelled',
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
     });
 
 

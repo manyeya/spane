@@ -1,9 +1,10 @@
 import { Elysia } from 'elysia';
 import { WorkflowEngine } from '../engine/workflow-engine';
 import { NodeRegistry } from '../registry';
-import { InMemoryExecutionStore } from '../inmemory-store';
+import { InMemoryExecutionStore } from '../db/inmemory-store';
 import IORedis from 'ioredis';
 import type { WorkflowDefinition, NodeDefinition, ExecutionContext, ExecutionResult, WorkflowTrigger } from '../types';
+import { DrizzleExecutionStateStore } from '../db/drizzle-store';
 
 // Initialize Redis connection
 console.log('🔌 Connecting to Redis...');
@@ -206,8 +207,11 @@ registry.register('condition', {
     }
 });
 
-// Initialize state store (using in-memory for this example)
-const stateStore = new InMemoryExecutionStore();
+// Initialize state store (using Drizzle with PostgreSQL)
+const stateStore = new DrizzleExecutionStateStore(
+    process.env.DATABASE_URL || 'postgresql://manyeya@localhost:5432/spane',
+    redis
+);
 
 // Initialize the workflow engine with all required dependencies
 console.log('🚀 Initializing workflow engine...');
@@ -407,10 +411,210 @@ const app = new Elysia()
         return execution;
     })
 
+    // ============================================================================
+    // DURABILITY & RELIABILITY ENDPOINTS
+    // ============================================================================
+
+    // List all workflows
+    .get('/api/workflows', async () => {
+        try {
+            const workflows = engine.getAllWorkflows();
+            return {
+                success: true,
+                workflows: Array.from(workflows.values()),
+                count: workflows.size
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: (error as Error).message
+            };
+        }
+    })
+
+    // Get workflow version history
+    .get('/api/workflows/:workflowId/versions', async ({ params }: { params: { workflowId: string } }) => {
+        try {
+            if ('getWorkflowVersions' in stateStore) {
+                const versions = await (stateStore as any).getWorkflowVersions(params.workflowId);
+                return {
+                    success: true,
+                    versions
+                };
+            }
+            return {
+                success: false,
+                error: 'Workflow versioning not supported'
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: (error as Error).message
+            };
+        }
+    })
+
+    // System health (new HealthMonitor)
+    .get('/api/system/health', async () => {
+        try {
+            if ('healthMonitor' in engine && (engine as any).healthMonitor) {
+                const healthMonitor = (engine as any).healthMonitor;
+                const health = healthMonitor.getLastHealthStatus();
+                if (health) {
+                    return {
+                        success: true,
+                        ...health
+                    };
+                }
+            }
+            return {
+                success: true,
+                overall: 'healthy',
+                timestamp: new Date()
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: (error as Error).message
+            };
+        }
+    })
+
+    // Set execution timeout
+    .post('/api/executions/:executionId/timeout', async ({ params, body }: { params: { executionId: string }, body: any }) => {
+        try {
+            const { timeoutMs } = body;
+            if (!timeoutMs || timeoutMs <= 0) {
+                return {
+                    success: false,
+                    error: 'timeoutMs must be a positive number'
+                };
+            }
+
+            if ('timeoutMonitor' in engine && (engine as any).timeoutMonitor) {
+                const timeoutMonitor = (engine as any).timeoutMonitor;
+                await timeoutMonitor.setExecutionTimeout(params.executionId, timeoutMs);
+                return {
+                    success: true,
+                    message: `Timeout set for execution ${params.executionId}`,
+                    timeoutAt: new Date(Date.now() + timeoutMs)
+                };
+            }
+
+            return {
+                success: false,
+                error: 'Timeout monitoring not available'
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: (error as Error).message
+            };
+        }
+    })
+
+    // Get DLQ items
+    .get('/api/dlq', async ({ query }: { query: any }) => {
+        try {
+            const start = parseInt(query.start || '0');
+            const end = parseInt(query.end || '10');
+            const items = await engine.getDLQItems(start, end);
+            return {
+                success: true,
+                items,
+                count: items.length
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: (error as Error).message
+            };
+        }
+    })
+
+    // Retry DLQ item
+    .post('/api/dlq/:dlqJobId/retry', async ({ params }: { params: { dlqJobId: string } }) => {
+        try {
+            const success = await engine.retryDLQItem(params.dlqJobId);
+            if (!success) {
+                return {
+                    success: false,
+                    error: 'DLQ item not found'
+                };
+            }
+            return {
+                success: true,
+                message: 'DLQ item retried'
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: (error as Error).message
+            };
+        }
+    })
+
+    // Pause workflow execution
+    .post('/api/executions/:executionId/pause', async ({ params }: { params: { executionId: string } }) => {
+        try {
+            await engine.pauseWorkflow(params.executionId);
+            return {
+                success: true,
+                message: 'Workflow paused'
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: (error as Error).message
+            };
+        }
+    })
+
+    // Resume workflow execution
+    .post('/api/executions/:executionId/resume', async ({ params }: { params: { executionId: string } }) => {
+        try {
+            await engine.resumeWorkflow(params.executionId);
+            return {
+                success: true,
+                message: 'Workflow resumed'
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: (error as Error).message
+            };
+        }
+    })
+
+    // Cancel workflow execution
+    .post('/api/executions/:executionId/cancel', async ({ params }: { params: { executionId: string } }) => {
+        try {
+            await engine.cancelWorkflow(params.executionId);
+            return {
+                success: true,
+                message: 'Workflow cancelled'
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: (error as Error).message
+            };
+        }
+    })
+
     .listen(3001, ({ hostname, port }) => {
         console.log(`🚀 React Flow n8n Backend running at http://${hostname}:${port}`);
         console.log(`📊 API endpoints:`);
         console.log(`   - POST /api/workflows/execute`);
         console.log(`   - GET  /api/workflows/executions/:id`);
         console.log(`   - GET  /api/health`);
+        console.log(`   - GET  /api/workflows - List all workflows`);
+        console.log(`   - GET  /api/workflows/:id/versions - Version history`);
+        console.log(`   - GET  /api/system/health - System health status`);
+        console.log(`   - POST /api/executions/:id/timeout - Set timeout`);
+        console.log(`   - GET  /api/dlq - List DLQ items`);
+        console.log(`   - POST /api/dlq/:id/retry - Retry DLQ item`);
+        console.log(`   - POST /api/executions/:id/pause - Pause execution`);
+        console.log(`   - POST /api/executions/:id/resume - Resume execution`);
+        console.log(`   - POST /api/executions/:id/cancel - Cancel execution`);
     });
