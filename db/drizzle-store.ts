@@ -901,5 +901,82 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
     // Simple query to verify database is responsive
     await this.db.select({ count: sql<number>`count(*)` }).from(schema.executions).limit(1);
   }
+
+  // ============================================================================
+  // EXECUTION LISTING METHODS
+  // ============================================================================
+
+  /**
+   * List executions with optional workflow filter
+   */
+  async listExecutions(workflowId?: string, limit: number = 100): Promise<Array<{
+    executionId: string;
+    workflowId: string;
+    status: string;
+    startedAt: Date;
+    completedAt?: Date;
+    initialData?: any;
+    metadata?: any;
+  }>> {
+    const conditions = workflowId 
+      ? eq(schema.executions.workflowId, workflowId)
+      : undefined;
+
+    const executionRecords = await this.db
+      .select({
+        executionId: schema.executions.executionId,
+        workflowId: schema.executions.workflowId,
+        status: schema.executions.status,
+        startedAt: schema.executions.startedAt,
+        completedAt: schema.executions.completedAt,
+        initialData: schema.executions.initialData,
+        metadata: schema.executions.metadata,
+      })
+      .from(schema.executions)
+      .where(conditions)
+      .orderBy(desc(schema.executions.startedAt))
+      .limit(limit);
+
+    return executionRecords.map(record => ({
+      executionId: record.executionId,
+      workflowId: record.workflowId,
+      status: record.status,
+      startedAt: record.startedAt,
+      completedAt: record.completedAt || undefined,
+      initialData: record.initialData || undefined,
+      metadata: record.metadata || undefined,
+    }));
+  }
+
+  /**
+   * Get workflow versions for version history
+   */
+  async getWorkflowVersions(workflowId: string): Promise<Array<{
+    versionId: number;
+    version: number;
+    createdAt: Date;
+    changeNotes?: string;
+    createdBy?: string;
+  }>> {
+    const versions = await this.db
+      .select({
+        versionId: schema.workflowVersions.id,
+        version: schema.workflowVersions.version,
+        createdAt: schema.workflowVersions.createdAt,
+        changeNotes: schema.workflowVersions.changeNotes,
+        createdBy: schema.workflowVersions.createdBy,
+      })
+      .from(schema.workflowVersions)
+      .where(eq(schema.workflowVersions.workflowId, workflowId))
+      .orderBy(desc(schema.workflowVersions.version));
+
+    return versions.map(v => ({
+      versionId: v.versionId,
+      version: v.version,
+      createdAt: v.createdAt,
+      changeNotes: v.changeNotes || undefined,
+      createdBy: v.createdBy || undefined,
+    }));
+  }
 }
 

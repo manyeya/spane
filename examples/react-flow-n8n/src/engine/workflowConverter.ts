@@ -1,6 +1,7 @@
 import { Edge } from '@xyflow/react';
 import { TriggerNodeData } from '../nodes/TriggerNode';
-import { ConditionNodeData } from '../nodes/ConditionNode';
+// ConditionNodeData is available for future use
+import type { ConditionNodeData as _ConditionNodeData } from '../nodes/ConditionNode';
 
 export interface WorkflowDefinition {
     nodes: WorkflowNode[];

@@ -1,4 +1,5 @@
 import { Elysia } from 'elysia';
+import { cors } from '@elysiajs/cors';
 import { WorkflowEngine } from '../engine/workflow-engine';
 import { NodeRegistry } from '../engine/registry';
 import IORedis from 'ioredis';
@@ -347,19 +348,49 @@ function convertToSpaneWorkflow(reactFlowWorkflow: any): WorkflowDefinition {
     return workflow;
 }
 
-// Create Elysia server
+// Create Elysia server with CORS enabled
 const app = new Elysia()
-    .onBeforeHandle(({ set }) => {
-        // Enable CORS for all routes
+    .use(cors({
+        origin: '*',
+        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization'],
+        credentials: false
+    }))
+    .onError(({ code, error, set }) => {
+        // Ensure CORS headers are set even on errors
         set.headers['Access-Control-Allow-Origin'] = '*';
         set.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
-        set.headers['Access-Control-Allow-Headers'] = 'Content-Type';
+        set.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization';
+        
+        console.error(`Error ${code}:`, error);
+        return {
+            success: false,
+            error: error || 'An error occurred',
+            code
+        };
     })
-    // Handle OPTIONS preflight requests - return empty response, headers set by onBeforeHandle
-    .options('/api/workflows/execute', () => new Response(null, { status: 204 }))
-    .options('/api/workflows/executions/:id', () => new Response(null, { status: 204 }))
-    .options('/api/health', () => new Response(null, { status: 204 }))
     .get('/api/health', () => ({ status: 'ok' }))
+    
+    // Queue statistics endpoint (for monitoring dashboard)
+    .get('/api/stats', async () => {
+        try {
+            const stats = await engine.getQueueStats();
+            return {
+                success: true,
+                ...stats
+            };
+        } catch (error) {
+            return {
+                success: true,
+                waiting: 0,
+                active: 0,
+                completed: 0,
+                failed: 0,
+                delayed: 0,
+                paused: 0
+            };
+        }
+    })
 
     .post('/api/workflows/execute', async ({ body }: { body: any }) => {
         try {
@@ -422,6 +453,54 @@ const app = new Elysia()
                 success: true,
                 workflows: Array.from(workflows.values()),
                 count: workflows.length
+            };
+        } catch (error) {
+            return {
+                success: false,
+                error: (error as Error).message
+            };
+        }
+    })
+
+    // Get single workflow by ID (with optional version)
+    .get('/api/workflows/:workflowId', async ({ params, query }: { params: { workflowId: string }, query: any }) => {
+        try {
+            const version = query.version ? parseInt(query.version) : undefined;
+            const workflow = await engine.getWorkflowFromDatabase(params.workflowId, version);
+            
+            if (!workflow) {
+                return {
+                    success: false,
+                    error: `Workflow ${params.workflowId} not found`
+                };
+            }
+
+            // Check if workflow has reactFlowData (stored when saving from UI)
+            const hasReactFlowData = (workflow as any).reactFlowData?.nodes?.length > 0;
+            
+            // Return workflow with React Flow data if available
+            return {
+                success: true,
+                workflow: {
+                    id: workflow.id,
+                    name: workflow.name,
+                    entryNodeId: workflow.entryNodeId,
+                    triggers: workflow.triggers,
+                    // Include reactFlowData so frontend can properly extract it
+                    reactFlowData: hasReactFlowData ? (workflow as any).reactFlowData : undefined,
+                    // Also include nodes/edges directly for backwards compatibility
+                    nodes: hasReactFlowData 
+                        ? (workflow as any).reactFlowData.nodes 
+                        : workflow.nodes.map((n: any) => ({
+                            id: n.id,
+                            type: n.type,
+                            position: n.position || { x: 0, y: 0 },
+                            data: { label: n.id, type: n.type, config: n.config || {} }
+                        })),
+                    edges: hasReactFlowData 
+                        ? (workflow as any).reactFlowData.edges 
+                        : [],
+                }
             };
         } catch (error) {
             return {
@@ -601,6 +680,193 @@ const app = new Elysia()
         }
     })
 
+    // ============================================================================
+    // WORKFLOW CRUD ENDPOINTS (Task 14)
+    // ============================================================================
+
+    // Create new workflow
+    .post('/api/workflows', async ({ body }: { body: any }) => {
+        try {
+            const { name, nodes, edges, triggers, entryNodeId } = body;
+            
+            if (!name || typeof name !== 'string' || name.trim() === '') {
+                return {
+                    success: false,
+                    error: 'Workflow name is required and cannot be empty'
+                };
+            }
+
+            // Generate workflow ID
+            const workflowId = `workflow-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            
+            // Convert React Flow format to Spane workflow
+            const spaneWorkflow = convertToSpaneWorkflow({
+                nodes: nodes || [],
+                edges: edges || [],
+                trigger: triggers?.[0]
+            });
+            
+            // Override with provided values
+            spaneWorkflow.id = workflowId;
+            spaneWorkflow.name = name.trim();
+            if (entryNodeId) {
+                spaneWorkflow.entryNodeId = entryNodeId;
+            }
+            if (triggers) {
+                spaneWorkflow.triggers = triggers;
+            }
+
+            // Store React Flow data alongside Spane workflow for UI reconstruction
+            const workflowWithReactFlowData = {
+                ...spaneWorkflow,
+                reactFlowData: {
+                    nodes: nodes || [],
+                    edges: edges || []
+                }
+            };
+
+            // Register workflow with engine (saves to database)
+            await engine.registerWorkflow(workflowWithReactFlowData);
+
+            return {
+                success: true,
+                workflowId,
+                message: `Workflow '${name}' created successfully`
+            };
+        } catch (error) {
+            console.error('Failed to create workflow:', error);
+            return {
+                success: false,
+                error: (error as Error).message
+            };
+        }
+    })
+
+    // Update existing workflow (Task 14.1)
+    .put('/api/workflows/:workflowId', async ({ params, body }: { params: { workflowId: string }, body: any }) => {
+        try {
+            const { name, nodes, edges, triggers, entryNodeId, changeNotes } = body;
+            
+            // Check if workflow exists
+            const existingWorkflow = await engine.getWorkflow(params.workflowId);
+            if (!existingWorkflow) {
+                return {
+                    success: false,
+                    error: `Workflow ${params.workflowId} not found`
+                };
+            }
+
+            // Convert React Flow format to Spane workflow
+            const spaneWorkflow = convertToSpaneWorkflow({
+                nodes: nodes || [],
+                edges: edges || [],
+                trigger: triggers?.[0]
+            });
+            
+            // Preserve workflow ID and update other fields
+            spaneWorkflow.id = params.workflowId;
+            spaneWorkflow.name = name?.trim() || existingWorkflow.name;
+            if (entryNodeId) {
+                spaneWorkflow.entryNodeId = entryNodeId;
+            }
+            if (triggers) {
+                spaneWorkflow.triggers = triggers;
+            }
+
+            // Store React Flow data alongside Spane workflow for UI reconstruction
+            const workflowWithReactFlowData = {
+                ...spaneWorkflow,
+                reactFlowData: {
+                    nodes: nodes || [],
+                    edges: edges || []
+                }
+            };
+
+            // Register workflow with engine (creates new version)
+            await engine.registerWorkflow(workflowWithReactFlowData, changeNotes);
+
+            return {
+                success: true,
+                workflowId: params.workflowId,
+                message: `Workflow '${spaneWorkflow.name}' updated successfully`
+            };
+        } catch (error) {
+            console.error('Failed to update workflow:', error);
+            return {
+                success: false,
+                error: (error as Error).message
+            };
+        }
+    })
+
+    // Delete (deactivate) workflow (Task 14.2)
+    .delete('/api/workflows/:workflowId', async ({ params }: { params: { workflowId: string } }) => {
+        try {
+            // Check if workflow exists
+            const existingWorkflow = await engine.getWorkflow(params.workflowId);
+            if (!existingWorkflow) {
+                return {
+                    success: false,
+                    error: `Workflow ${params.workflowId} not found`
+                };
+            }
+
+            // Deactivate workflow (soft delete)
+            await stateStore.deactivateWorkflow(params.workflowId);
+
+            return {
+                success: true,
+                message: `Workflow ${params.workflowId} deleted successfully`
+            };
+        } catch (error) {
+            console.error('Failed to delete workflow:', error);
+            return {
+                success: false,
+                error: (error as Error).message
+            };
+        }
+    })
+
+    // List all executions with optional workflow filter (Task 14.3)
+    .get('/api/executions', async ({ query }: { query: any }) => {
+        try {
+            const workflowId = query.workflowId;
+            const executions = await stateStore.listExecutions(workflowId);
+            
+            return {
+                success: true,
+                executions,
+                count: executions.length
+            };
+        } catch (error) {
+            console.error('Failed to list executions:', error);
+            return {
+                success: false,
+                error: (error as Error).message
+            };
+        }
+    })
+
+    // Replay execution (Task 14.4)
+    .post('/api/executions/:executionId/replay', async ({ params }: { params: { executionId: string } }) => {
+        try {
+            const newExecutionId = await engine.replayWorkflow(params.executionId);
+            
+            return {
+                success: true,
+                executionId: newExecutionId,
+                originalExecutionId: params.executionId,
+                message: 'Execution replay started'
+            };
+        } catch (error) {
+            console.error('Failed to replay execution:', error);
+            return {
+                success: false,
+                error: (error as Error).message
+            };
+        }
+    })
+
     .listen(3001, ({ hostname, port }) => {
         console.log(`🚀 React Flow n8n Backend running at http://${hostname}:${port}`);
         console.log(`📊 API endpoints:`);
@@ -608,7 +874,12 @@ const app = new Elysia()
         console.log(`   - GET  /api/workflows/executions/:id`);
         console.log(`   - GET  /api/health`);
         console.log(`   - GET  /api/workflows - List all workflows`);
+        console.log(`   - POST /api/workflows - Create new workflow`);
+        console.log(`   - PUT  /api/workflows/:id - Update workflow`);
+        console.log(`   - DELETE /api/workflows/:id - Delete workflow`);
         console.log(`   - GET  /api/workflows/:id/versions - Version history`);
+        console.log(`   - GET  /api/executions - List all executions`);
+        console.log(`   - POST /api/executions/:id/replay - Replay execution`);
         console.log(`   - GET  /api/system/health - System health status`);
         console.log(`   - POST /api/executions/:id/timeout - Set timeout`);
         console.log(`   - GET  /api/dlq - List DLQ items`);

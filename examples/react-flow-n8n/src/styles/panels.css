@@ -1,0 +1,624 @@
+/**
+ * Panel Styles - Comprehensive styles for all panel components
+ * 
+ * This file contains styles for:
+ * - WorkflowListPanel
+ * - ExecutionHistoryPanel
+ * - ExecutionControlPanel
+ * - DLQPanel
+ * - MonitoringDashboard
+ * - VersionHistoryPanel
+ * 
+ * Requirements: UI consistency, UI usability
+ */
+
+/* ==========================================================================
+   Common Panel Styles
+   ========================================================================== */
+
+/* Base panel structure */
+.panel-base {
+  display: flex;
+  flex-direction: column;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+  height: 100%;
+}
+
+/* Panel header common styles */
+.panel-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid #e0e0e0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #f9f9f9;
+  flex-shrink: 0;
+}
+
+.panel-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+  margin: 0;
+}
+
+/* Panel content common styles */
+.panel-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Panel loading state */
+.panel-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  gap: 12px;
+  color: #666;
+}
+
+/* Panel empty state */
+.panel-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.panel-empty .empty-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.6;
+}
+
+.panel-empty .empty-title {
+  font-size: 16px;
+  font-weight: 500;
+  color: #333;
+  margin-bottom: 8px;
+}
+
+.panel-empty .empty-hint {
+  font-size: 13px;
+  color: #999;
+  max-width: 200px;
+  line-height: 1.4;
+}
+
+/* Panel list item common styles */
+.panel-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.panel-list-item {
+  padding: 12px 16px;
+  border-bottom: 1px solid #f0f0f0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  transition: background-color 0.2s;
+}
+
+.panel-list-item:hover {
+  background: #f5f5f5;
+}
+
+.panel-list-item.selected {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+  border-left: 3px solid #667eea;
+}
+
+.panel-list-item:last-child {
+  border-bottom: none;
+}
+
+/* Panel action buttons */
+.panel-action-btn {
+  background: none;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.2s;
+  font-size: 14px;
+}
+
+.panel-list-item:hover .panel-action-btn {
+  opacity: 0.6;
+}
+
+.panel-action-btn:hover:not(:disabled) {
+  opacity: 1 !important;
+}
+
+.panel-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Panel badge/count styles */
+.panel-badge {
+  font-size: 12px;
+  color: #666;
+  background: #f0f0f0;
+  padding: 4px 8px;
+  border-radius: 12px;
+}
+
+/* ==========================================================================
+   Scrollbar Styles
+   ========================================================================== */
+
+.panel-content::-webkit-scrollbar,
+.workflow-list-content::-webkit-scrollbar,
+.execution-history-content::-webkit-scrollbar,
+.dlq-panel-content::-webkit-scrollbar,
+.version-history-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.panel-content::-webkit-scrollbar-track,
+.workflow-list-content::-webkit-scrollbar-track,
+.execution-history-content::-webkit-scrollbar-track,
+.dlq-panel-content::-webkit-scrollbar-track,
+.version-history-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.panel-content::-webkit-scrollbar-thumb,
+.workflow-list-content::-webkit-scrollbar-thumb,
+.execution-history-content::-webkit-scrollbar-thumb,
+.dlq-panel-content::-webkit-scrollbar-thumb,
+.version-history-content::-webkit-scrollbar-thumb {
+  background: #d0d0d0;
+  border-radius: 3px;
+}
+
+.panel-content::-webkit-scrollbar-thumb:hover,
+.workflow-list-content::-webkit-scrollbar-thumb:hover,
+.execution-history-content::-webkit-scrollbar-thumb:hover,
+.dlq-panel-content::-webkit-scrollbar-thumb:hover,
+.version-history-content::-webkit-scrollbar-thumb:hover {
+  background: #b0b0b0;
+}
+
+/* ==========================================================================
+   Panel Container Positioning - Responsive
+   ========================================================================== */
+
+/* Right-side panel containers */
+.execution-history-container,
+.execution-control-container,
+.dlq-panel-container,
+.monitoring-dashboard-container,
+.version-history-container {
+  position: absolute;
+  top: 80px;
+  right: 20px;
+  z-index: 5;
+  transition: all 0.3s ease;
+}
+
+.execution-history-container {
+  width: 380px;
+  max-height: calc(100vh - 120px);
+}
+
+.execution-control-container {
+  width: 300px;
+}
+
+.dlq-panel-container {
+  width: 400px;
+  max-height: calc(100vh - 120px);
+}
+
+.monitoring-dashboard-container {
+  width: 340px;
+  max-height: calc(100vh - 120px);
+}
+
+.version-history-container {
+  width: 340px;
+  max-height: calc(100vh - 120px);
+}
+
+/* ==========================================================================
+   Responsive Breakpoints
+   ========================================================================== */
+
+/* Tablet and smaller screens */
+@media (max-width: 1024px) {
+  /* Sidebar adjustments */
+  .sidebar {
+    width: 240px;
+  }
+  
+  .sidebar .workflow-list-panel {
+    max-height: 35%;
+  }
+  
+  .node-palette {
+    width: 240px;
+  }
+  
+  /* Panel container adjustments */
+  .execution-history-container,
+  .dlq-panel-container,
+  .monitoring-dashboard-container,
+  .version-history-container {
+    width: 320px;
+    right: 15px;
+  }
+  
+  .execution-control-container {
+    width: 280px;
+    right: 15px;
+  }
+  
+  /* Reduce padding in panels */
+  .panel-header,
+  .workflow-list-header,
+  .execution-history-header,
+  .dlq-panel-header,
+  .monitoring-dashboard-header,
+  .version-history-header,
+  .execution-control-header {
+    padding: 10px 14px;
+  }
+  
+  .panel-list-item,
+  .workflow-item,
+  .execution-item,
+  .dlq-item,
+  .version-item {
+    padding: 10px 14px;
+  }
+}
+
+/* Mobile and small tablets */
+@media (max-width: 768px) {
+  /* Hide sidebar on mobile, show as overlay */
+  .sidebar {
+    position: fixed;
+    left: -280px;
+    top: 60px;
+    height: calc(100vh - 60px);
+    width: 280px;
+    z-index: 20;
+    transition: left 0.3s ease;
+    box-shadow: 4px 0 20px rgba(0, 0, 0, 0.15);
+  }
+  
+  .sidebar.open {
+    left: 0;
+  }
+  
+  /* Full-width panels on mobile */
+  .execution-history-container,
+  .execution-control-container,
+  .dlq-panel-container,
+  .monitoring-dashboard-container,
+  .version-history-container {
+    position: fixed;
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-height: 60vh;
+    border-radius: 16px 16px 0 0;
+    z-index: 25;
+  }
+  
+  /* Add drag handle for mobile panels */
+  .execution-history-panel::before,
+  .execution-control-panel::before,
+  .dlq-panel::before,
+  .monitoring-dashboard::before,
+  .version-history-panel::before {
+    content: '';
+    display: block;
+    width: 40px;
+    height: 4px;
+    background: #d0d0d0;
+    border-radius: 2px;
+    margin: 8px auto;
+  }
+  
+  /* Adjust canvas container */
+  .canvas-container {
+    margin-top: 60px;
+    margin-left: 0;
+  }
+  
+  /* Node palette as bottom sheet on mobile */
+  .node-palette {
+    position: fixed;
+    bottom: -100%;
+    left: 0;
+    right: 0;
+    width: 100%;
+    height: 50vh;
+    margin-top: 0;
+    border-radius: 16px 16px 0 0;
+    z-index: 20;
+    transition: bottom 0.3s ease;
+  }
+  
+  .node-palette.open {
+    bottom: 0;
+  }
+  
+  /* Adjust header for mobile */
+  .app-header {
+    padding: 0 12px;
+  }
+  
+  .app-header h1 {
+    font-size: 16px;
+  }
+  
+  .header-actions {
+    gap: 6px;
+  }
+  
+  .btn {
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+  
+  .btn-sm {
+    padding: 4px 8px;
+    font-size: 11px;
+  }
+}
+
+/* Very small screens */
+@media (max-width: 480px) {
+  .app-header h1 .logo {
+    width: 28px;
+    height: 28px;
+    font-size: 14px;
+  }
+  
+  .app-header h1 span {
+    display: none;
+  }
+  
+  /* Stack execution item content */
+  .execution-item-meta {
+    flex-direction: column;
+    gap: 4px;
+  }
+  
+  /* Simplify DLQ items */
+  .dlq-item-meta {
+    flex-direction: column;
+    gap: 4px;
+  }
+  
+  /* Reduce stats grid to single column */
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  /* Dialog adjustments */
+  .dialog {
+    width: 95vw;
+    margin: 10px;
+  }
+  
+  .execution-detail-panel,
+  .dlq-detail-panel {
+    width: 95vw;
+    max-height: 90vh;
+  }
+}
+
+/* ==========================================================================
+   Panel Resize Handle (for desktop)
+   ========================================================================== */
+
+.panel-resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: ew-resize;
+  background: transparent;
+  transition: background 0.2s;
+}
+
+.panel-resize-handle:hover {
+  background: #667eea;
+}
+
+/* ==========================================================================
+   Panel Transitions and Animations
+   ========================================================================== */
+
+/* Slide in animation for panels */
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.execution-history-container,
+.execution-control-container,
+.dlq-panel-container,
+.monitoring-dashboard-container,
+.version-history-container {
+  animation: slideInRight 0.3s ease-out;
+}
+
+@media (max-width: 768px) {
+  .execution-history-container,
+  .execution-control-container,
+  .dlq-panel-container,
+  .monitoring-dashboard-container,
+  .version-history-container {
+    animation: slideInUp 0.3s ease-out;
+  }
+}
+
+/* ==========================================================================
+   Focus and Accessibility Styles
+   ========================================================================== */
+
+/* Focus visible styles for keyboard navigation */
+.btn:focus-visible,
+.control-btn:focus-visible,
+.panel-action-btn:focus-visible,
+.workflow-delete-btn:focus-visible,
+.execution-replay-btn:focus-visible,
+.dlq-retry-btn:focus-visible,
+.version-restore-btn:focus-visible {
+  outline: 2px solid #667eea;
+  outline-offset: 2px;
+}
+
+.panel-list-item:focus-visible,
+.workflow-item:focus-visible,
+.execution-item:focus-visible,
+.dlq-item:focus-visible,
+.version-item:focus-visible {
+  outline: 2px solid #667eea;
+  outline-offset: -2px;
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .panel-base,
+  .workflow-list-panel,
+  .execution-history-panel,
+  .execution-control-panel,
+  .dlq-panel,
+  .monitoring-dashboard,
+  .version-history-panel {
+    border: 2px solid #333;
+  }
+  
+  .panel-list-item.selected,
+  .workflow-item.selected,
+  .execution-item.selected,
+  .version-item.selected {
+    border-left: 4px solid #000;
+    background: #e0e0e0;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .execution-history-container,
+  .execution-control-container,
+  .dlq-panel-container,
+  .monitoring-dashboard-container,
+  .version-history-container,
+  .sidebar,
+  .node-palette {
+    animation: none;
+    transition: none;
+  }
+  
+  .loading-spinner {
+    animation: none;
+  }
+  
+  .status-indicator.running,
+  .execution-status-badge.status-running {
+    animation: none;
+  }
+}
+
+/* ==========================================================================
+   Dark Mode Support (optional, for future)
+   ========================================================================== */
+
+@media (prefers-color-scheme: dark) {
+  /* These styles are prepared for future dark mode implementation */
+  /* Currently commented out to maintain consistency with existing light theme */
+  /*
+  .panel-base,
+  .workflow-list-panel,
+  .execution-history-panel,
+  .execution-control-panel,
+  .dlq-panel,
+  .monitoring-dashboard,
+  .version-history-panel {
+    background: #1e1e1e;
+    color: #e0e0e0;
+  }
+  
+  .panel-header,
+  .workflow-list-header,
+  .execution-history-header,
+  .dlq-panel-header,
+  .monitoring-dashboard-header,
+  .version-history-header,
+  .execution-control-header {
+    background: #2d2d2d;
+    border-color: #404040;
+  }
+  
+  .panel-list-item:hover,
+  .workflow-item:hover,
+  .execution-item:hover,
+  .dlq-item:hover,
+  .version-item:hover {
+    background: #2d2d2d;
+  }
+  */
+}
+
+/* ==========================================================================
+   Print Styles
+   ========================================================================== */
+
+@media print {
+  .sidebar,
+  .node-palette,
+  .execution-history-container,
+  .execution-control-container,
+  .dlq-panel-container,
+  .monitoring-dashboard-container,
+  .version-history-container,
+  .app-header {
+    display: none !important;
+  }
+  
+  .canvas-container {
+    margin: 0;
+    position: static;
+  }
+}

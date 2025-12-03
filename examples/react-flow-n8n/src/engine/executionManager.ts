@@ -14,7 +14,8 @@ export interface ExecutionResult {
 class ExecutionManager {
     private apiBaseUrl: string;
 
-    constructor(apiBaseUrl: string = 'http://localhost:3001/api') {
+    // Use relative URL to leverage Vite's proxy configuration
+    constructor(apiBaseUrl: string = '/api') {
         this.apiBaseUrl = apiBaseUrl;
     }
 
