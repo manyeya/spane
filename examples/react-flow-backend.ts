@@ -1,7 +1,6 @@
 import { Elysia } from 'elysia';
 import { WorkflowEngine } from '../engine/workflow-engine';
-import { NodeRegistry } from '../registry';
-import { InMemoryExecutionStore } from '../db/inmemory-store';
+import { NodeRegistry } from '../engine/registry';
 import IORedis from 'ioredis';
 import type { WorkflowDefinition, NodeDefinition, ExecutionContext, ExecutionResult, WorkflowTrigger } from '../types';
 import { DrizzleExecutionStateStore } from '../db/drizzle-store';

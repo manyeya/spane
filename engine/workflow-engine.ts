@@ -1,5 +1,5 @@
 import { Redis } from 'ioredis';
-import { NodeRegistry } from '../registry';
+import { NodeRegistry } from './registry';
 import type { IExecutionStateStore, WorkflowDefinition } from '../types';
 import { MetricsCollector } from '../utils/metrics';
 import { CircuitBreakerRegistry } from '../utils/circuit-breaker';

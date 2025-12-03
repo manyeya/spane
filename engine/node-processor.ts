@@ -1,6 +1,6 @@
 import { Job, DelayedError } from 'bullmq';
 import { Redis } from 'ioredis';
-import { NodeRegistry } from '../registry';
+import { NodeRegistry } from './registry';
 import type { IExecutionStateStore, WorkflowDefinition, ExecutionResult } from '../types';
 import type { NodeJobData } from './types';
 import { QueueManager } from './queue-manager';
@@ -344,30 +344,6 @@ export class NodeProcessor {
         await this.queueManager.nodeQueue.add('process-node', jobData, {
             jobId: `${executionId}-node-${nodeId}-${Date.now()}`, // Unique ID for every run
             delay: options.delay,
-        });
-    }
-
-    private async areAllParentsResolved(executionId: string, workflowId: string, nodeId: string): Promise<boolean> {
-        const workflow = await this.getWorkflowWithLazyLoad(workflowId);
-        if (!workflow) return false;
-
-        // Check if already failed/cancelled
-        const currentExecution = await this.stateStore.getExecution(executionId);
-        if (currentExecution?.status === 'failed' || currentExecution?.status === 'cancelled') {
-            return false; // Changed to return false as per Promise<boolean>
-        }
-
-        const node = workflow.nodes.find(n => n.id === nodeId);
-        if (!node) return false;
-
-        const parentIds = node.inputs;
-        if (parentIds.length === 0) return true; // No parents, so considered resolved
-
-        const parentResults = await this.stateStore.getNodeResults(executionId, parentIds);
-
-        return parentIds.every(pid => {
-            const res = parentResults[pid];
-            return res && (res.success || res.skipped);
         });
     }
 

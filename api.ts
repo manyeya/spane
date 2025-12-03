@@ -5,9 +5,21 @@ import type { HealthMonitor } from './utils/health';
 import type { MetricsCollector } from './utils/metrics';
 import type { CircuitBreakerRegistry } from './utils/circuit-breaker';
 import type { GracefulShutdown } from './utils/graceful-shutdown';
+import { fromTypes, openapi } from '@elysiajs/openapi'
 
 export class WorkflowAPIController {
-  private app = new Elysia();
+  private app = new Elysia().use(openapi({
+    references: fromTypes() ,
+    swagger: {
+      autoDarkMode: true,
+    },
+    documentation: {
+      info: {
+        title: 'Workflow API',
+        version: '1.0.0',
+      },
+    }
+  }));
 
   constructor(
     private engine: WorkflowEngine,
@@ -607,3 +619,5 @@ export class WorkflowAPIController {
     return this.app;
   }
 }
+
+

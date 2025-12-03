@@ -2,7 +2,7 @@ import { WorkflowEngine } from './engine/workflow-engine';
 import { WorkflowAPIController } from './api';
 import { InMemoryExecutionStore } from './db/inmemory-store';
 import { DrizzleExecutionStateStore } from './db/drizzle-store';
-import { NodeRegistry } from './registry';
+import { NodeRegistry } from './engine/registry';
 import { Redis } from 'ioredis';
 import { HealthMonitor } from './utils/health';
 import { MetricsCollector } from './utils/metrics';

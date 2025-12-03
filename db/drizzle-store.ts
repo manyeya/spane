@@ -10,7 +10,7 @@ import type {
   ExecutionTrace,
   ExecutionSpan
 } from '../types';
-import * as schema from './schema-pg';
+import * as schema from './schema';
 
 export class DrizzleExecutionStateStore implements IExecutionStateStore {
   private db: ReturnType<typeof drizzle>;

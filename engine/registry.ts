@@ -2,7 +2,7 @@
 // NODE REGISTRY
 // ============================================================================
 
-import type { INodeExecutor } from "./types";
+import type { INodeExecutor } from "../types";
 
 export class NodeRegistry {
   private executors: Map<string, INodeExecutor> = new Map();
