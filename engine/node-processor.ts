@@ -322,8 +322,8 @@ export class NodeProcessor {
             data: null
         });
 
-        // Propagate skip to children
-        const workflow = this.workflows.get(workflowId);
+        // Propagate skip to children - use async lazy loading instead of sync cache access
+        const workflow = await this.getWorkflowWithLazyLoad(workflowId);
         const node = workflow?.nodes.find(n => n.id === nodeId);
         if (node) {
             // Recursively check children. 
@@ -333,16 +333,35 @@ export class NodeProcessor {
         }
     }
 
-    private async enqueueNode(executionId: string, workflowId: string, nodeId: string, options: { delay?: number } = {}): Promise<void> {
+    private async enqueueNode(
+        executionId: string, 
+        workflowId: string, 
+        nodeId: string, 
+        options: { 
+            delay?: number;
+            subWorkflowStep?: 'initial' | 'waiting-children' | 'complete';
+            childExecutionId?: string;
+        } = {}
+    ): Promise<void> {
         const jobData: NodeJobData = {
             executionId,
             workflowId,
             nodeId,
             inputData: {}, // Input data is fetched during execution now
+            subWorkflowStep: options.subWorkflowStep,
+            childExecutionId: options.childExecutionId,
         };
 
+        // Use deterministic job IDs to prevent duplicate job creation (idempotency)
+        // - For sub-workflow resume jobs: include childExecutionId for uniqueness
+        // - For regular child nodes: use format `${executionId}-node-${nodeId}` (no timestamp)
+        // BullMQ will reject duplicate job IDs automatically, preventing race conditions
+        const jobId = options.subWorkflowStep 
+            ? `${executionId}-node-${nodeId}-resume-${options.childExecutionId}`
+            : `${executionId}-node-${nodeId}`;
+
         await this.queueManager.nodeQueue.add('process-node', jobData, {
-            jobId: `${executionId}-node-${nodeId}-${Date.now()}`, // Unique ID for every run
+            jobId,
             delay: options.delay,
         });
     }
@@ -357,13 +376,27 @@ export class NodeProcessor {
             return;
         }
 
-        const totalNodes = workflow.nodes.length;
-        const pendingCount = await this.stateStore.getPendingNodeCount(executionId, totalNodes);
+        // Use distributed lock to prevent race condition when multiple nodes complete simultaneously
+        const lockKey = `completion:${executionId}`;
+        const lockToken = await this.distributedLock.acquire(lockKey, 5000);
+        
+        if (!lockToken) {
+            // Another process is checking completion, skip
+            console.log(`⏳ Skipping completion check for ${executionId} - another process is handling it`);
+            return;
+        }
 
-        if (pendingCount === 0) {
-            await this.stateStore.setExecutionStatus(executionId, 'completed');
-            console.log(`🎉 Workflow ${executionId} completed successfully`);
-            await this.notifyParentWorkflow(executionId, 'completed');
+        try {
+            const totalNodes = workflow.nodes.length;
+            const pendingCount = await this.stateStore.getPendingNodeCount(executionId, totalNodes);
+
+            if (pendingCount === 0) {
+                await this.stateStore.setExecutionStatus(executionId, 'completed');
+                console.log(`🎉 Workflow ${executionId} completed successfully`);
+                await this.notifyParentWorkflow(executionId, 'completed');
+            }
+        } finally {
+            await this.distributedLock.release(lockKey, lockToken);
         }
     }
 
@@ -382,7 +415,11 @@ export class NodeProcessor {
 
         if (parentExecutionId && parentNodeId) {
             console.log(`🔔 Notifying parent workflow ${parentExecutionId} (node ${parentNodeId}) of child ${executionId} ${status}`);
-            await this.enqueueNode(parentExecutionId, parentWorkflowId || 'unknown', parentNodeId);
+            // Pass sub-workflow state for resumption
+            await this.enqueueNode(parentExecutionId, parentWorkflowId || 'unknown', parentNodeId, {
+                subWorkflowStep: 'complete',
+                childExecutionId: executionId
+            });
         }
     }
 
@@ -400,8 +437,9 @@ export class NodeProcessor {
     ): Promise<ExecutionResult & { checkpoint?: boolean; childExecutionId?: string }> {
         const { workflowId, inputMapping, outputMapping } = config;
 
-        // Validate sub-workflow exists
-        if (!this.workflows.has(workflowId)) {
+        // Validate sub-workflow exists - use lazy loading from database before returning not-found error
+        const subWorkflow = await this.getWorkflowWithLazyLoad(workflowId);
+        if (!subWorkflow) {
             return {
                 success: false,
                 error: `Sub-workflow '${workflowId}' not found`
@@ -463,9 +501,8 @@ export class NodeProcessor {
                 }
 
                 if (childExecution.status === 'completed') {
-                    // Aggregate results from final nodes
-                    const workflow = this.workflows.get(workflowId)!;
-                    const finalNodes = workflow.nodes.filter(node => node.outputs.length === 0);
+                    // Aggregate results from final nodes - use the already loaded subWorkflow
+                    const finalNodes = subWorkflow.nodes.filter(node => node.outputs.length === 0);
 
                     let aggregatedResult: any = {};
 

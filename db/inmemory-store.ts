@@ -136,11 +136,14 @@ export class InMemoryExecutionStore implements IExecutionStateStore {
 
   // Workflow Persistence - Not supported in memory store
   async saveWorkflow(workflow: any, changeNotes?: string, createdBy?: string): Promise<number> {
-    throw new Error('Workflow persistence not supported in InMemoryExecutionStore. Use DrizzleExecutionStateStore with DATABASE_URL.');
+    // Log warning but don't throw - allow in-memory operation
+    console.warn('InMemoryExecutionStore: Workflow not persisted (use DrizzleStore for persistence)');
+    return 0; // Return dummy version ID
   }
 
   async getWorkflow(workflowId: string, version?: number): Promise<any | null> {
-    throw new Error('Workflow persistence not supported in InMemoryExecutionStore. Use DrizzleExecutionStateStore with DATABASE_URL.');
+    // In-memory store doesn't persist workflows, return null to allow lazy loading from database
+    return null;
   }
 
   async getWorkflowVersion(workflowId: string): Promise<number | null> {

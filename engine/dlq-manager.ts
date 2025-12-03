@@ -31,11 +31,14 @@ export class DLQManager {
         const dlqJob = await this.queueManager.dlqQueue.getJob(dlqJobId);
         if (!dlqJob) return false;
 
-        const { data } = dlqJob.data;
+        // dlqJob.data is DLQItem, which contains .data as NodeJobData
+        const dlqItem: DLQItem = dlqJob.data;
+        const nodeJobData: NodeJobData = dlqItem.data;
 
-        // Re-queue the original job
-        await this.queueManager.nodeQueue.add('run-node', data, {
-            jobId: data.executionId + '-' + data.nodeId + '-retry-' + Date.now(), // New Job ID to avoid collision
+        // Re-queue the original job with correct job name 'process-node'
+        // Preserves all original job data fields including sub-workflow state
+        await this.queueManager.nodeQueue.add('process-node', nodeJobData, {
+            jobId: `${nodeJobData.executionId}-${nodeJobData.nodeId}-retry-${Date.now()}`,
             attempts: 3,
             backoff: {
                 type: 'exponential',

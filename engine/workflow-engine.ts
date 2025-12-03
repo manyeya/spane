@@ -1,4 +1,5 @@
 import { Redis } from 'ioredis';
+import type { JobType } from 'bullmq';
 import { NodeRegistry } from './registry';
 import type { IExecutionStateStore, WorkflowDefinition } from '../types';
 import { MetricsCollector } from '../utils/metrics';
@@ -216,8 +217,24 @@ export class WorkflowEngine {
             this.metricsCollector.incrementWorkflowsEnqueued();
         }
 
-        // Find all entry nodes (nodes with no inputs)
-        const entryNodes = workflow.nodes.filter(node => node.inputs.length === 0);
+        // Determine entry nodes: use entryNodeId if specified, otherwise detect nodes with empty inputs
+        let entryNodes: typeof workflow.nodes;
+        
+        if (workflow.entryNodeId) {
+            // Use the specified entry node
+            const entryNode = workflow.nodes.find(n => n.id === workflow.entryNodeId);
+            if (!entryNode) {
+                throw new Error(`Entry node '${workflow.entryNodeId}' not found in workflow '${workflowId}'`);
+            }
+            entryNodes = [entryNode];
+        } else {
+            // Fall back to detecting nodes with empty inputs
+            entryNodes = workflow.nodes.filter(node => node.inputs.length === 0);
+        }
+
+        if (entryNodes.length === 0) {
+            throw new Error(`No entry nodes found in workflow '${workflowId}'`);
+        }
 
         // Enqueue all entry nodes, passing parent job reference if this is a sub-workflow
         // Also pass priority and delay options to each node
@@ -230,6 +247,8 @@ export class WorkflowEngine {
     }
 
     // Enqueue a single node execution (for manual/direct node execution)
+    // Note: This method is used for manual triggers and initial workflow entry nodes
+    // It uses timestamp in job ID since these are user-initiated actions that may be retried
     async enqueueNode(
         executionId: string,
         workflowId: string,
@@ -242,6 +261,8 @@ export class WorkflowEngine {
             jobId?: string;
         }
     ): Promise<string> {
+        // For manual/entry node jobs, use timestamp for uniqueness (allows retries)
+        // Child node jobs use deterministic IDs in NodeProcessor.enqueueNode
         const jobOpts: any = {
             jobId: options?.jobId || `${executionId}-${nodeId}-manual-${Date.now()}`,
             attempts: 3,
@@ -270,7 +291,7 @@ export class WorkflowEngine {
         }
 
         const job = await this.queueManager.nodeQueue.add(
-            'run-node',
+            'process-node',
             { executionId, workflowId, nodeId, inputData },
             jobOpts
         );
@@ -351,19 +372,87 @@ export class WorkflowEngine {
     // --- Control Flow Methods ---
 
     async cancelWorkflow(executionId: string): Promise<void> {
+        // Update database status
         await this.stateStore.setExecutionStatus(executionId, 'cancelled');
-        console.log(`🚫 Workflow ${executionId} cancelled`);
+
+        // Remove all pending jobs for this execution from the queue
+        const jobStates: JobType[] = ['waiting', 'delayed', 'prioritized', 'waiting-children'];
+        const jobs = await this.queueManager.nodeQueue.getJobs(jobStates, 0, -1);
+
+        let removedCount = 0;
+        for (const job of jobs) {
+            // Check if job belongs to this execution
+            if (job.data.executionId === executionId) {
+                await job.remove();
+                removedCount++;
+            }
+        }
+
+        console.log(`🚫 Workflow ${executionId} cancelled (removed ${removedCount} pending jobs)`);
     }
 
     async pauseWorkflow(executionId: string): Promise<void> {
+        // Update database status
         await this.stateStore.setExecutionStatus(executionId, 'paused');
-        console.log(`⏸️ Workflow ${executionId} paused`);
+
+        // Move all waiting jobs to delayed state (24 hours)
+        const jobStates: JobType[] = ['waiting', 'prioritized'];
+        const jobs = await this.queueManager.nodeQueue.getJobs(jobStates, 0, -1);
+
+        let pausedCount = 0;
+        for (const job of jobs) {
+            if (job.data.executionId === executionId) {
+                try {
+                    // Strategy: Remove and re-add with delay (preserving ID)
+                    // moveToDelayed only works for active jobs or requires complex state handling
+
+                    const jobName = job.name;
+                    const jobData = job.data;
+                    const jobOpts = job.opts;
+                    const jobId = job.id;
+
+                    // Remove the current job
+                    await job.remove();
+
+                    // Re-add with long delay (24h)
+                    await this.queueManager.nodeQueue.add(jobName, jobData, {
+                        ...jobOpts,
+                        jobId: jobId, // Preserve ID
+                        delay: 86400000, // 24 hours
+                        priority: jobOpts.priority, // Ensure priority is preserved
+                    });
+
+                    pausedCount++;
+                } catch (error) {
+                    console.warn(`  ⚠️ Failed to pause job ${job.id}:`, error);
+                }
+            }
+        }
+
+        console.log(`⏸️ Workflow ${executionId} paused (delayed ${pausedCount} jobs)`);
     }
 
     async resumeWorkflow(executionId: string): Promise<void> {
+        // Update database status
         await this.stateStore.setExecutionStatus(executionId, 'running');
-        console.log(`▶️ Workflow ${executionId} resumed`);
-        // We could optionally promote delayed jobs here, but they will retry automatically
+
+        // Promote all delayed jobs back to waiting
+        const delayedJobs = await this.queueManager.nodeQueue.getJobs('delayed', 0, -1);
+
+        let resumedCount = 0;
+        for (const job of delayedJobs) {
+            if (job.data.executionId === executionId) {
+                try {
+                    // Promote to waiting (immediate execution)
+                    await job.promote();
+                    resumedCount++;
+                } catch (error) {
+                    // Job might have already been promoted, ignore
+                }
+            }
+        }
+
+        console.log(`▶️ Workflow ${executionId} resumed (promoted ${resumedCount} jobs)`);
     }
 
     async getJobStatus(jobId: string): Promise<{ exists: boolean; status?: string }> {

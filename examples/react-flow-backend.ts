@@ -417,11 +417,11 @@ const app = new Elysia()
     // List all workflows
     .get('/api/workflows', async () => {
         try {
-            const workflows = engine.getAllWorkflows();
+            const workflows = await engine.getAllWorkflowsFromDatabase();
             return {
                 success: true,
                 workflows: Array.from(workflows.values()),
-                count: workflows.size
+                count: workflows.length
             };
         } catch (error) {
             return {
