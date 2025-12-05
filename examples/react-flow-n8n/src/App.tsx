@@ -725,9 +725,10 @@ function App() {
             return;
         }
 
-        // Convert to workflow definition
-        const workflow = convertToWorkflow(nodes, edges);
-        console.log('Executing workflow:', workflow);
+        // Convert to workflow definition, passing the selected workflow ID
+        // This prevents creating duplicate workflows on each execution
+        const workflow = convertToWorkflow(nodes, edges, selectedWorkflowId);
+        console.log('Executing workflow:', workflow, 'selectedWorkflowId:', selectedWorkflowId);
 
         setIsExecuting(true);
         setExecutionStatus('running');

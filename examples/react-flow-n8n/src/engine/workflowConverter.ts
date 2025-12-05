@@ -2,6 +2,8 @@ import { Edge } from '@xyflow/react';
 import { TriggerNodeData } from '../nodes/TriggerNode';
 
 export interface WorkflowDefinition {
+    id?: string;
+    workflowId?: string;
     nodes: WorkflowNode[];
     edges: Edge[];
     trigger?: {
@@ -21,7 +23,8 @@ export interface WorkflowNode {
 
 export function convertToWorkflow(
     nodes: any[],
-    edges: Edge[]
+    edges: Edge[],
+    workflowId?: string | null
 ): WorkflowDefinition {
     // Create workflow nodes with inputs and outputs
     const workflowNodes: WorkflowNode[] = nodes.map(node => {
@@ -66,6 +69,8 @@ export function convertToWorkflow(
     }
 
     return {
+        id: workflowId || undefined,
+        workflowId: workflowId || undefined,
         nodes: workflowNodes,
         edges: edges,
         trigger

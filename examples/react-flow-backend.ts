@@ -293,36 +293,7 @@ console.log('👷 Workers started');
 const eventStreamManager = engine.getEventStream();
 console.log('📡 Event stream manager ready (via WorkflowEngine)');
 
-// Poll execution state from the engine store
-async function updateExecutionFromStore(executionId: string) {
-    try {
-        const state = await stateStore.getExecution(executionId);
-        if (state) {
-            const nodeStatuses: Record<string, string> = {};
-            const nodeResults: Record<string, any> = {};
 
-            for (const [nodeId, result] of Object.entries(state.nodeResults || {})) {
-                nodeStatuses[nodeId] = result.skipped ? 'skipped' : result.success ? 'success' : 'error';
-                nodeResults[nodeId] = result;
-            }
-
-            return {
-                executionId: state.executionId,
-                workflowId: state.workflowId,
-                status: state.status === 'completed' ? 'success' :
-                    state.status === 'failed' ? 'error' : state.status,
-                nodeStatuses,
-                nodeResults,
-                startedAt: state.startedAt,
-                completedAt: state.completedAt,
-            };
-        }
-        return null;
-    } catch (error) {
-        console.error('Error updating execution from store:', error);
-        return null;
-    }
-}
 
 function convertToSpaneWorkflow(reactFlowWorkflow: any): WorkflowDefinition {
     console.log('🔄 Converting React Flow workflow to Spane format:', JSON.stringify(reactFlowWorkflow, null, 2));
@@ -483,20 +454,64 @@ const app = new Elysia()
         try {
             console.log('Received workflow execution request:', JSON.stringify(body, null, 2));
 
-            // Convert React Flow workflow to spane workflow
-            const spaneWorkflow = convertToSpaneWorkflow(body);
+            // Check if this is an existing saved workflow
+            const existingWorkflowId = body.id || body.workflowId;
+            let workflowId: string;
+            
+            // If we have a workflow ID, check if it exists in the database
+            if (existingWorkflowId) {
+                const existingWorkflow = await engine.getWorkflow(existingWorkflowId);
+                
+                if (existingWorkflow) {
+                    // Workflow exists - just execute it, NO re-registration needed
+                    workflowId = existingWorkflowId;
+                    console.log(`📋 Executing existing workflow: ${workflowId} (found in DB)`);
+                } else {
+                    // Workflow ID provided but not found - use it but register first
+                    workflowId = existingWorkflowId;
+                    console.log(`📋 Workflow ${workflowId} not in cache, registering...`);
+                    
+                    const spaneWorkflow = convertToSpaneWorkflow(body);
+                    spaneWorkflow.id = workflowId;
+                    
+                    const workflowWithMeta = {
+                        ...spaneWorkflow,
+                        meta: {
+                            nodes: body.nodes || [],
+                            edges: body.edges || []
+                        }
+                    };
+                    await engine.registerWorkflow(workflowWithMeta);
+                }
+            } else {
+                // No workflow ID - this is an ad-hoc/unsaved workflow execution
+                // We need to register it temporarily to execute
+                workflowId = `adhoc-${Date.now()}`;
+                console.log(`📋 Ad-hoc execution (unsaved workflow): ${workflowId}`);
+                
+                const spaneWorkflow = convertToSpaneWorkflow(body);
+                spaneWorkflow.id = workflowId;
 
-            // Register workflow with engine
-            await engine.registerWorkflow(spaneWorkflow);
+                const workflowWithMeta = {
+                    ...spaneWorkflow,
+                    meta: {
+                        nodes: body.nodes || [],
+                        edges: body.edges || []
+                    }
+                };
+                
+                await engine.registerWorkflow(workflowWithMeta);
+            }
 
             // Enqueue workflow for execution
-            const executionId = await engine.enqueueWorkflow(spaneWorkflow.id, {
+            const executionId = await engine.enqueueWorkflow(workflowId, {
                 source: 'manual',
                 timestamp: Date.now()
             });
 
             return {
                 executionId,
+                workflowId,
                 status: 'running',
                 nodeStatuses: {}
             };
@@ -512,10 +527,10 @@ const app = new Elysia()
     })
 
     .get('/api/workflows/executions/:id', async ({ params }: { params: { id: string } }) => {
-        console.log(`🔍 Polling status for execution ${params.id}`);
-        const execution = await updateExecutionFromStore(params.id);
+        // Use eventStreamManager to get execution state (no polling)
+        const executionState = await eventStreamManager.getExecutionState(params.id);
 
-        if (!execution) {
+        if (!executionState) {
             return {
                 executionId: params.id,
                 status: 'error',
@@ -525,7 +540,26 @@ const app = new Elysia()
             };
         }
 
-        return execution;
+        // Convert event stream state to API response format
+        const nodeStatuses: Record<string, string> = {};
+        const nodeResults: Record<string, any> = {};
+
+        for (const [nodeId, result] of Object.entries(executionState.nodeResults || {})) {
+            const r = result as any;
+            nodeStatuses[nodeId] = r.skipped ? 'skipped' : r.success ? 'success' : 'error';
+            nodeResults[nodeId] = r;
+        }
+
+        return {
+            executionId: executionState.executionId,
+            workflowId: executionState.workflowId,
+            status: executionState.status === 'completed' ? 'success' :
+                executionState.status === 'failed' ? 'error' : executionState.status,
+            nodeStatuses,
+            nodeResults,
+            startedAt: executionState.startedAt,
+            completedAt: executionState.completedAt,
+        };
     })
 
     // ============================================================================
@@ -577,10 +611,10 @@ const app = new Elysia()
                 };
             }
 
-            // Check if workflow has reactFlowData (stored when saving from UI)
-            const hasReactFlowData = (workflow as any).reactFlowData?.nodes?.length > 0;
+            // Check if workflow has meta (UI metadata like node positions)
+            const hasMeta = (workflow as any).meta?.nodes?.length > 0;
             
-            // Return workflow with React Flow data if available
+            // Return workflow with meta if available
             return {
                 success: true,
                 workflow: {
@@ -588,19 +622,19 @@ const app = new Elysia()
                     name: workflow.name,
                     entryNodeId: workflow.entryNodeId,
                     triggers: workflow.triggers,
-                    // Include reactFlowData so frontend can properly extract it
-                    reactFlowData: hasReactFlowData ? (workflow as any).reactFlowData : undefined,
+                    // Include meta so frontend can properly extract it
+                    meta: hasMeta ? (workflow as any).meta : undefined,
                     // Also include nodes/edges directly for backwards compatibility
-                    nodes: hasReactFlowData 
-                        ? (workflow as any).reactFlowData.nodes 
+                    nodes: hasMeta 
+                        ? (workflow as any).meta.nodes 
                         : workflow.nodes.map((n: any) => ({
                             id: n.id,
                             type: n.type,
                             position: n.position || { x: 0, y: 0 },
                             data: { label: n.id, type: n.type, config: n.config || {} }
                         })),
-                    edges: hasReactFlowData 
-                        ? (workflow as any).reactFlowData.edges 
+                    edges: hasMeta 
+                        ? (workflow as any).meta.edges 
                         : [],
                 }
             };
@@ -938,6 +972,25 @@ const app = new Elysia()
 
             const executions = await stateStore.listExecutions(workflowId, limit, offset);
             
+            // Enrich executions with workflow names
+            const enrichedExecutions = await Promise.all(
+                executions.map(async (exec: any) => {
+                    let workflowName = 'Unknown Workflow';
+                    try {
+                        const workflow = await engine.getWorkflow(exec.workflowId);
+                        if (workflow) {
+                            workflowName = workflow.name || exec.workflowId;
+                        }
+                    } catch {
+                        // Workflow may have been deleted
+                    }
+                    return {
+                        ...exec,
+                        workflowName
+                    };
+                })
+            );
+            
             // Get total count for pagination
             let total = executions.length;
             if ('getExecutionCount' in stateStore) {
@@ -946,8 +999,8 @@ const app = new Elysia()
 
             return {
                 success: true,
-                executions,
-                count: executions.length,
+                executions: enrichedExecutions,
+                count: enrichedExecutions.length,
                 total,
                 limit,
                 offset,

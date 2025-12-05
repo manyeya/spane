@@ -28,7 +28,6 @@ export class WorkflowEngine {
     private timeoutMonitor?: TimeoutMonitor;
     private healthMonitor?: HealthMonitor;
     private eventStreamManager: EventStreamManager;
-    // LRU cache for workflows - bounded memory with automatic eviction
     private workflowCache: LRUCache<string, WorkflowDefinition>;
 
     constructor(
