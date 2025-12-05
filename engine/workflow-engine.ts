@@ -12,6 +12,8 @@ import { WorkerManager } from './worker-manager';
 import type { DLQItem } from './types';
 import { TimeoutMonitor } from '../utils/timeout-monitor';
 import { HealthMonitor } from '../utils/health-monitor';
+import type { WorkflowStatus } from './event-types';
+import { EventStreamManager } from './event-stream';
 
 export interface WorkflowCacheOptions {
     maxSize?: number;      // Max number of workflows to cache (default: 500)
@@ -25,6 +27,7 @@ export class WorkflowEngine {
     private workerManager: WorkerManager;
     private timeoutMonitor?: TimeoutMonitor;
     private healthMonitor?: HealthMonitor;
+    private eventStreamManager: EventStreamManager;
     // LRU cache for workflows - bounded memory with automatic eviction
     private workflowCache: LRUCache<string, WorkflowDefinition>;
 
@@ -47,6 +50,9 @@ export class WorkflowEngine {
         // Initialize components
         this.queueManager = new QueueManager(redisConnection, stateStore, metricsCollector);
         this.dlqManager = new DLQManager(this.queueManager);
+        
+        // Initialize EventStreamManager for real-time event streaming
+        this.eventStreamManager = new EventStreamManager(redisConnection, stateStore);
 
         // Initialize NodeProcessor with bound enqueueWorkflow
         this.nodeProcessor = new NodeProcessor(
@@ -79,6 +85,39 @@ export class WorkflowEngine {
     }
 
 
+
+    /**
+     * Emit a workflow status event via a special event job.
+     * This is used for workflow-level events that don't have a job context.
+     */
+    private async emitWorkflowEvent(
+        executionId: string,
+        workflowId: string,
+        status: WorkflowStatus,
+        error?: string
+    ): Promise<void> {
+        try {
+            // Add a special event job that will emit the workflow status event
+            // The job completes immediately after emitting the event via updateProgress
+            await this.queueManager.nodeQueue.add(
+                'emit-workflow-event',
+                {
+                    executionId,
+                    workflowId,
+                    nodeId: '__workflow__',
+                    inputData: { status, error },
+                },
+                {
+                    jobId: `workflow-event-${executionId}-${status}-${Date.now()}`,
+                    removeOnComplete: true,
+                    removeOnFail: true,
+                }
+            );
+        } catch (err) {
+            // Log but don't fail the operation if event emission fails
+            console.warn(`Failed to emit workflow event: ${err}`);
+        }
+    }
 
     // Helper to log to both console and state store
     private async log(executionId: string, nodeId: string | undefined, level: 'info' | 'warn' | 'error' | 'debug', message: string, metadata?: any): Promise<void> {
@@ -204,6 +243,14 @@ export class WorkflowEngine {
     }
 
     /**
+     * Get the EventStreamManager for real-time event streaming.
+     * Used by API endpoints to subscribe to workflow events via SSE.
+     */
+    getEventStream(): EventStreamManager {
+        return this.eventStreamManager;
+    }
+
+    /**
      * Get all workflows from database (ensures persistence across restarts)
      * Supports pagination for memory efficiency
      */
@@ -277,6 +324,9 @@ export class WorkflowEngine {
             await this.enqueueNode(executionId, workflowId, node.id, initialData, parentJobId, options);
         }
 
+        // Emit 'started' workflow event
+        await this.emitWorkflowEvent(executionId, workflowId, 'started');
+        
         await this.log(executionId, undefined, 'info', `Workflow ${workflowId} started (Execution ID: ${executionId})`);
         return executionId;
     }
@@ -386,6 +436,11 @@ export class WorkflowEngine {
     startWorkers(concurrency: number = 5): void {
         this.workerManager.startWorkers(concurrency);
 
+        // Start event stream for real-time updates
+        this.eventStreamManager.start().catch((error) => {
+            console.error('[WorkflowEngine] Failed to start event stream:', error);
+        });
+
         // Start monitors
         if (this.timeoutMonitor) {
             this.timeoutMonitor.start();
@@ -407,6 +462,10 @@ export class WorkflowEngine {
     // --- Control Flow Methods ---
 
     async cancelWorkflow(executionId: string): Promise<void> {
+        // Get workflow ID for event emission
+        const execution = await this.stateStore.getExecution(executionId);
+        const workflowId = execution?.workflowId || 'unknown';
+        
         // Update database status
         await this.stateStore.setExecutionStatus(executionId, 'cancelled');
 
@@ -423,10 +482,17 @@ export class WorkflowEngine {
             }
         }
 
+        // Emit 'cancelled' workflow event
+        await this.emitWorkflowEvent(executionId, workflowId, 'cancelled');
+
         console.log(`🚫 Workflow ${executionId} cancelled (removed ${removedCount} pending jobs)`);
     }
 
     async pauseWorkflow(executionId: string): Promise<void> {
+        // Get workflow ID for event emission
+        const execution = await this.stateStore.getExecution(executionId);
+        const workflowId = execution?.workflowId || 'unknown';
+        
         // Update database status
         await this.stateStore.setExecutionStatus(executionId, 'paused');
 
@@ -463,6 +529,9 @@ export class WorkflowEngine {
                 }
             }
         }
+
+        // Emit 'paused' workflow event
+        await this.emitWorkflowEvent(executionId, workflowId, 'paused');
 
         console.log(`⏸️ Workflow ${executionId} paused (delayed ${pausedCount} jobs)`);
     }
@@ -588,6 +657,9 @@ export class WorkflowEngine {
         if (this.healthMonitor) {
             this.healthMonitor.stop();
         }
+
+        // Close event stream manager
+        await this.eventStreamManager.close();
 
         await this.workerManager.close();
         await this.queueManager.close();

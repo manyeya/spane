@@ -5,7 +5,9 @@ import type { HealthMonitor } from './utils/health';
 import type { MetricsCollector } from './utils/metrics';
 import type { CircuitBreakerRegistry } from './utils/circuit-breaker';
 import type { GracefulShutdown } from './utils/graceful-shutdown';
-import { fromTypes, openapi } from '@elysiajs/openapi'
+import { fromTypes, openapi } from '@elysiajs/openapi';
+import type { EventStreamManager } from './engine/event-stream';
+import type { WorkflowEvent, ErrorEvent } from './engine/event-types';
 
 export class WorkflowAPIController {
   private app = new Elysia().use(openapi({
@@ -27,7 +29,8 @@ export class WorkflowAPIController {
     private healthMonitor?: HealthMonitor,
     private metricsCollector?: MetricsCollector,
     private circuitBreakerRegistry?: CircuitBreakerRegistry,
-    private gracefulShutdown?: GracefulShutdown
+    private gracefulShutdown?: GracefulShutdown,
+    private eventStreamManager?: EventStreamManager
   ) {
     this.setupRoutes();
   }
@@ -608,6 +611,161 @@ export class WorkflowAPIController {
           error: error.message,
         };
       }
+    });
+
+    // ============================================================================
+    // SSE (SERVER-SENT EVENTS) ENDPOINTS
+    // ============================================================================
+
+    // SSE endpoint for streaming events for a specific execution
+    // GET /api/executions/:executionId/stream
+    this.app.get('/api/executions/:executionId/stream', async ({ params, set }) => {
+      const { executionId } = params;
+
+      // Check if EventStreamManager is available
+      if (!this.eventStreamManager) {
+        set.status = 501;
+        return {
+          success: false,
+          error: 'Event streaming not enabled',
+        };
+      }
+
+      // Set SSE headers
+      set.headers['Content-Type'] = 'text/event-stream';
+      set.headers['Cache-Control'] = 'no-cache';
+      set.headers['Connection'] = 'keep-alive';
+      set.headers['X-Accel-Buffering'] = 'no'; // Disable nginx buffering
+
+      // Create a readable stream for SSE
+      const eventStreamManager = this.eventStreamManager;
+
+      const stream = new ReadableStream({
+        async start(controller) {
+          const encoder = new TextEncoder();
+
+          // Helper to send SSE event
+          const sendEvent = (event: WorkflowEvent | ErrorEvent) => {
+            const data = `data: ${JSON.stringify(event)}\n\n`;
+            controller.enqueue(encoder.encode(data));
+          };
+
+          try {
+            // Send initial state event on connect (Requirement 6.1, 6.2)
+            const initialState = await eventStreamManager.getExecutionState(executionId);
+
+            if (!initialState) {
+              // Execution not found - send error event and close (Requirement 6.3)
+              const errorEvent: ErrorEvent = {
+                type: 'error',
+                message: `Execution ${executionId} not found`,
+                code: 'EXECUTION_NOT_FOUND',
+              };
+              sendEvent(errorEvent);
+              controller.close();
+              return;
+            }
+
+            // Send initial state as first event
+            sendEvent(initialState);
+
+            // Subscribe to filtered events for this executionId (Requirement 2.1)
+            const subscription = eventStreamManager.subscribe(executionId);
+
+            // Stream events
+            for await (const event of subscription) {
+              sendEvent(event);
+            }
+          } catch (error: any) {
+            // Handle errors during streaming
+            const errorEvent: ErrorEvent = {
+              type: 'error',
+              message: error.message || 'Stream error',
+              code: 'STREAM_ERROR',
+            };
+            sendEvent(errorEvent);
+            controller.close();
+          }
+        },
+
+        cancel() {
+          // Client disconnected - cleanup handled by subscription iterator's return()
+          console.log(`[SSE] Client disconnected from execution ${executionId}`);
+        },
+      });
+
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        },
+      });
+    });
+
+    // SSE endpoint for streaming all events (no filter)
+    // GET /api/executions/stream
+    this.app.get('/api/executions/stream', async ({ set }) => {
+      // Check if EventStreamManager is available
+      if (!this.eventStreamManager) {
+        set.status = 501;
+        return {
+          success: false,
+          error: 'Event streaming not enabled',
+        };
+      }
+
+      // Set SSE headers
+      set.headers['Content-Type'] = 'text/event-stream';
+      set.headers['Cache-Control'] = 'no-cache';
+      set.headers['Connection'] = 'keep-alive';
+      set.headers['X-Accel-Buffering'] = 'no';
+
+      const eventStreamManager = this.eventStreamManager;
+
+      const stream = new ReadableStream({
+        async start(controller) {
+          const encoder = new TextEncoder();
+
+          // Helper to send SSE event
+          const sendEvent = (event: WorkflowEvent | ErrorEvent) => {
+            const data = `data: ${JSON.stringify(event)}\n\n`;
+            controller.enqueue(encoder.encode(data));
+          };
+
+          try {
+            // Subscribe to all events (no filter) (Requirement 2.2)
+            const subscription = eventStreamManager.subscribe();
+
+            // Stream events
+            for await (const event of subscription) {
+              sendEvent(event);
+            }
+          } catch (error: any) {
+            const errorEvent: ErrorEvent = {
+              type: 'error',
+              message: error.message || 'Stream error',
+              code: 'STREAM_ERROR',
+            };
+            sendEvent(errorEvent);
+            controller.close();
+          }
+        },
+
+        cancel() {
+          console.log('[SSE] Client disconnected from all-events stream');
+        },
+      });
+
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        },
+      });
     });
   }
 

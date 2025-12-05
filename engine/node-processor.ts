@@ -6,6 +6,7 @@ import type { IExecutionStateStore, WorkflowDefinition, ExecutionResult } from '
 import type { NodeJobData } from './types';
 import { QueueManager } from './queue-manager';
 import { DistributedLock } from '../utils/distributed-lock';
+import { WorkflowEventEmitter } from './event-emitter';
 
 export type EnqueueWorkflowFn = (
     workflowId: string,
@@ -260,29 +261,41 @@ export class NodeProcessor {
 
         // Execute the node
         console.log(`▶️ Executing node ${nodeId} (${node.type})`);
+        
+        // Emit 'running' event at start of node execution
+        await WorkflowEventEmitter.emitNodeStarted(job, nodeId, workflowId, executionId);
+        
         try {
             const result = await executor.execute(context);
 
             // Save result
             await this.stateStore.updateNodeResult(executionId, nodeId, result);
 
+            // Emit 'completed' event on successful execution
+            await WorkflowEventEmitter.emitNodeCompleted(job, nodeId, workflowId, executionId, result.data);
+
             // If this node succeeded, check and enqueue/skip its children
             if (result.success && node.outputs.length > 0) {
                 console.log(`📤 Node ${nodeId} completed successfully, checking ${node.outputs.length} children`);
-                await this.checkAndEnqueueChildren(executionId, workflowId, node, result.nextNodes);
+                await this.checkAndEnqueueChildren(executionId, workflowId, node, result.nextNodes, job);
             }
 
             // Check if workflow is complete
-            await this.checkWorkflowCompletion(executionId, workflowId);
+            await this.checkWorkflowCompletion(executionId, workflowId, job);
 
             return result;
         } catch (error) {
             console.error(`❌ Node ${nodeId} execution failed:`, error);
+            
+            // Emit 'failed' event on execution failure
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            await WorkflowEventEmitter.emitNodeFailed(job, nodeId, workflowId, executionId, errorMessage);
+            
             throw error; // Let BullMQ handle retries
         }
     }
 
-    private async checkAndEnqueueChildren(executionId: string, workflowId: string, node: any, nextNodes?: string[]): Promise<void> {
+    private async checkAndEnqueueChildren(executionId: string, workflowId: string, node: any, nextNodes?: string[], job?: Job): Promise<void> {
         const workflow = await this.getWorkflowWithLazyLoad(workflowId);
         if (!workflow) return;
 
@@ -293,7 +306,7 @@ export class NodeProcessor {
 
             if (!shouldRun) {
                 console.log(`🚫 Node ${childNodeId} excluded by conditional branching. Marking as skipped.`);
-                await this.skipNode(executionId, workflowId, childNodeId);
+                await this.skipNode(executionId, workflowId, childNodeId, job);
                 continue;
             }
 
@@ -318,13 +331,18 @@ export class NodeProcessor {
         }
     }
 
-    private async skipNode(executionId: string, workflowId: string, nodeId: string): Promise<void> {
+    private async skipNode(executionId: string, workflowId: string, nodeId: string, job?: Job): Promise<void> {
         // Mark as skipped in state store
         await this.stateStore.updateNodeResult(executionId, nodeId, {
             success: true,
             skipped: true,
             data: null
         });
+
+        // Emit 'skipped' event if job is available
+        if (job) {
+            await WorkflowEventEmitter.emitNodeSkipped(job, nodeId, workflowId, executionId);
+        }
 
         // Propagate skip to children - use async lazy loading instead of sync cache access
         const workflow = await this.getWorkflowWithLazyLoad(workflowId);
@@ -333,7 +351,7 @@ export class NodeProcessor {
             // Recursively check children. 
             // We pass undefined for nextNodes because a skipped node doesn't choose paths, 
             // but its children might still run if they are merges.
-            await this.checkAndEnqueueChildren(executionId, workflowId, node);
+            await this.checkAndEnqueueChildren(executionId, workflowId, node, undefined, job);
         }
     }
 
@@ -370,7 +388,7 @@ export class NodeProcessor {
         });
     }
 
-    private async checkWorkflowCompletion(executionId: string, workflowId: string): Promise<void> {
+    private async checkWorkflowCompletion(executionId: string, workflowId: string, job?: Job): Promise<void> {
         const workflow = await this.getWorkflowWithLazyLoad(workflowId);
         if (!workflow) return;
 
@@ -397,6 +415,16 @@ export class NodeProcessor {
             if (pendingCount === 0) {
                 await this.stateStore.setExecutionStatus(executionId, 'completed');
                 console.log(`🎉 Workflow ${executionId} completed successfully`);
+                
+                // Emit 'completed' workflow event
+                if (job) {
+                    await WorkflowEventEmitter.emitWorkflowStatus(job, {
+                        executionId,
+                        workflowId,
+                        status: 'completed',
+                    });
+                }
+                
                 await this.notifyParentWorkflow(executionId, 'completed');
             }
         } finally {
@@ -404,8 +432,20 @@ export class NodeProcessor {
         }
     }
 
-    async handleWorkflowError(executionId: string, error: any): Promise<void> {
+    async handleWorkflowError(executionId: string, workflowId: string, error: any, job?: Job): Promise<void> {
         await this.stateStore.setExecutionStatus(executionId, 'failed');
+        
+        // Emit 'failed' workflow event
+        if (job) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            await WorkflowEventEmitter.emitWorkflowStatus(job, {
+                executionId,
+                workflowId,
+                status: 'failed',
+                error: errorMessage,
+            });
+        }
+        
         await this.notifyParentWorkflow(executionId, 'failed');
     }
 
