@@ -131,6 +131,13 @@ function App() {
         }
     }, [notification]);
 
+    // Cleanup SSE subscriptions on unmount
+    useEffect(() => {
+        return () => {
+            executionManager.unsubscribeAll();
+        };
+    }, []);
+
     /**
      * Loads all workflows from the backend
      * Requirements: 1.1
@@ -738,41 +745,54 @@ function App() {
             const result = await executionManager.executeWorkflow(workflow);
             console.log('✅ Workflow execution started, executionId:', result.executionId);
 
-            // Poll for status updates with timeout
-            await executionManager.pollExecutionStatus(result.executionId, (statusUpdate) => {
-                console.log('📊 Status update received:', statusUpdate);
-                setExecutionStatus(statusUpdate.status);
+            // Subscribe to real-time updates via SSE
+            const unsubscribe = executionManager.subscribeToExecution(result.executionId, {
+                onUpdate: (statusUpdate) => {
+                    console.log('📊 SSE status update received:', statusUpdate);
+                    setExecutionStatus(statusUpdate.status);
 
-                // Update node statuses
-                setNodes((nds) =>
-                    nds.map((node) => ({
-                        ...node,
-                        data: {
-                            ...node.data,
-                            status: statusUpdate.nodeStatuses[node.id] || 'idle'
-                        }
-                    }))
-                );
+                    // Update node statuses
+                    setNodes((nds) =>
+                        nds.map((node) => ({
+                            ...node,
+                            data: {
+                                ...node.data,
+                                status: statusUpdate.nodeStatuses[node.id] || 'idle'
+                            }
+                        }))
+                    );
 
-                // Update node results if available
-                if (statusUpdate.nodeResults) {
-                    setNodeResults(statusUpdate.nodeResults);
-                    setShowResults(true);
-                }
+                    // Update node results if available
+                    if (statusUpdate.nodeResults) {
+                        setNodeResults(statusUpdate.nodeResults);
+                        setShowResults(true);
+                    }
 
-                // Handle error cases
-                if (statusUpdate.error) {
-                    console.error('❌ Workflow error:', statusUpdate.error);
+                    // Handle error cases
+                    if (statusUpdate.error) {
+                        console.error('❌ Workflow error:', statusUpdate.error);
+                        setIsExecuting(false);
+                        unsubscribe();
+                    }
+
+                    if (statusUpdate.status !== 'running') {
+                        console.log('🏁 Workflow completed with status:', statusUpdate.status);
+                        setIsExecuting(false);
+                        setShowResults(true);
+                    }
+                },
+                onNodeProgress: (event) => {
+                    console.log(`📍 Node ${event.nodeId} status: ${event.status}`);
+                },
+                onWorkflowStatus: (event) => {
+                    console.log(`📋 Workflow status: ${event.status}`);
+                },
+                onError: (event) => {
+                    console.error('❌ SSE error:', event.message);
                     setIsExecuting(false);
-                    alert('❌ Workflow error: ' + statusUpdate.error);
+                    unsubscribe();
                 }
-
-                if (statusUpdate.status !== 'running') {
-                    console.log('🏁 Workflow completed with status:', statusUpdate.status);
-                    setIsExecuting(false);
-                    setShowResults(true);
-                }
-            }, 1000, 60); // 1 second interval, 60 attempts (1 minute timeout)
+            });
         } catch (error) {
             console.error('❌ Execution failed:', error);
             setExecutionStatus('error');

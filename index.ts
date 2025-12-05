@@ -9,6 +9,27 @@ import { MetricsCollector } from './utils/metrics';
 import { CircuitBreakerRegistry } from './utils/circuit-breaker';
 import { GracefulShutdown } from './utils/graceful-shutdown';
 
+// Re-export event types for external consumers
+export {
+  type BaseEvent,
+  type NodeProgressEvent,
+  type WorkflowStatusEvent,
+  type ExecutionStateEvent,
+  type ErrorEvent,
+  type WorkflowEvent,
+  type NodeStatus,
+  type WorkflowStatus,
+  type ProgressPayload,
+  isValidWorkflowEvent,
+  isNodeProgressEvent,
+  isWorkflowStatusEvent,
+  isExecutionStateEvent,
+  isErrorEvent,
+} from './engine/event-types';
+
+// Re-export event emitter for external consumers
+export { WorkflowEventEmitter } from './engine/event-emitter';
+
 // Initialize Redis connection
 const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
   maxRetriesPerRequest: null,

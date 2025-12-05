@@ -83,7 +83,7 @@ describe("Job name consistency", () => {
   });
 
   describe("Job name consistency across components", () => {
-    test("WorkflowEngine and NodeProcessor use the same job name (Requirements 4.1, 4.2, 4.3)", () => {
+    test("WorkflowEngine and NodeProcessor use the same job name for node processing (Requirements 4.1, 4.2, 4.3)", () => {
       const workflowEngineSource = readFileSync(
         join(engineDir, "workflow-engine.ts"),
         "utf-8"
@@ -96,30 +96,30 @@ describe("Job name consistency", () => {
       // Extract job names from both files
       const workflowEngineJobNames = [
         ...workflowEngineSource.matchAll(/nodeQueue\.add\s*\(\s*['"]([^'"]+)['"]/g)
-      ].map(match => match[1]);
+      ].map(match => match[1]).filter((name): name is string => name !== undefined);
 
       const nodeProcessorJobNames = [
         ...nodeProcessorSource.matchAll(/nodeQueue\.add\s*\(\s*['"]([^'"]+)['"]/g)
-      ].map(match => match[1]);
+      ].map(match => match[1]).filter((name): name is string => name !== undefined);
 
-      // All job names should be 'process-node'
+      // Valid job names: 'process-node' for node execution, 'emit-workflow-event' for event emission
+      const validJobNames = ['process-node', 'emit-workflow-event'];
+
       expect(workflowEngineJobNames.length).toBeGreaterThan(0);
       expect(nodeProcessorJobNames.length).toBeGreaterThan(0);
 
+      // All job names should be one of the valid types
       for (const jobName of workflowEngineJobNames) {
-        expect(jobName).toBe("process-node");
+        expect(validJobNames).toContain(jobName);
       }
 
       for (const jobName of nodeProcessorJobNames) {
-        expect(jobName).toBe("process-node");
+        expect(validJobNames).toContain(jobName);
       }
 
-      // Verify consistency - all job names should be the same
-      const allJobNames = [...workflowEngineJobNames, ...nodeProcessorJobNames];
-      const uniqueJobNames = [...new Set(allJobNames)];
-      
-      expect(uniqueJobNames).toHaveLength(1);
-      expect(uniqueJobNames[0]).toBe("process-node");
+      // Verify 'process-node' is used for node processing in both components
+      expect(workflowEngineJobNames).toContain("process-node");
+      expect(nodeProcessorJobNames).toContain("process-node");
     });
   });
 });

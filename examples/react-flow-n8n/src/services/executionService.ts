@@ -385,6 +385,223 @@ export class ExecutionService {
         }
         return 'pending';
     }
+
+    /**
+     * Subscribe to real-time execution events via SSE
+     * Returns an unsubscribe function
+     */
+    subscribeToExecution(
+        executionId: string,
+        callbacks: {
+            onNodeProgress?: (event: NodeProgressEvent) => void;
+            onWorkflowStatus?: (event: WorkflowStatusEvent) => void;
+            onInitialState?: (event: ExecutionStateEvent) => void;
+            onError?: (event: SSEErrorEvent) => void;
+            onUpdate?: (detail: ExecutionDetail) => void;
+        }
+    ): () => void {
+        // Use direct backend URL for SSE (Vite proxy doesn't handle SSE well)
+        const sseUrl = `http://localhost:3001/api/executions/${executionId}/stream`;
+        console.log(`📡 Connecting to SSE stream: ${sseUrl}`);
+
+        const eventSource = new EventSource(sseUrl);
+
+        // Track current state
+        let currentDetail: ExecutionDetail = {
+            executionId,
+            workflowId: '',
+            workflowName: 'Workflow',
+            status: 'running',
+            startedAt: new Date(),
+            nodeCount: 0,
+            completedNodes: 0,
+            nodeResults: {},
+            nodeStatuses: {},
+        };
+
+        eventSource.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                console.log('📨 SSE event received:', data);
+
+                switch (data.type) {
+                    case 'execution:state': {
+                        currentDetail = {
+                            ...currentDetail,
+                            workflowId: data.workflowId,
+                            status: this.normalizeStatus(data.status),
+                            startedAt: new Date(data.startedAt),
+                            completedAt: data.completedAt ? new Date(data.completedAt) : undefined,
+                            nodeResults: this.convertNodeResults(data.nodeResults || {}),
+                            nodeStatuses: this.buildNodeStatuses(data.nodeResults || {}),
+                            nodeCount: Object.keys(data.nodeResults || {}).length,
+                            completedNodes: this.countCompletedNodes(data.nodeResults || {}),
+                        };
+                        callbacks.onInitialState?.(data);
+                        callbacks.onUpdate?.(currentDetail);
+                        break;
+                    }
+
+                    case 'node:progress': {
+                        const nodeStatus = this.mapNodeEventStatus(data.status);
+                        currentDetail.nodeStatuses[data.nodeId] = nodeStatus;
+                        
+                        if (data.data !== undefined || data.error) {
+                            currentDetail.nodeResults[data.nodeId] = {
+                                status: nodeStatus,
+                                success: data.status === 'completed',
+                                data: data.data,
+                                error: data.error,
+                            };
+                        }
+                        
+                        currentDetail.completedNodes = this.countCompletedNodes(
+                            Object.fromEntries(
+                                Object.entries(currentDetail.nodeResults).map(([k, v]) => [k, { success: v.success }])
+                            )
+                        );
+
+                        callbacks.onNodeProgress?.(data);
+                        callbacks.onUpdate?.(currentDetail);
+                        break;
+                    }
+
+                    case 'workflow:status': {
+                        currentDetail.status = this.normalizeStatus(data.status);
+                        if (data.completedAt) {
+                            currentDetail.completedAt = new Date(data.completedAt);
+                        }
+
+                        callbacks.onWorkflowStatus?.(data);
+                        callbacks.onUpdate?.(currentDetail);
+
+                        // Close connection when workflow completes
+                        if (['completed', 'failed', 'cancelled'].includes(data.status)) {
+                            console.log(`📡 Workflow ${data.status}, closing SSE connection`);
+                            eventSource.close();
+                        }
+                        break;
+                    }
+
+                    case 'error': {
+                        callbacks.onError?.(data);
+                        eventSource.close();
+                        break;
+                    }
+                }
+            } catch (error) {
+                console.error('Error parsing SSE event:', error);
+            }
+        };
+
+        eventSource.onerror = (error) => {
+            console.error('📡 SSE connection error:', error);
+            callbacks.onError?.({
+                type: 'error',
+                message: 'SSE connection error',
+                code: 'CONNECTION_ERROR',
+            });
+        };
+
+        // Return unsubscribe function
+        return () => {
+            console.log(`📡 Closing SSE connection for execution ${executionId}`);
+            eventSource.close();
+        };
+    }
+
+    /**
+     * Map node event status to NodeResult status
+     */
+    private mapNodeEventStatus(status: string): NodeResult['status'] {
+        switch (status) {
+            case 'running': return 'running';
+            case 'completed': return 'completed';
+            case 'failed': return 'failed';
+            case 'skipped': return 'skipped';
+            default: return 'pending';
+        }
+    }
+
+    /**
+     * Convert raw node results to NodeResult format
+     */
+    private convertNodeResults(rawResults: Record<string, unknown>): Record<string, NodeResult> {
+        const results: Record<string, NodeResult> = {};
+        for (const [nodeId, result] of Object.entries(rawResults)) {
+            const r = result as Record<string, unknown>;
+            results[nodeId] = {
+                status: this.normalizeNodeStatus(r),
+                success: r.success as boolean | undefined,
+                output: r.data,
+                data: r.data,
+                error: r.error as string | undefined,
+            };
+        }
+        return results;
+    }
+
+    /**
+     * Build node statuses from node results
+     */
+    private buildNodeStatuses(rawResults: Record<string, unknown>): Record<string, string> {
+        const statuses: Record<string, string> = {};
+        for (const [nodeId, result] of Object.entries(rawResults)) {
+            const r = result as Record<string, unknown>;
+            statuses[nodeId] = this.normalizeNodeStatus(r);
+        }
+        return statuses;
+    }
+
+    /**
+     * Count completed nodes from results
+     */
+    private countCompletedNodes(rawResults: Record<string, unknown>): number {
+        return Object.values(rawResults).filter(
+            (r: unknown) => {
+                const result = r as Record<string, unknown>;
+                return result.success === true;
+            }
+        ).length;
+    }
+}
+
+// SSE Event types
+export interface NodeProgressEvent {
+    type: 'node:progress';
+    timestamp: number;
+    executionId: string;
+    nodeId: string;
+    workflowId: string;
+    status: 'running' | 'completed' | 'failed' | 'skipped';
+    data?: unknown;
+    error?: string;
+}
+
+export interface WorkflowStatusEvent {
+    type: 'workflow:status';
+    timestamp: number;
+    executionId: string;
+    workflowId: string;
+    status: 'started' | 'completed' | 'failed' | 'paused' | 'cancelled';
+    error?: string;
+}
+
+export interface ExecutionStateEvent {
+    type: 'execution:state';
+    timestamp: number;
+    executionId: string;
+    workflowId: string;
+    status: string;
+    nodeResults: Record<string, unknown>;
+    startedAt: string;
+    completedAt?: string;
+}
+
+export interface SSEErrorEvent {
+    type: 'error';
+    message: string;
+    code?: string;
 }
 
 // Export a default instance

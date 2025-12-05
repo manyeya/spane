@@ -2,6 +2,7 @@ import { Elysia } from 'elysia';
 import { cors } from '@elysiajs/cors';
 import { WorkflowEngine } from '../engine/workflow-engine';
 import { NodeRegistry } from '../engine/registry';
+import type { WorkflowEvent, ErrorEvent } from '../engine/event-types';
 import IORedis from 'ioredis';
 import type { WorkflowDefinition, NodeDefinition, ExecutionContext, ExecutionResult, WorkflowTrigger } from '../types';
 import { DrizzleExecutionStateStore } from '../db/drizzle-store';
@@ -222,10 +223,14 @@ const engine = new WorkflowEngine(
 );
 console.log('✅ Workflow engine initialized');
 
-// Start the workers
+// Start the workers (this also starts the EventStreamManager)
 console.log('👷 Starting workers...');
 engine.startWorkers(5);
 console.log('👷 Workers started');
+
+// Get the EventStreamManager from the engine for SSE endpoints
+const eventStreamManager = engine.getEventStream();
+console.log('📡 Event stream manager ready (via WorkflowEngine)');
 
 // Poll execution state from the engine store
 async function updateExecutionFromStore(executionId: string) {
@@ -895,6 +900,138 @@ const app = new Elysia()
         }
     })
 
+    // ============================================================================
+    // SSE (SERVER-SENT EVENTS) ENDPOINTS
+    // ============================================================================
+
+    // SSE endpoint for streaming events for a specific execution
+    // GET /api/executions/:executionId/stream
+    .get('/api/executions/:executionId/stream', async ({ params, set }: { params: { executionId: string }, set: any }) => {
+        const { executionId } = params;
+
+        // Set SSE headers
+        set.headers['Content-Type'] = 'text/event-stream';
+        set.headers['Cache-Control'] = 'no-cache';
+        set.headers['Connection'] = 'keep-alive';
+        set.headers['X-Accel-Buffering'] = 'no'; // Disable nginx buffering
+
+        const stream = new ReadableStream({
+            async start(controller) {
+                const encoder = new TextEncoder();
+
+                // Helper to send SSE event
+                const sendEvent = (event: WorkflowEvent | ErrorEvent) => {
+                    const data = `data: ${JSON.stringify(event)}\n\n`;
+                    controller.enqueue(encoder.encode(data));
+                };
+
+                try {
+                    // Send initial state event on connect (Requirement 6.1, 6.2)
+                    const initialState = await eventStreamManager.getExecutionState(executionId);
+
+                    if (!initialState) {
+                        // Execution not found - send error event and close (Requirement 6.3)
+                        const errorEvent: ErrorEvent = {
+                            type: 'error',
+                            message: `Execution ${executionId} not found`,
+                            code: 'EXECUTION_NOT_FOUND',
+                        };
+                        sendEvent(errorEvent);
+                        controller.close();
+                        return;
+                    }
+
+                    // Send initial state as first event
+                    sendEvent(initialState);
+
+                    // Subscribe to filtered events for this executionId (Requirement 2.1)
+                    const subscription = eventStreamManager.subscribe(executionId);
+
+                    // Stream events
+                    for await (const event of subscription) {
+                        sendEvent(event);
+                    }
+                } catch (error: any) {
+                    // Handle errors during streaming
+                    const errorEvent: ErrorEvent = {
+                        type: 'error',
+                        message: error.message || 'Stream error',
+                        code: 'STREAM_ERROR',
+                    };
+                    sendEvent(errorEvent);
+                    controller.close();
+                }
+            },
+
+            cancel() {
+                // Client disconnected - cleanup handled by subscription iterator's return()
+                console.log(`[SSE] Client disconnected from execution ${executionId}`);
+            },
+        });
+
+        return new Response(stream, {
+            headers: {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no',
+            },
+        });
+    })
+
+    // SSE endpoint for streaming all events (no filter)
+    // GET /api/executions/stream
+    .get('/api/executions/stream', async ({ set }: { set: any }) => {
+        // Set SSE headers
+        set.headers['Content-Type'] = 'text/event-stream';
+        set.headers['Cache-Control'] = 'no-cache';
+        set.headers['Connection'] = 'keep-alive';
+        set.headers['X-Accel-Buffering'] = 'no';
+
+        const stream = new ReadableStream({
+            async start(controller) {
+                const encoder = new TextEncoder();
+
+                // Helper to send SSE event
+                const sendEvent = (event: WorkflowEvent | ErrorEvent) => {
+                    const data = `data: ${JSON.stringify(event)}\n\n`;
+                    controller.enqueue(encoder.encode(data));
+                };
+
+                try {
+                    // Subscribe to all events (no filter) (Requirement 2.2)
+                    const subscription = eventStreamManager.subscribe();
+
+                    // Stream events
+                    for await (const event of subscription) {
+                        sendEvent(event);
+                    }
+                } catch (error: any) {
+                    const errorEvent: ErrorEvent = {
+                        type: 'error',
+                        message: error.message || 'Stream error',
+                        code: 'STREAM_ERROR',
+                    };
+                    sendEvent(errorEvent);
+                    controller.close();
+                }
+            },
+
+            cancel() {
+                console.log('[SSE] Client disconnected from all-events stream');
+            },
+        });
+
+        return new Response(stream, {
+            headers: {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no',
+            },
+        });
+    })
+
     .listen(3001, ({ hostname, port }) => {
         console.log(`🚀 React Flow n8n Backend running at http://${hostname}:${port}`);
         console.log(`📊 API endpoints:`);
@@ -915,4 +1052,6 @@ const app = new Elysia()
         console.log(`   - POST /api/executions/:id/pause - Pause execution`);
         console.log(`   - POST /api/executions/:id/resume - Resume execution`);
         console.log(`   - POST /api/executions/:id/cancel - Cancel execution`);
+        console.log(`   - GET  /api/executions/:id/stream - SSE stream for execution`);
+        console.log(`   - GET  /api/executions/stream - SSE stream for all events`);
     });

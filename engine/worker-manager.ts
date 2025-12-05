@@ -5,6 +5,7 @@ import type { NodeJobData, WorkflowJobData } from './types';
 import { NodeProcessor, type EnqueueWorkflowFn } from './node-processor';
 import { DLQManager } from './dlq-manager';
 import type { IExecutionStateStore } from '../types';
+import { WorkflowEventEmitter } from './event-emitter';
 
 export class WorkerManager {
     public nodeWorker?: Worker<NodeJobData>;
@@ -25,6 +26,21 @@ export class WorkerManager {
         this.nodeWorker = new Worker<NodeJobData>(
             'node-execution',
             async (job: Job<NodeJobData>) => {
+                // Handle special workflow event emission jobs
+                if (job.name === 'emit-workflow-event') {
+                    const { executionId, workflowId, inputData } = job.data;
+                    const { status, error } = inputData || {};
+                    if (status) {
+                        await WorkflowEventEmitter.emitWorkflowStatus(job, {
+                            executionId,
+                            workflowId,
+                            status,
+                            error,
+                        });
+                    }
+                    return { success: true, data: { eventEmitted: true } };
+                }
+                
                 await job.updateProgress(0);
                 console.log(`🚀 Processing node job ${job.id} of type ${job.name}`);
                 const result = await this.nodeProcessor.processNodeJob(job.data, job);
@@ -102,7 +118,8 @@ export class WorkerManager {
                         }
 
                         // Propagate error to workflow status
-                        await this.nodeProcessor.handleWorkflowError(executionId, err.message);
+                        const { workflowId } = job.data;
+                        await this.nodeProcessor.handleWorkflowError(executionId, workflowId, err, job);
                     } catch (criticalError) {
                         console.error(`CRITICAL: Permanent failure handling failed for job ${job.id} (Execution: ${executionId}):`, criticalError);
                         // Log to external monitoring system if available
