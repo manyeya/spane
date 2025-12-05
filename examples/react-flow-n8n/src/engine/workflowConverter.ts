@@ -1,7 +1,5 @@
 import { Edge } from '@xyflow/react';
 import { TriggerNodeData } from '../nodes/TriggerNode';
-// ConditionNodeData is available for future use
-import type { ConditionNodeData as _ConditionNodeData } from '../nodes/ConditionNode';
 
 export interface WorkflowDefinition {
     nodes: WorkflowNode[];
@@ -31,11 +29,27 @@ export function convertToWorkflow(
         const inputs = edges.filter(e => e.target === node.id).map(e => e.source);
         const outputs = edges.filter(e => e.source === node.id).map(e => e.target);
 
+        const nodeType = node.data.type || node.type;
+        const config = { ...(node.data.config || {}) };
+
+        // For condition nodes, determine true/false branches based on sourceHandle
+        if (nodeType === 'condition') {
+            const trueEdges = edges.filter(e => e.source === node.id && e.sourceHandle === 'true');
+            const falseEdges = edges.filter(e => e.source === node.id && e.sourceHandle === 'false');
+            
+            if (trueEdges.length > 0) {
+                config.trueBranch = trueEdges.map(e => e.target);
+            }
+            if (falseEdges.length > 0) {
+                config.falseBranch = falseEdges.map(e => e.target);
+            }
+        }
+
         return {
             id: node.id,
             name: node.data.label,
-            type: node.data.type || node.type,
-            config: node.data.config || {},
+            type: nodeType,
+            config,
             inputs,
             outputs,
         };

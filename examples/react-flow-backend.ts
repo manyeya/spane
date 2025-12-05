@@ -202,9 +202,70 @@ registry.register('action', {
 
 registry.register('condition', {
     async execute(context: ExecutionContext): Promise<ExecutionResult> {
-        console.log('Condition node executing');
-        // Condition nodes pass through data and determine which branch to take
-        return { success: true, data: context.inputData };
+        console.log('Condition node executing with config:', context.nodeConfig);
+        console.log('Condition node inputData:', context.inputData);
+
+        const config = context.nodeConfig || {};
+        const conditionExpression = config.condition || config.expression || '';
+
+        if (!conditionExpression) {
+            console.warn('No condition expression provided, defaulting to true branch');
+            return { 
+                success: true, 
+                data: context.inputData,
+                nextNodes: config.trueBranch ? [config.trueBranch] : undefined
+            };
+        }
+
+        try {
+            // Create a safe evaluation context with the input data
+            const input = context.inputData;
+            const data = context.inputData;
+            
+            // Evaluate the condition expression
+            // Using Function constructor for safer evaluation than eval()
+            const evaluator = new Function('input', 'data', `
+                try {
+                    return !!(${conditionExpression});
+                } catch (e) {
+                    console.error('Condition evaluation error:', e);
+                    return false;
+                }
+            `);
+            
+            const result = evaluator(input, data);
+            console.log(`Condition "${conditionExpression}" evaluated to: ${result}`);
+
+            // Determine which branch to take based on the result
+            // trueBranch and falseBranch are set by the workflow converter based on sourceHandle
+            const nextNodes: string[] = [];
+            if (result && config.trueBranch) {
+                nextNodes.push(...(Array.isArray(config.trueBranch) ? config.trueBranch : [config.trueBranch]));
+            } else if (!result && config.falseBranch) {
+                nextNodes.push(...(Array.isArray(config.falseBranch) ? config.falseBranch : [config.falseBranch]));
+            }
+
+            console.log(`Condition branching to: ${nextNodes.length > 0 ? nextNodes.join(', ') : 'all outputs (no branch config)'}`);
+
+            return { 
+                success: true, 
+                data: { 
+                    ...context.inputData,
+                    _conditionResult: result,
+                    _conditionExpression: conditionExpression
+                },
+                nextNodes: nextNodes.length > 0 ? nextNodes : undefined
+            };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            console.error('Condition evaluation failed:', errorMessage);
+            
+            return {
+                success: false,
+                error: `Condition evaluation failed: ${errorMessage}`,
+                data: context.inputData
+            };
+        }
     }
 });
 
@@ -280,14 +341,35 @@ function convertToSpaneWorkflow(reactFlowWorkflow: any): WorkflowDefinition {
         const outputs = edges.filter((e: any) => e.source === node.id).map((e: any) => e.target);
 
         const nodeConfig = node.config || node.data?.config || {};
+        const nodeType = node.data?.type || node.type;
+        
+        // For condition nodes, determine true/false branches based on sourceHandle
+        if (nodeType === 'condition') {
+            const trueEdges = edges.filter((e: any) => e.source === node.id && e.sourceHandle === 'true');
+            const falseEdges = edges.filter((e: any) => e.source === node.id && e.sourceHandle === 'false');
+            
+            // Add branch targets to config
+            if (trueEdges.length > 0) {
+                nodeConfig.trueBranch = trueEdges.map((e: any) => e.target);
+            }
+            if (falseEdges.length > 0) {
+                nodeConfig.falseBranch = falseEdges.map((e: any) => e.target);
+            }
+            
+            console.log(`🔀 Condition node ${node.id} branches:`, {
+                trueBranch: nodeConfig.trueBranch,
+                falseBranch: nodeConfig.falseBranch
+            });
+        }
+        
         console.log(`📝 Converting node ${node.id} (${node.name || node.data?.label}):`, {
-            type: node.data?.type || node.type,
+            type: nodeType,
             config: nodeConfig
         });
 
         return {
             id: node.id,
-            type: node.data?.type || node.type,
+            type: nodeType,
             config: nodeConfig,
             inputs,
             outputs,

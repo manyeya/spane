@@ -134,18 +134,68 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
 
     const renderConditionConfig = (data: ConditionNodeData) => {
         return (
-            <div className="config-field">
-                <label>Condition Expression</label>
-                <textarea
-                    value={data.config?.condition || ''}
-                    onChange={(e) => handleConfigChange({ condition: e.target.value })}
-                    placeholder="input.value > 100"
-                    rows={4}
-                />
-                <div className="config-field-hint">
-                    JavaScript expression that returns true or false
+            <>
+                <div className="config-field">
+                    <label>Condition Expression</label>
+                    <textarea
+                        value={data.config?.condition || ''}
+                        onChange={(e) => handleConfigChange({ condition: e.target.value })}
+                        placeholder="input.value > 100"
+                        rows={4}
+                    />
+                    <div className="config-field-hint">
+                        JavaScript expression that evaluates to true or false.
+                        <br />
+                        Use <code>input</code> or <code>data</code> to access the incoming data.
+                    </div>
                 </div>
-            </div>
+                <div className="config-field">
+                    <label>Examples</label>
+                    <div className="config-examples">
+                        <button 
+                            type="button" 
+                            className="example-btn"
+                            onClick={() => handleConfigChange({ condition: 'input.status === "success"' })}
+                        >
+                            Status check
+                        </button>
+                        <button 
+                            type="button" 
+                            className="example-btn"
+                            onClick={() => handleConfigChange({ condition: 'input.value > 100' })}
+                        >
+                            Number comparison
+                        </button>
+                        <button 
+                            type="button" 
+                            className="example-btn"
+                            onClick={() => handleConfigChange({ condition: 'input.items && input.items.length > 0' })}
+                        >
+                            Array not empty
+                        </button>
+                        <button 
+                            type="button" 
+                            className="example-btn"
+                            onClick={() => handleConfigChange({ condition: 'input.data?.ok === true' })}
+                        >
+                            HTTP success
+                        </button>
+                    </div>
+                </div>
+                <div className="config-field">
+                    <label>Branch Info</label>
+                    <div className="branch-info">
+                        <div className="branch-item true">
+                            <span className="branch-indicator">✓</span>
+                            <span>TRUE branch: Connect from the green handle</span>
+                        </div>
+                        <div className="branch-item false">
+                            <span className="branch-indicator">✗</span>
+                            <span>FALSE branch: Connect from the red handle</span>
+                        </div>
+                    </div>
+                </div>
+            </>
         );
     };
 

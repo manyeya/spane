@@ -751,15 +751,22 @@ function App() {
                     console.log('📊 SSE status update received:', statusUpdate);
                     setExecutionStatus(statusUpdate.status);
 
-                    // Update node statuses
+                    // Update node statuses and include result data for condition nodes
                     setNodes((nds) =>
-                        nds.map((node) => ({
-                            ...node,
-                            data: {
-                                ...node.data,
-                                status: statusUpdate.nodeStatuses[node.id] || 'idle'
-                            }
-                        }))
+                        nds.map((node) => {
+                            const nodeResult = statusUpdate.nodeResults?.[node.id];
+                            return {
+                                ...node,
+                                data: {
+                                    ...node.data,
+                                    status: statusUpdate.nodeStatuses[node.id] || 'idle',
+                                    // Include result data for condition nodes to show which branch was taken
+                                    result: node.type === 'condition' && nodeResult?.data 
+                                        ? nodeResult.data 
+                                        : node.data.result
+                                }
+                            };
+                        })
                     );
 
                     // Update node results if available
