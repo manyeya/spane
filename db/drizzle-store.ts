@@ -1033,5 +1033,169 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
       createdBy: v.createdBy || undefined,
     }));
   }
+
+  // ============================================================================
+  // HYBRID STORE SUPPORT METHODS
+  // ============================================================================
+
+  /**
+   * Persist a complete execution state from Redis to database in a single transaction.
+   * Used by HybridExecutionStateStore when an execution completes.
+   * Requirements: 4.1, 4.2 - Persist full state in single transaction
+   */
+  async persistCompleteExecution(state: {
+    executionId: string;
+    workflowId: string;
+    status: ExecutionState['status'];
+    startedAt: Date;
+    completedAt: Date;
+    parentExecutionId?: string;
+    depth: number;
+    initialData?: any;
+    metadata?: any;
+    nodeResults: Record<string, ExecutionResult>;
+    logs: ExecutionLog[];
+    spans: ExecutionSpan[];
+  }): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      // Get current workflow version
+      const versionId = await this.getWorkflowVersion(state.workflowId);
+
+      // 1. Insert or update execution record
+      const [existing] = await tx
+        .select()
+        .from(schema.executions)
+        .where(eq(schema.executions.executionId, state.executionId))
+        .limit(1);
+
+      if (existing) {
+        // Update existing execution
+        await tx
+          .update(schema.executions)
+          .set({
+            status: state.status,
+            completedAt: state.completedAt,
+            metadata: state.metadata || null,
+          })
+          .where(eq(schema.executions.executionId, state.executionId));
+      } else {
+        // Insert new execution
+        await tx.insert(schema.executions).values({
+          executionId: state.executionId,
+          workflowId: state.workflowId,
+          workflowVersionId: versionId,
+          status: state.status,
+          startedAt: state.startedAt,
+          completedAt: state.completedAt,
+          parentExecutionId: state.parentExecutionId || null,
+          depth: state.depth,
+          initialData: state.initialData || null,
+          metadata: state.metadata || null,
+          timeoutAt: null,
+          timedOut: false,
+        });
+      }
+
+      // 2. Insert all node results
+      for (const [nodeId, result] of Object.entries(state.nodeResults)) {
+        // Check if result already exists
+        const [existingResult] = await tx
+          .select()
+          .from(schema.nodeResults)
+          .where(and(
+            eq(schema.nodeResults.executionId, state.executionId),
+            eq(schema.nodeResults.nodeId, nodeId)
+          ))
+          .limit(1);
+
+        if (existingResult) {
+          await tx
+            .update(schema.nodeResults)
+            .set({
+              success: result.success,
+              data: result.data || null,
+              error: result.error || null,
+              nextNodes: result.nextNodes || null,
+              skipped: result.skipped || false,
+            })
+            .where(and(
+              eq(schema.nodeResults.executionId, state.executionId),
+              eq(schema.nodeResults.nodeId, nodeId)
+            ));
+        } else {
+          await tx.insert(schema.nodeResults).values({
+            executionId: state.executionId,
+            nodeId,
+            success: result.success,
+            data: result.data || null,
+            error: result.error || null,
+            nextNodes: result.nextNodes || null,
+            skipped: result.skipped || false,
+          });
+        }
+      }
+
+      // 3. Insert all logs
+      for (const log of state.logs) {
+        // Check if log already exists (by id)
+        const [existingLog] = await tx
+          .select()
+          .from(schema.logs)
+          .where(eq(schema.logs.id, log.id))
+          .limit(1);
+
+        if (!existingLog) {
+          await tx.insert(schema.logs).values({
+            id: log.id,
+            executionId: log.executionId,
+            nodeId: log.nodeId || null,
+            level: log.level,
+            message: log.message,
+            timestamp: log.timestamp,
+            metadata: log.metadata || null,
+          });
+        }
+      }
+
+      // 4. Insert all spans
+      for (const span of state.spans) {
+        // Check if span already exists (by id)
+        const [existingSpan] = await tx
+          .select()
+          .from(schema.spans)
+          .where(eq(schema.spans.id, span.id))
+          .limit(1);
+
+        if (!existingSpan) {
+          await tx.insert(schema.spans).values({
+            id: span.id,
+            executionId: state.executionId,
+            nodeId: span.nodeId,
+            name: span.name,
+            startTime: span.startTime,
+            endTime: span.endTime || null,
+            status: span.status,
+            error: span.error || null,
+            metadata: span.metadata || null,
+          });
+        }
+      }
+
+      // 5. Add completion log
+      const completionLogId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      await tx.insert(schema.logs).values({
+        id: completionLogId,
+        executionId: state.executionId,
+        nodeId: null,
+        level: state.status === 'completed' ? 'info' : 'error',
+        message: `Workflow execution ${state.status}`,
+        timestamp: state.completedAt,
+        metadata: { 
+          totalNodes: Object.keys(state.nodeResults).length,
+          persistedFromRedis: true,
+        },
+      });
+    });
+  }
 }
 

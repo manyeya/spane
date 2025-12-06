@@ -1,4 +1,4 @@
-import { Queue, QueueEvents, FlowProducer } from 'bullmq';
+import { Queue, QueueEvents } from 'bullmq';
 import { Redis } from 'ioredis';
 import { MetricsCollector } from '../utils/metrics';
 import type { NodeJobData, WorkflowJobData, DLQItem } from './types';
@@ -8,7 +8,6 @@ export class QueueManager {
     public nodeQueue: Queue<NodeJobData>;
     public workflowQueue: Queue<WorkflowJobData>;
     public dlqQueue: Queue<DLQItem>;
-    public flowProducer: FlowProducer;
     public nodeQueueEvents: QueueEvents;
     public workflowQueueEvents: QueueEvents;
     public resultCacheEvents: QueueEvents;
@@ -28,11 +27,6 @@ export class QueueManager {
         });
 
         this.dlqQueue = new Queue<DLQItem>('dlq-execution', {
-            connection: redisConnection,
-        });
-
-        // Initialize FlowProducer for parent-child job dependencies
-        this.flowProducer = new FlowProducer({
             connection: redisConnection,
         });
 
@@ -102,7 +96,6 @@ export class QueueManager {
         await this.nodeQueue.close();
         await this.workflowQueue.close();
         await this.dlqQueue.close();
-        await this.flowProducer.close();
         await this.nodeQueueEvents.close();
         await this.workflowQueueEvents.close();
         await this.resultCacheEvents.close();

@@ -787,6 +787,8 @@ function App() {
                         console.log('🏁 Workflow completed with status:', statusUpdate.status);
                         setIsExecuting(false);
                         setShowResults(true);
+                        // Refresh execution history to show the new execution
+                        loadExecutions(executionWorkflowFilter || undefined);
                     }
                 },
                 onNodeProgress: (event) => {

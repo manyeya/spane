@@ -272,6 +272,9 @@ describe("Initial state completeness property tests", () => {
           executionStateArb,
           fc.date({ min: new Date('2020-01-01'), max: new Date() }),
           async (executionState, completedAt) => {
+            // Skip invalid dates
+            fc.pre(!isNaN(completedAt.getTime()));
+            
             // Set a completed status with completedAt
             const finishedState: ExecutionState = {
               ...executionState,

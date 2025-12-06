@@ -140,6 +140,7 @@ export class HealthMonitor {
 
     /**
      * Check database connection health
+     * For HybridExecutionStateStore, this checks both Redis and database backends
      */
     private async checkDatabase(): Promise<HealthCheckResult> {
         try {
@@ -147,7 +148,52 @@ export class HealthMonitor {
             // This assumes the state store has some method we can call
             if ('healthCheck' in this.stateStore &&
                 typeof (this.stateStore as any).healthCheck === 'function') {
-                await (this.stateStore as any).healthCheck();
+                const healthResult = await (this.stateStore as any).healthCheck();
+                
+                // Handle HybridExecutionStateStore health check result
+                // which returns { status, redis, database }
+                if (healthResult && typeof healthResult === 'object' && 'status' in healthResult) {
+                    const hybridHealth = healthResult as {
+                        status: 'healthy' | 'degraded' | 'unhealthy';
+                        redis: { healthy: boolean; message?: string };
+                        database: { healthy: boolean; message?: string };
+                    };
+                    
+                    if (hybridHealth.status === 'unhealthy') {
+                        return {
+                            healthy: false,
+                            component: 'database',
+                            message: `Hybrid store unhealthy - Redis: ${hybridHealth.redis.message || 'unknown'}, DB: ${hybridHealth.database.message || 'unknown'}`,
+                            timestamp: new Date(),
+                        };
+                    }
+                    
+                    if (hybridHealth.status === 'degraded') {
+                        // Return degraded status with details
+                        const issues: string[] = [];
+                        if (!hybridHealth.redis.healthy) {
+                            issues.push(`Redis: ${hybridHealth.redis.message || 'unhealthy'}`);
+                        }
+                        if (!hybridHealth.database.healthy) {
+                            issues.push(`Database: ${hybridHealth.database.message || 'unhealthy'}`);
+                        }
+                        
+                        return {
+                            healthy: false, // Mark as unhealthy to trigger degraded overall status
+                            component: 'database',
+                            message: `Hybrid store degraded - ${issues.join(', ')}`,
+                            timestamp: new Date(),
+                        };
+                    }
+                    
+                    // Healthy
+                    return {
+                        healthy: true,
+                        component: 'database',
+                        message: 'Hybrid store healthy (Redis + Database)',
+                        timestamp: new Date(),
+                    };
+                }
             }
 
             return {
