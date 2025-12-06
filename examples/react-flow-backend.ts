@@ -6,6 +6,7 @@ import type { WorkflowEvent, ErrorEvent } from '../engine/event-types';
 import IORedis from 'ioredis';
 import type { WorkflowDefinition, NodeDefinition, ExecutionContext, ExecutionResult, WorkflowTrigger } from '../types';
 import { DrizzleExecutionStateStore } from '../db/drizzle-store';
+import { HybridExecutionStateStore } from '../db/hybrid-store';
 
 // Initialize Redis connection
 console.log('🔌 Connecting to Redis...');
@@ -269,11 +270,18 @@ registry.register('condition', {
     }
 });
 
-// Initialize state store (using Drizzle with PostgreSQL)
-const stateStore = new DrizzleExecutionStateStore(
+// Initialize state store (using Hybrid store with Redis-first for active executions)
+const drizzleStore = new DrizzleExecutionStateStore(
     process.env.DATABASE_URL || 'postgresql://manyeya@localhost:5432/spane',
     redis
 );
+
+// Use HybridExecutionStateStore for Redis-first active execution state
+const stateStore = new HybridExecutionStateStore(redis, drizzleStore, {
+    redisTTL: 24 * 60 * 60, // 24 hours TTL for active executions
+    persistRetries: 3,      // Retry DB persistence 3 times on failure
+});
+console.log('✅ Hybrid state store initialized (Redis-first for active executions)');
 
 // Initialize the workflow engine with all required dependencies
 console.log('🚀 Initializing workflow engine...');
@@ -611,10 +619,12 @@ const app = new Elysia()
                 };
             }
 
-            // Check if workflow has meta (UI metadata like node positions)
-            const hasMeta = (workflow as any).meta?.nodes?.length > 0;
+            // Check if workflow has reactFlowData (UI metadata like node positions)
+            // Note: Data is stored as 'reactFlowData' when saving, check both for backwards compatibility
+            const reactFlowData = (workflow as any).reactFlowData || (workflow as any).meta;
+            const hasReactFlowData = reactFlowData?.nodes?.length > 0;
             
-            // Return workflow with meta if available
+            // Return workflow with reactFlowData if available
             return {
                 success: true,
                 workflow: {
@@ -622,19 +632,19 @@ const app = new Elysia()
                     name: workflow.name,
                     entryNodeId: workflow.entryNodeId,
                     triggers: workflow.triggers,
-                    // Include meta so frontend can properly extract it
-                    meta: hasMeta ? (workflow as any).meta : undefined,
+                    // Include reactFlowData so frontend can properly extract it
+                    reactFlowData: hasReactFlowData ? reactFlowData : undefined,
                     // Also include nodes/edges directly for backwards compatibility
-                    nodes: hasMeta 
-                        ? (workflow as any).meta.nodes 
+                    nodes: hasReactFlowData 
+                        ? reactFlowData.nodes 
                         : workflow.nodes.map((n: any) => ({
                             id: n.id,
                             type: n.type,
                             position: n.position || { x: 0, y: 0 },
                             data: { label: n.id, type: n.type, config: n.config || {} }
                         })),
-                    edges: hasMeta 
-                        ? (workflow as any).meta.edges 
+                    edges: hasReactFlowData 
+                        ? reactFlowData.edges 
                         : [],
                 }
             };

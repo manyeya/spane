@@ -2,6 +2,7 @@ import { WorkflowEngine } from './engine/workflow-engine';
 import { WorkflowAPIController } from './api';
 import { InMemoryExecutionStore } from './db/inmemory-store';
 import { DrizzleExecutionStateStore } from './db/drizzle-store';
+import { HybridExecutionStateStore } from './db/hybrid-store';
 import { NodeRegistry } from './engine/registry';
 import { Redis } from 'ioredis';
 import { HealthMonitor } from './utils/health';
@@ -39,11 +40,32 @@ const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
 const nodeRegistry = new NodeRegistry();
 
 // Choose state store based on DATABASE_URL environment variable
-const stateStore = process.env.DATABASE_URL
-  ? new DrizzleExecutionStateStore(process.env.DATABASE_URL, redis)
-  : new InMemoryExecutionStore();
+// When both Redis and DATABASE_URL are available, use HybridExecutionStateStore
+// for Redis-first active execution state with database persistence on completion
+let stateStore;
+let storeType: string;
 
-console.log(`📦 Using ${process.env.DATABASE_URL ? 'Postgres' : 'in-memory'} state store`);
+if (process.env.DATABASE_URL) {
+  const drizzleStore = new DrizzleExecutionStateStore(process.env.DATABASE_URL, redis);
+  
+  // Use hybrid store when both Redis and DB are available (default behavior)
+  // Set DISABLE_HYBRID_STORE=true to use DrizzleStore directly
+  if (process.env.DISABLE_HYBRID_STORE !== 'true') {
+    stateStore = new HybridExecutionStateStore(redis, drizzleStore, {
+      redisTTL: parseInt(process.env.REDIS_EXECUTION_TTL || '86400'), // 24 hours default
+      persistRetries: parseInt(process.env.DB_PERSIST_RETRIES || '3'),
+    });
+    storeType = 'Hybrid (Redis + Postgres)';
+  } else {
+    stateStore = drizzleStore;
+    storeType = 'Postgres';
+  }
+} else {
+  stateStore = new InMemoryExecutionStore();
+  storeType = 'in-memory';
+}
+
+console.log(`📦 Using ${storeType} state store`);
 
 // Initialize production operations features (optional)
 const enableProductionOps = process.env.ENABLE_PRODUCTION_OPS !== 'false'; // Enabled by default
@@ -85,6 +107,20 @@ const api = new WorkflowAPIController(
 // Start workers
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || '5');
 engine.startWorkers(concurrency);
+
+// Perform startup recovery for orphaned Redis executions (if using hybrid store)
+if (stateStore instanceof HybridExecutionStateStore) {
+  const recoveryThreshold = parseInt(process.env.RECOVERY_TTL_THRESHOLD || '3600'); // 1 hour default
+  stateStore.recoverOrphanedExecutions(recoveryThreshold)
+    .then((results) => {
+      if (results.recovered > 0 || results.failed > 0) {
+        console.log(`🔄 Startup recovery: ${results.recovered} executions recovered, ${results.failed} failed`);
+      }
+    })
+    .catch((error) => {
+      console.error('❌ Startup recovery failed:', error);
+    });
+}
 
 // Register workers and queues with production ops
 if (enableProductionOps && healthMonitor && gracefulShutdown) {

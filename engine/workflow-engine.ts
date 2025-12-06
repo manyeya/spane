@@ -12,7 +12,7 @@ import { WorkerManager } from './worker-manager';
 import type { DLQItem } from './types';
 import { TimeoutMonitor } from '../utils/timeout-monitor';
 import { HealthMonitor } from '../utils/health-monitor';
-import type { WorkflowStatus } from './event-types';
+import type { WorkflowStatusEvent } from './event-types';
 import { EventStreamManager } from './event-stream';
 
 export interface WorkflowCacheOptions {
@@ -31,11 +31,11 @@ export class WorkflowEngine {
     private workflowCache: LRUCache<string, WorkflowDefinition>;
 
     constructor(
-        private registry: NodeRegistry,
+        registry: NodeRegistry,
         private stateStore: IExecutionStateStore,
-        private redisConnection: Redis,
+        redisConnection: Redis,
         private metricsCollector?: MetricsCollector,
-        private circuitBreakerRegistry?: CircuitBreakerRegistry,
+        _circuitBreakerRegistry?: CircuitBreakerRegistry,
         cacheOptions?: WorkflowCacheOptions
     ) {
         // Initialize LRU cache with configurable limits
@@ -84,39 +84,6 @@ export class WorkflowEngine {
     }
 
 
-
-    /**
-     * Emit a workflow status event via a special event job.
-     * This is used for workflow-level events that don't have a job context.
-     */
-    private async emitWorkflowEvent(
-        executionId: string,
-        workflowId: string,
-        status: WorkflowStatus,
-        error?: string
-    ): Promise<void> {
-        try {
-            // Add a special event job that will emit the workflow status event
-            // The job completes immediately after emitting the event via updateProgress
-            await this.queueManager.nodeQueue.add(
-                'emit-workflow-event',
-                {
-                    executionId,
-                    workflowId,
-                    nodeId: '__workflow__',
-                    inputData: { status, error },
-                },
-                {
-                    jobId: `workflow-event-${executionId}-${status}-${Date.now()}`,
-                    removeOnComplete: true,
-                    removeOnFail: true,
-                }
-            );
-        } catch (err) {
-            // Log but don't fail the operation if event emission fails
-            console.warn(`Failed to emit workflow event: ${err}`);
-        }
-    }
 
     // Helper to log to both console and state store
     private async log(executionId: string, nodeId: string | undefined, level: 'info' | 'warn' | 'error' | 'debug', message: string, metadata?: any): Promise<void> {
@@ -323,8 +290,15 @@ export class WorkflowEngine {
             await this.enqueueNode(executionId, workflowId, node.id, initialData, parentJobId, options);
         }
 
-        // Emit 'started' workflow event
-        await this.emitWorkflowEvent(executionId, workflowId, 'started');
+        // Emit 'started' workflow event directly via EventStreamManager
+        const startedEvent: WorkflowStatusEvent = {
+            type: 'workflow:status',
+            timestamp: Date.now(),
+            executionId,
+            workflowId,
+            status: 'started',
+        };
+        await this.eventStreamManager.emit(startedEvent);
         
         await this.log(executionId, undefined, 'info', `Workflow ${workflowId} started (Execution ID: ${executionId})`);
         return executionId;
@@ -481,8 +455,15 @@ export class WorkflowEngine {
             }
         }
 
-        // Emit 'cancelled' workflow event
-        await this.emitWorkflowEvent(executionId, workflowId, 'cancelled');
+        // Emit 'cancelled' workflow event directly via EventStreamManager
+        const cancelledEvent: WorkflowStatusEvent = {
+            type: 'workflow:status',
+            timestamp: Date.now(),
+            executionId,
+            workflowId,
+            status: 'cancelled',
+        };
+        await this.eventStreamManager.emit(cancelledEvent);
 
         console.log(`🚫 Workflow ${executionId} cancelled (removed ${removedCount} pending jobs)`);
     }
@@ -529,8 +510,15 @@ export class WorkflowEngine {
             }
         }
 
-        // Emit 'paused' workflow event
-        await this.emitWorkflowEvent(executionId, workflowId, 'paused');
+        // Emit 'paused' workflow event directly via EventStreamManager
+        const pausedEvent: WorkflowStatusEvent = {
+            type: 'workflow:status',
+            timestamp: Date.now(),
+            executionId,
+            workflowId,
+            status: 'paused',
+        };
+        await this.eventStreamManager.emit(pausedEvent);
 
         console.log(`⏸️ Workflow ${executionId} paused (delayed ${pausedCount} jobs)`);
     }

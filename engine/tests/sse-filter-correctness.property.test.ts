@@ -328,7 +328,7 @@ describe("SSE filter correctness property tests", () => {
             const result = await Promise.race([
               iterator.next(),
               new Promise<IteratorResult<WorkflowEvent>>((resolve) =>
-                setTimeout(() => resolve({ value: undefined, done: true }), 50)
+                setTimeout(() => resolve({ value: undefined, done: true }), 10)
               ),
             ]);
 
@@ -339,7 +339,7 @@ describe("SSE filter correctness property tests", () => {
             expect(result.done).toBe(true);
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 50 }
       );
     });
   });

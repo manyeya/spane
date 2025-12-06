@@ -9,7 +9,8 @@
  * @module engine/event-stream
  */
 
-import { QueueEvents } from 'bullmq';
+import { QueueEvents, QueueEventsProducer } from 'bullmq';
+import type { QueueEventsListener } from 'bullmq';
 import { EventEmitter } from 'events';
 import type { Redis } from 'ioredis';
 import type { IExecutionStateStore } from '../types';
@@ -19,29 +20,66 @@ import type {
   WorkflowStatusEvent,
   ExecutionStateEvent,
   ProgressPayload,
+  WorkflowStatus,
 } from './event-types';
+
+/**
+ * Custom event payload for workflow events published via QueueEventsProducer
+ */
+export interface WorkflowEventPayload {
+  executionId: string;
+  workflowId: string;
+  error?: string;
+}
+
+/**
+ * Extended QueueEventsListener interface for custom workflow events.
+ * These events are published via QueueEventsProducer.publishEvent() and
+ * received via QueueEvents listeners.
+ */
+export interface WorkflowEventsListener extends QueueEventsListener {
+  'workflow:started': (args: WorkflowEventPayload, id: string) => void;
+  'workflow:completed': (args: WorkflowEventPayload, id: string) => void;
+  'workflow:failed': (args: WorkflowEventPayload, id: string) => void;
+  'workflow:cancelled': (args: WorkflowEventPayload, id: string) => void;
+  'workflow:paused': (args: WorkflowEventPayload, id: string) => void;
+}
 
 /**
  * Manages event streaming from BullMQ QueueEvents to SSE clients.
  * 
  * Architecture:
  * - Listens to BullMQ 'progress' events from the node-execution queue
+ * - Uses QueueEventsProducer for publishing custom workflow events via Redis Pub/Sub
  * - Parses ProgressPayload and converts to typed WorkflowEvents
  * - Distributes events to subscribers via internal EventEmitter
  * - Supports filtering by executionId for targeted subscriptions
  */
 export class EventStreamManager {
   private queueEvents: QueueEvents;
+  private workflowQueueEvents: QueueEvents;
+  private queueEventsProducer: QueueEventsProducer;
   private emitter: EventEmitter;
   private subscriptionCount: number = 0;
   private isStarted: boolean = false;
+  private readonly WORKFLOW_EVENTS_QUEUE = 'workflow-events';
 
   constructor(
     private redisConnection: Redis,
     private stateStore: IExecutionStateStore
   ) {
-    // Initialize QueueEvents for 'node-execution' queue
+    // Initialize QueueEvents for 'node-execution' queue (existing functionality)
     this.queueEvents = new QueueEvents('node-execution', {
+      connection: redisConnection,
+    });
+
+    // Initialize QueueEvents for 'workflow-events' queue (custom events)
+    this.workflowQueueEvents = new QueueEvents(this.WORKFLOW_EVENTS_QUEUE, {
+      connection: redisConnection,
+    });
+
+    // Initialize QueueEventsProducer for publishing custom events
+    this.queueEventsProducer = new QueueEventsProducer(this.WORKFLOW_EVENTS_QUEUE, {
       connection: redisConnection,
     });
 
@@ -53,14 +91,15 @@ export class EventStreamManager {
 
   /**
    * Start listening to BullMQ events.
-   * Sets up the progress event handler to parse and emit typed events.
+   * Sets up the progress event handler to parse and emit typed events,
+   * and custom workflow event listeners for direct event emission.
    */
   async start(): Promise<void> {
     if (this.isStarted) {
       return;
     }
 
-    // Handle progress events from BullMQ
+    // Handle progress events from BullMQ (existing node execution events)
     this.queueEvents.on('progress', ({ jobId, data }) => {
       try {
         const payload = data as ProgressPayload;
@@ -79,8 +118,94 @@ export class EventStreamManager {
       console.error('[EventStreamManager] QueueEvents error:', error);
     });
 
+    // Setup custom workflow event listeners via BullMQ's native custom events
+    this.setupWorkflowEventListeners();
+
     this.isStarted = true;
-    console.log('[EventStreamManager] Started listening to node-execution queue events');
+    console.log('[EventStreamManager] Started listening to node-execution and workflow-events queues');
+  }
+
+  /**
+   * Setup listeners for custom workflow events published via QueueEventsProducer.
+   * These events are distributed via Redis Pub/Sub to all connected instances.
+   */
+  private setupWorkflowEventListeners(): void {
+    // Helper to create WorkflowStatusEvent from custom event payload
+    const createStatusEvent = (status: WorkflowStatus, args: WorkflowEventPayload): WorkflowStatusEvent => ({
+      type: 'workflow:status',
+      timestamp: Date.now(),
+      executionId: args.executionId,
+      workflowId: args.workflowId,
+      status,
+      error: args.error,
+    });
+
+    // Listen for workflow:started events using BullMQ's generic type parameter
+    this.workflowQueueEvents.on<WorkflowEventsListener>('workflow:started', (args: WorkflowEventPayload) => {
+      const event = createStatusEvent('started', args);
+      this.emitter.emit('event', event);
+    });
+
+    // Listen for workflow:completed events
+    this.workflowQueueEvents.on<WorkflowEventsListener>('workflow:completed', (args: WorkflowEventPayload) => {
+      const event = createStatusEvent('completed', args);
+      this.emitter.emit('event', event);
+    });
+
+    // Listen for workflow:failed events
+    this.workflowQueueEvents.on<WorkflowEventsListener>('workflow:failed', (args: WorkflowEventPayload) => {
+      const event = createStatusEvent('failed', args);
+      this.emitter.emit('event', event);
+    });
+
+    // Listen for workflow:cancelled events
+    this.workflowQueueEvents.on<WorkflowEventsListener>('workflow:cancelled', (args: WorkflowEventPayload) => {
+      const event = createStatusEvent('cancelled', args);
+      this.emitter.emit('event', event);
+    });
+
+    // Listen for workflow:paused events
+    this.workflowQueueEvents.on<WorkflowEventsListener>('workflow:paused', (args: WorkflowEventPayload) => {
+      const event = createStatusEvent('paused', args);
+      this.emitter.emit('event', event);
+    });
+
+    // Handle errors on workflow events queue
+    this.workflowQueueEvents.on('error', (error) => {
+      console.error('[EventStreamManager] WorkflowQueueEvents error:', error);
+    });
+  }
+
+  /**
+   * Emit a workflow event to all subscribers.
+   * 
+   * This method:
+   * 1. Emits to local EventEmitter immediately (for same-instance subscribers)
+   * 2. Publishes via QueueEventsProducer for cross-instance distribution via Redis Pub/Sub
+   * 
+   * @param event - The WorkflowStatusEvent to emit
+   */
+  async emit(event: WorkflowStatusEvent): Promise<void> {
+    // 1. Emit locally immediately (for same-instance subscribers)
+    this.emitter.emit('event', event);
+
+    // 2. Publish via BullMQ's QueueEventsProducer for cross-instance distribution
+    try {
+      const eventName = `workflow:${event.status}` as const;
+      const payload: WorkflowEventPayload = {
+        executionId: event.executionId,
+        workflowId: event.workflowId,
+        error: event.error,
+      };
+
+      await this.queueEventsProducer.publishEvent({
+        eventName,
+        ...payload,
+      });
+    } catch (error) {
+      // Log error but don't throw - local emission already succeeded
+      console.error('[EventStreamManager] Error publishing event via QueueEventsProducer:', error);
+    }
   }
 
   /**
@@ -249,11 +374,13 @@ export class EventStreamManager {
 
   /**
    * Cleanup and close the event stream.
-   * Removes all listeners and closes the QueueEvents connection.
+   * Removes all listeners and closes the QueueEvents and QueueEventsProducer connections.
    */
   async close(): Promise<void> {
     this.emitter.removeAllListeners();
     await this.queueEvents.close();
+    await this.workflowQueueEvents.close();
+    await this.queueEventsProducer.close();
     this.isStarted = false;
     console.log('[EventStreamManager] Closed');
   }

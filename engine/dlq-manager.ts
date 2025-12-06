@@ -14,7 +14,6 @@ export class DLQManager {
             timestamp: Date.now(),
             stacktrace: job.stacktrace,
         };
-
         await this.queueManager.dlqQueue.add('dlq-item', dlqItem);
     }
 

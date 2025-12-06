@@ -199,7 +199,9 @@ describe("Idempotent child enqueueing property tests", () => {
             }
 
             // Property: Job ID should not contain timestamp
-            expect(firstJobId).not.toMatch(/\d{13}/); // No 13-digit timestamp
+            // Timestamps are 13-digit numbers starting with 1 (e.g., 1701849600000)
+            // We check for timestamp-like patterns, not just any 13 digits
+            expect(firstJobId).not.toMatch(/1[0-9]{12}/); // No 13-digit timestamp starting with 1
           }
         ),
         { numRuns: 100 }
