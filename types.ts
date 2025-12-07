@@ -36,6 +36,24 @@ export interface SubWorkflowConfig {
   outputMapping?: Record<string, string>; // Map sub-workflow output keys to parent data keys
 }
 
+/**
+ * Configuration for delay node type.
+ * Allows pausing workflow execution for a specified duration.
+ * 
+ * Duration precedence (first found is used):
+ * 1. duration (milliseconds) - highest priority
+ * 2. durationSeconds (converted to milliseconds)
+ * 3. durationMinutes (converted to milliseconds)
+ */
+export interface DelayNodeConfig {
+  /** Duration in milliseconds (highest priority) */
+  duration?: number;
+  /** Duration in seconds (converted to milliseconds internally) */
+  durationSeconds?: number;
+  /** Duration in minutes (converted to milliseconds internally) */
+  durationMinutes?: number;
+}
+
 export interface WebhookTrigger {
   type: 'webhook';
   config: {

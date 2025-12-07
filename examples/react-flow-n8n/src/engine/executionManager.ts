@@ -18,7 +18,7 @@ export interface NodeProgressEvent {
     executionId: string;
     nodeId: string;
     workflowId: string;
-    status: 'running' | 'completed' | 'failed' | 'skipped';
+    status: 'running' | 'completed' | 'failed' | 'skipped' | 'delayed';
     data?: any;
     error?: string;
     progress?: number;
@@ -316,12 +316,13 @@ class ExecutionManager {
     /**
      * Map node event status to ExecutionStatus
      */
-    private mapNodeStatus(status: 'running' | 'completed' | 'failed' | 'skipped'): ExecutionStatus {
+    private mapNodeStatus(status: 'running' | 'completed' | 'failed' | 'skipped' | 'delayed'): ExecutionStatus {
         switch (status) {
             case 'running': return 'running';
             case 'completed': return 'success';
             case 'failed': return 'error';
             case 'skipped': return 'idle'; // Use idle for skipped nodes
+            case 'delayed': return 'running'; // Delayed nodes are still "in progress"
             default: return 'idle';
         }
     }

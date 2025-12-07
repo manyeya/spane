@@ -2,6 +2,7 @@ import React from 'react';
 import { TriggerNodeData } from '../nodes/TriggerNode';
 import { ActionNodeData } from '../nodes/ActionNode';
 import { ConditionNodeData } from '../nodes/ConditionNode';
+import { DelayNodeData } from '../nodes/DelayNode';
 
 interface NodeConfigPanelProps {
     node: any | null;
@@ -39,21 +40,113 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
         }
         if (data.type === 'webhook') {
             return (
-                <div className="config-field">
-                    <label>Webhook URL Path</label>
-                    <input
-                        type="text"
-                        value={data.config?.url || ''}
-                        onChange={(e) => handleConfigChange({ url: e.target.value })}
-                        placeholder="/webhook/my-workflow"
-                    />
-                    <div className="config-field-hint">
-                        The path where this webhook will be accessible
+                <>
+                    <div className="config-field">
+                        <label>Webhook URL Path</label>
+                        <input
+                            type="text"
+                            value={data.config?.url || ''}
+                            onChange={(e) => handleConfigChange({ url: e.target.value })}
+                            placeholder="/webhook/my-workflow"
+                        />
+                        <div className="config-field-hint">
+                            The path where this webhook will be accessible
+                        </div>
                     </div>
-                </div>
+                    {renderCircuitBreakerConfig()}
+                </>
             );
         }
         return null;
+    };
+
+    const [showCircuitBreaker, setShowCircuitBreaker] = React.useState(false);
+
+    const handleCircuitBreakerChange = (cbConfig: any) => {
+        const currentCb = node.data.config?.circuitBreaker || {};
+        handleConfigChange({ circuitBreaker: { ...currentCb, ...cbConfig } });
+    };
+
+    const renderCircuitBreakerConfig = () => {
+        const cb = node.data.config?.circuitBreaker || {};
+        return (
+            <div className="circuit-breaker-config">
+                <div 
+                    className="config-section-header"
+                    onClick={() => setShowCircuitBreaker(!showCircuitBreaker)}
+                    style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+                >
+                    <span>{showCircuitBreaker ? '▼' : '▶'}</span>
+                    <label style={{ cursor: 'pointer', margin: 0 }}>Circuit Breaker Settings</label>
+                </div>
+                {showCircuitBreaker && (
+                    <div className="circuit-breaker-fields" style={{ marginTop: '12px', paddingLeft: '16px' }}>
+                        <div className="config-field">
+                            <label>Failure Threshold</label>
+                            <input
+                                type="number"
+                                min="1"
+                                value={cb.failureThreshold || ''}
+                                onChange={(e) => handleCircuitBreakerChange({ 
+                                    failureThreshold: e.target.value ? parseInt(e.target.value) : undefined 
+                                })}
+                                placeholder="5 (default)"
+                            />
+                            <div className="config-field-hint">
+                                Number of failures before circuit opens
+                            </div>
+                        </div>
+                        <div className="config-field">
+                            <label>Success Threshold</label>
+                            <input
+                                type="number"
+                                min="1"
+                                value={cb.successThreshold || ''}
+                                onChange={(e) => handleCircuitBreakerChange({ 
+                                    successThreshold: e.target.value ? parseInt(e.target.value) : undefined 
+                                })}
+                                placeholder="2 (default)"
+                            />
+                            <div className="config-field-hint">
+                                Successes needed to close circuit
+                            </div>
+                        </div>
+                        <div className="config-field">
+                            <label>Timeout (ms)</label>
+                            <input
+                                type="number"
+                                min="1000"
+                                step="1000"
+                                value={cb.timeout || ''}
+                                onChange={(e) => handleCircuitBreakerChange({ 
+                                    timeout: e.target.value ? parseInt(e.target.value) : undefined 
+                                })}
+                                placeholder="60000 (default - 1 min)"
+                            />
+                            <div className="config-field-hint">
+                                Time before circuit tries again
+                            </div>
+                        </div>
+                        <div className="config-field">
+                            <label>Monitoring Period (ms)</label>
+                            <input
+                                type="number"
+                                min="1000"
+                                step="1000"
+                                value={cb.monitoringPeriod || ''}
+                                onChange={(e) => handleCircuitBreakerChange({ 
+                                    monitoringPeriod: e.target.value ? parseInt(e.target.value) : undefined 
+                                })}
+                                placeholder="120000 (default - 2 min)"
+                            />
+                            <div className="config-field-hint">
+                                Time window for counting failures
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
     };
 
     const renderActionConfig = (data: ActionNodeData) => {
@@ -82,6 +175,7 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
                             placeholder="https://api.example.com/endpoint"
                         />
                     </div>
+                    {renderCircuitBreakerConfig()}
                 </>
             );
         }
@@ -113,20 +207,24 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
                             placeholder="user@example.com"
                         />
                     </div>
+                    {renderCircuitBreakerConfig()}
                 </>
             );
         }
         if (data.type === 'database') {
             return (
-                <div className="config-field">
-                    <label>SQL Query</label>
-                    <textarea
-                        value={data.config?.query || ''}
-                        onChange={(e) => handleConfigChange({ query: e.target.value })}
-                        placeholder="SELECT * FROM users WHERE id = ?"
-                        rows={6}
-                    />
-                </div>
+                <>
+                    <div className="config-field">
+                        <label>SQL Query</label>
+                        <textarea
+                            value={data.config?.query || ''}
+                            onChange={(e) => handleConfigChange({ query: e.target.value })}
+                            placeholder="SELECT * FROM users WHERE id = ?"
+                            rows={6}
+                        />
+                    </div>
+                    {renderCircuitBreakerConfig()}
+                </>
             );
         }
         return null;
@@ -221,9 +319,185 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
                 {node.type === 'trigger' && renderTriggerConfig(node.data as TriggerNodeData)}
                 {node.type === 'action' && renderActionConfig(node.data as ActionNodeData)}
                 {node.type === 'condition' && renderConditionConfig(node.data as ConditionNodeData)}
+                {node.type === 'delay' && renderDelayConfig(node.data as DelayNodeData)}
             </div>
         </div>
     );
+
+    /**
+     * Renders configuration UI for delay nodes.
+     * 
+     * Delay nodes support three duration configuration options with precedence:
+     * 1. duration (milliseconds) - highest priority
+     * 2. durationSeconds - converted to ms
+     * 3. durationMinutes - converted to ms
+     * 
+     * Requirements: 3.1, 3.2, 3.3, 3.4
+     */
+    function renderDelayConfig(data: DelayNodeData) {
+        const [durationUnit, setDurationUnit] = React.useState<'ms' | 'seconds' | 'minutes'>(() => {
+            // Determine initial unit based on existing config
+            if (data.config?.durationMinutes !== undefined) return 'minutes';
+            if (data.config?.durationSeconds !== undefined) return 'seconds';
+            return 'seconds'; // Default to seconds for better UX
+        });
+
+        const getCurrentValue = (): string => {
+            if (durationUnit === 'minutes' && data.config?.durationMinutes !== undefined) {
+                return String(data.config.durationMinutes);
+            }
+            if (durationUnit === 'seconds' && data.config?.durationSeconds !== undefined) {
+                return String(data.config.durationSeconds);
+            }
+            if (durationUnit === 'ms' && data.config?.duration !== undefined) {
+                return String(data.config.duration);
+            }
+            return '';
+        };
+
+        const handleDurationChange = (value: string) => {
+            const numValue = value === '' ? undefined : parseFloat(value);
+            
+            // Clear all duration fields and set only the selected unit
+            const newConfig: any = {
+                duration: undefined,
+                durationSeconds: undefined,
+                durationMinutes: undefined,
+            };
+
+            if (numValue !== undefined && !isNaN(numValue)) {
+                if (durationUnit === 'minutes') {
+                    newConfig.durationMinutes = numValue;
+                } else if (durationUnit === 'seconds') {
+                    newConfig.durationSeconds = numValue;
+                } else {
+                    newConfig.duration = numValue;
+                }
+            }
+
+            handleConfigChange(newConfig);
+        };
+
+        const handleUnitChange = (newUnit: 'ms' | 'seconds' | 'minutes') => {
+            // Convert existing value to new unit
+            const currentValue = getCurrentValue();
+            setDurationUnit(newUnit);
+            
+            if (currentValue) {
+                // Re-apply the value with the new unit
+                handleDurationChange(currentValue);
+            }
+        };
+
+        return (
+            <>
+                <div className="config-field">
+                    <label>Delay Duration</label>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                        <input
+                            type="number"
+                            min="0"
+                            step={durationUnit === 'ms' ? '100' : '1'}
+                            value={getCurrentValue()}
+                            onChange={(e) => handleDurationChange(e.target.value)}
+                            placeholder={`Enter ${durationUnit}`}
+                            style={{ flex: 1 }}
+                        />
+                        <select
+                            value={durationUnit}
+                            onChange={(e) => handleUnitChange(e.target.value as 'ms' | 'seconds' | 'minutes')}
+                            style={{ width: '100px' }}
+                        >
+                            <option value="ms">ms</option>
+                            <option value="seconds">seconds</option>
+                            <option value="minutes">minutes</option>
+                        </select>
+                    </div>
+                    <div className="config-field-hint">
+                        How long to pause before continuing to the next node
+                    </div>
+                </div>
+                <div className="config-field">
+                    <label>Quick Presets</label>
+                    <div className="config-examples">
+                        <button 
+                            type="button" 
+                            className="example-btn"
+                            onClick={() => {
+                                setDurationUnit('seconds');
+                                handleConfigChange({ 
+                                    duration: undefined, 
+                                    durationSeconds: 5, 
+                                    durationMinutes: undefined 
+                                });
+                            }}
+                        >
+                            5 seconds
+                        </button>
+                        <button 
+                            type="button" 
+                            className="example-btn"
+                            onClick={() => {
+                                setDurationUnit('seconds');
+                                handleConfigChange({ 
+                                    duration: undefined, 
+                                    durationSeconds: 30, 
+                                    durationMinutes: undefined 
+                                });
+                            }}
+                        >
+                            30 seconds
+                        </button>
+                        <button 
+                            type="button" 
+                            className="example-btn"
+                            onClick={() => {
+                                setDurationUnit('minutes');
+                                handleConfigChange({ 
+                                    duration: undefined, 
+                                    durationSeconds: undefined, 
+                                    durationMinutes: 1 
+                                });
+                            }}
+                        >
+                            1 minute
+                        </button>
+                        <button 
+                            type="button" 
+                            className="example-btn"
+                            onClick={() => {
+                                setDurationUnit('minutes');
+                                handleConfigChange({ 
+                                    duration: undefined, 
+                                    durationSeconds: undefined, 
+                                    durationMinutes: 5 
+                                });
+                            }}
+                        >
+                            5 minutes
+                        </button>
+                    </div>
+                </div>
+                <div className="config-field">
+                    <label>How It Works</label>
+                    <div className="branch-info">
+                        <div className="branch-item true">
+                            <span className="branch-indicator">⏳</span>
+                            <span>Pauses workflow for the specified duration</span>
+                        </div>
+                        <div className="branch-item true">
+                            <span className="branch-indicator">📤</span>
+                            <span>Passes input data through unchanged</span>
+                        </div>
+                        <div className="branch-item true">
+                            <span className="branch-indicator">🚫</span>
+                            <span>Respects workflow cancellation</span>
+                        </div>
+                    </div>
+                </div>
+            </>
+        );
+    }
 };
 
 export default NodeConfigPanel;

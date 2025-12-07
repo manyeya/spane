@@ -2,6 +2,7 @@ import { Redis } from 'ioredis';
 import { NodeRegistry } from '../engine/registry';
 import { WorkflowEngine } from '../engine/workflow-engine';
 import { DrizzleExecutionStateStore } from '../db/drizzle-store';
+import { CircuitBreakerRegistry } from '../utils/circuit-breaker';
 import type { WorkflowDefinition } from '../types';
 
 /**
@@ -22,6 +23,8 @@ async function testWorkflowControls() {
     );
 
     const registry = new NodeRegistry();
+    registry.registerDefaultExternalNodes(); // Enable circuit breaker for external nodes
+    
     // Register a dummy node type
     registry.register('log', {
         execute: async (context) => {
@@ -30,7 +33,8 @@ async function testWorkflowControls() {
         }
     });
 
-    const engine = new WorkflowEngine(registry, stateStore, redisConnection);
+    const circuitBreakerRegistry = new CircuitBreakerRegistry();
+    const engine = new WorkflowEngine(registry, stateStore, redisConnection, undefined, circuitBreakerRegistry);
 
     // Test workflow definition with multiple steps to allow time for controls
     const testWorkflow: WorkflowDefinition = {

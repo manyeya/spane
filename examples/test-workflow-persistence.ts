@@ -2,6 +2,7 @@ import { Redis } from 'ioredis';
 import { NodeRegistry } from '../engine/registry';
 import { WorkflowEngine } from '../engine/workflow-engine';
 import { DrizzleExecutionStateStore } from '../db/drizzle-store';
+import { CircuitBreakerRegistry } from '../utils/circuit-breaker';
 import type { WorkflowDefinition } from '../types';
 
 /**
@@ -29,6 +30,7 @@ async function testWorkflowPersistence() {
     );
 
     const registry = new NodeRegistry();
+    registry.registerDefaultExternalNodes(); // Enable circuit breaker for external nodes
 
     // Test workflow definition
     const testWorkflow: WorkflowDefinition = {
@@ -49,7 +51,8 @@ async function testWorkflowPersistence() {
     try {
         // Step 1: Create first engine instance and register workflow
         console.log('📝 Step 1: Creating first engine instance and registering workflow...');
-        const engine1 = new WorkflowEngine(registry, stateStore, redisConnection);
+        const circuitBreakerRegistry = new CircuitBreakerRegistry();
+        const engine1 = new WorkflowEngine(registry, stateStore, redisConnection, undefined, circuitBreakerRegistry);
         await engine1.registerWorkflow(testWorkflow);
         console.log('✅ Workflow registered\n');
 
@@ -72,7 +75,8 @@ async function testWorkflowPersistence() {
 
         // Step 4: Simulate server restart - create new engine instance
         console.log('🔄 Step 4: Simulating server restart (creating new engine instance)...');
-        const engine2 = new WorkflowEngine(registry, stateStore, redisConnection);
+        const circuitBreakerRegistry2 = new CircuitBreakerRegistry();
+        const engine2 = new WorkflowEngine(registry, stateStore, redisConnection, undefined, circuitBreakerRegistry2);
         console.log('✅ New engine instance created\n');
 
         // Step 5: Verify workflow is still accessible after "restart"

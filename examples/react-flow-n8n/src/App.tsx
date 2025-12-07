@@ -16,6 +16,7 @@ import '@xyflow/react/dist/style.css';
 import TriggerNode from './nodes/TriggerNode';
 import ActionNode from './nodes/ActionNode';
 import ConditionNode from './nodes/ConditionNode';
+import DelayNode from './nodes/DelayNode';
 import NodePalette, { NodeTemplate } from './components/NodePalette';
 import NodeConfigPanel from './components/NodeConfigPanel';
 import ExecutionResultsPanel from './components/ExecutionResultsPanel';
@@ -39,7 +40,8 @@ import './styles/panels.css';
 const nodeTypes: NodeTypes = {
     trigger: TriggerNode,
     action: ActionNode,
-    condition: ConditionNode
+    condition: ConditionNode,
+    delay: DelayNode
 };
 
 const executionManager = new ExecutionManager();
@@ -264,11 +266,13 @@ function App() {
                     reactFlowType = 'trigger';
                 } else if (dataType === 'condition') {
                     reactFlowType = 'condition';
+                } else if (dataType === 'delay') {
+                    reactFlowType = 'delay';
                 } else if (['action', 'http', 'transform', 'email', 'database'].includes(dataType)) {
                     reactFlowType = 'action';
                 }
                 
-                if (['trigger', 'action', 'condition'].includes(node.type)) {
+                if (['trigger', 'action', 'condition', 'delay'].includes(node.type)) {
                     reactFlowType = node.type;
                 }
                 
@@ -496,12 +500,14 @@ function App() {
                     reactFlowType = 'trigger';
                 } else if (dataType === 'condition') {
                     reactFlowType = 'condition';
+                } else if (dataType === 'delay') {
+                    reactFlowType = 'delay';
                 } else if (['action', 'http', 'transform', 'email', 'database'].includes(dataType)) {
                     reactFlowType = 'action';
                 }
                 
                 // If the node already has a valid React Flow type, use it
-                if (['trigger', 'action', 'condition'].includes(node.type)) {
+                if (['trigger', 'action', 'condition', 'delay'].includes(node.type)) {
                     reactFlowType = node.type;
                 }
                 
@@ -661,6 +667,22 @@ function App() {
                         label: template.label,
                         type: template.subType as any,
                         config: {},
+                        status: 'idle'
+                    }
+                };
+            } else if (template.nodeType === 'delay' || template.subType === 'delay') {
+                // Delay node - pauses workflow execution for a configurable duration
+                // Requirements: 1.1, 3.1, 3.2, 3.3
+                newNode = {
+                    id: newNodeId,
+                    type: 'delay',
+                    position,
+                    data: {
+                        label: template.label,
+                        type: 'delay',
+                        config: {
+                            durationSeconds: 5 // Default to 5 seconds
+                        },
                         status: 'idle'
                     }
                 };

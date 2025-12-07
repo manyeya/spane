@@ -38,6 +38,7 @@ const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
 
 // Initialize components
 const nodeRegistry = new NodeRegistry();
+nodeRegistry.registerDefaultExternalNodes(); // Enable circuit breaker for http, webhook, database, email
 
 // Choose state store based on DATABASE_URL environment variable
 // When both Redis and DATABASE_URL are available, use HybridExecutionStateStore

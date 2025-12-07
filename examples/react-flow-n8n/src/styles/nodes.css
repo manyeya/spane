@@ -83,6 +83,32 @@
     color: white;
 }
 
+/* Delay node icon - uses a warm amber/orange gradient to represent time/waiting */
+.node-icon.delay {
+    background: linear-gradient(135deg, #f6d365 0%, #fda085 100%);
+    color: white;
+}
+
+/* Delay node specific status - 'delayed' state shows the node is waiting */
+.custom-node.delayed {
+    border-color: #ffa726;
+    animation: delay-pulse 2s infinite;
+}
+
+.node-status-icon.delayed {
+    background: #ffa726;
+    animation: pulse 2s infinite;
+}
+
+@keyframes delay-pulse {
+    0%, 100% {
+        box-shadow: 0 4px 16px rgba(255, 167, 38, 0.3);
+    }
+    50% {
+        box-shadow: 0 4px 20px rgba(255, 167, 38, 0.5);
+    }
+}
+
 .node-title-container {
     flex: 1;
     min-width: 0;
