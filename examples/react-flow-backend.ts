@@ -2,11 +2,12 @@ import { Elysia } from 'elysia';
 import { cors } from '@elysiajs/cors';
 import { WorkflowEngine } from '../engine/workflow-engine';
 import { NodeRegistry } from '../engine/registry';
-import type { WorkflowEvent, ErrorEvent } from '../engine/event-types';
+import type { WorkflowEvent, ErrorEvent, WorkflowStatusEvent } from '../engine/event-types';
 import IORedis from 'ioredis';
 import type { WorkflowDefinition, NodeDefinition, ExecutionContext, ExecutionResult, WorkflowTrigger } from '../types';
 import { DrizzleExecutionStateStore } from '../db/drizzle-store';
 import { HybridExecutionStateStore } from '../db/hybrid-store';
+import { CircuitBreakerRegistry } from '../utils/circuit-breaker';
 
 // Initialize Redis connection
 console.log('🔌 Connecting to Redis...');
@@ -27,6 +28,7 @@ redis.on('error', (error) => {
 // Initialize node registry
 console.log('📋 Initializing node registry...');
 const registry = new NodeRegistry();
+registry.registerDefaultExternalNodes(); // Enable circuit breaker for http, webhook, database, email
 
 // Register basic node handlers using the correct executor pattern
 registry.register('trigger', {
@@ -54,6 +56,17 @@ registry.register('manual', {
 registry.register('webhook', {
     async execute(context: ExecutionContext): Promise<ExecutionResult> {
         console.log('Webhook trigger executing');
+        return { success: true, data: context.inputData };
+    }
+});
+
+// Delay node - pauses workflow execution for a configurable duration
+// The actual delay is handled by the NodeProcessor's special delay handling,
+// but we register an executor so the node type is recognized
+registry.register('delay', {
+    async execute(context: ExecutionContext): Promise<ExecutionResult> {
+        console.log('Delay node executing - passing through data');
+        // Delay nodes pass through input data unchanged
         return { success: true, data: context.inputData };
     }
 });
@@ -283,12 +296,18 @@ const stateStore = new HybridExecutionStateStore(redis, drizzleStore, {
 });
 console.log('✅ Hybrid state store initialized (Redis-first for active executions)');
 
+// Initialize circuit breaker registry for external node protection
+const circuitBreakerRegistry = new CircuitBreakerRegistry();
+console.log('✅ Circuit breaker registry initialized');
+
 // Initialize the workflow engine with all required dependencies
 console.log('🚀 Initializing workflow engine...');
 const engine = new WorkflowEngine(
     registry,
     stateStore,
-    redis
+    redis,
+    undefined, // metricsCollector
+    circuitBreakerRegistry
 );
 console.log('✅ Workflow engine initialized');
 
@@ -1063,11 +1082,34 @@ const app = new Elysia()
         const stream = new ReadableStream({
             async start(controller) {
                 const encoder = new TextEncoder();
+                let isClosed = false;
+                let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
-                // Helper to send SSE event
+                // Helper to send SSE event safely
                 const sendEvent = (event: WorkflowEvent | ErrorEvent) => {
-                    const data = `data: ${JSON.stringify(event)}\n\n`;
-                    controller.enqueue(encoder.encode(data));
+                    if (isClosed) return;
+                    try {
+                        const data = `data: ${JSON.stringify(event)}\n\n`;
+                        controller.enqueue(encoder.encode(data));
+                    } catch (e) {
+                        console.error('[SSE] Error sending event:', e);
+                        isClosed = true;
+                    }
+                };
+
+                // Helper to send heartbeat safely
+                const sendHeartbeat = () => {
+                    if (isClosed) return;
+                    try {
+                        controller.enqueue(encoder.encode(': heartbeat\n\n'));
+                    } catch (e) {
+                        // Controller closed, stop heartbeat
+                        isClosed = true;
+                        if (heartbeatInterval) {
+                            clearInterval(heartbeatInterval);
+                            heartbeatInterval = null;
+                        }
+                    }
                 };
 
                 try {
@@ -1092,19 +1134,44 @@ const app = new Elysia()
                     // Subscribe to filtered events for this executionId (Requirement 2.1)
                     const subscription = eventStreamManager.subscribe(executionId);
 
-                    // Stream events
+                    // Setup heartbeat to keep connection alive during long delays
+                    heartbeatInterval = setInterval(sendHeartbeat, 15000); // Every 15 seconds
+
+                    // Stream events - this loop runs indefinitely until client disconnects
                     for await (const event of subscription) {
+                        if (isClosed) break;
                         sendEvent(event);
+                        
+                        // Close stream when workflow completes/fails/cancels
+                        if (event.type === 'workflow:status') {
+                            const status = (event as WorkflowStatusEvent).status;
+                            if (['completed', 'failed', 'cancelled'].includes(status)) {
+                                console.log(`[SSE] Workflow ${status}, closing stream for ${executionId}`);
+                                break;
+                            }
+                        }
                     }
                 } catch (error: any) {
                     // Handle errors during streaming
-                    const errorEvent: ErrorEvent = {
-                        type: 'error',
-                        message: error.message || 'Stream error',
-                        code: 'STREAM_ERROR',
-                    };
-                    sendEvent(errorEvent);
-                    controller.close();
+                    console.error('[SSE] Stream error:', error);
+                    if (!isClosed) {
+                        const errorEvent: ErrorEvent = {
+                            type: 'error',
+                            message: error.message || 'Stream error',
+                            code: 'STREAM_ERROR',
+                        };
+                        sendEvent(errorEvent);
+                    }
+                } finally {
+                    isClosed = true;
+                    if (heartbeatInterval) {
+                        clearInterval(heartbeatInterval);
+                    }
+                    try {
+                        controller.close();
+                    } catch (e) {
+                        // Already closed
+                    }
                 }
             },
 

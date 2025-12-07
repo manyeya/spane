@@ -217,8 +217,9 @@ export class HybridExecutionStateStore implements IExecutionStateStore {
     const isActive = await this.isActiveExecution(executionId);
 
     if (isActive) {
-      // Count results in Redis hash
-      const completedCount = await this.redis.hlen(this.resultsKey(executionId));
+      // Count results in Redis hash (subtract 1 for __init__ placeholder)
+      const hashLen = await this.redis.hlen(this.resultsKey(executionId));
+      const completedCount = Math.max(0, hashLen - 1); // Subtract __init__ placeholder
       return totalNodes - completedCount;
     }
 

@@ -60,7 +60,8 @@ export class WorkflowEngine {
             redisConnection,
             this.queueManager,
             this.workflowCache, // Pass LRU cache reference to NodeProcessor
-            this.enqueueWorkflow.bind(this)
+            this.enqueueWorkflow.bind(this),
+            _circuitBreakerRegistry // Pass circuit breaker registry for external node protection
         );
 
         // Initialize WorkerManager

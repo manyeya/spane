@@ -6,7 +6,7 @@ interface NodeTemplate {
     icon: string;
     description: string;
     category: 'trigger' | 'action' | 'control';
-    nodeType: 'trigger' | 'action' | 'condition';
+    nodeType: 'trigger' | 'action' | 'condition' | 'delay';
     subType?: string;
 }
 
@@ -84,6 +84,15 @@ const nodeTemplates: NodeTemplate[] = [
         description: 'Branch logic',
         category: 'control',
         nodeType: 'condition'
+    },
+    {
+        type: 'control-delay',
+        label: 'Delay',
+        icon: '⏳',
+        description: 'Pause execution',
+        category: 'control',
+        nodeType: 'delay',
+        subType: 'delay'
     }
 ];
 

@@ -159,6 +159,31 @@ export class WorkflowEventEmitter {
   }
 
   /**
+   * Emit a 'delayed' event when a delay node moves to the delayed queue.
+   * 
+   * @param job - The BullMQ job instance
+   * @param nodeId - The node identifier
+   * @param workflowId - The workflow identifier
+   * @param executionId - The execution identifier
+   * @param resumeAt - Unix timestamp (ms) when the delay will expire and node will resume
+   */
+  static async emitNodeDelayed(
+    job: Job,
+    nodeId: string,
+    workflowId: string,
+    executionId: string,
+    resumeAt: number
+  ): Promise<void> {
+    await WorkflowEventEmitter.emitNodeProgress(job, {
+      executionId,
+      nodeId,
+      workflowId,
+      status: 'delayed',
+      data: { resumeAt },
+    });
+  }
+
+  /**
    * Create a NodeProgressEvent object from the given parameters.
    * Useful for testing and validation.
    * 

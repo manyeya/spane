@@ -26,7 +26,7 @@ export interface BaseEvent {
 // ============================================================================
 
 /** Possible states for a node during execution */
-export type NodeStatus = 'running' | 'completed' | 'failed' | 'skipped';
+export type NodeStatus = 'running' | 'completed' | 'failed' | 'skipped' | 'delayed';
 
 /**
  * Event emitted when a node's execution state changes
@@ -201,7 +201,7 @@ export function isValidWorkflowEvent(payload: unknown): payload is WorkflowEvent
         typeof event.nodeId === 'string' &&
         typeof event.workflowId === 'string' &&
         typeof event.status === 'string' &&
-        ['running', 'completed', 'failed', 'skipped'].includes(event.status as string)
+        ['running', 'completed', 'failed', 'skipped', 'delayed'].includes(event.status as string)
       );
       
     case 'workflow:status':
