@@ -10,7 +10,8 @@
     "setup": "bun install && echo '✅ Dependencies installed. Make sure Redis is running on localhost:6379 or set REDIS_URL environment variable.'",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "purge:queues": "bun run scripts/purge-queues.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

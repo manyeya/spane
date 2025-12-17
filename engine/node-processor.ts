@@ -9,6 +9,7 @@ import { DistributedLock } from '../utils/distributed-lock';
 import { WorkflowEventEmitter } from './event-emitter';
 import { CircuitBreakerRegistry, CircuitBreakerError, type CircuitBreakerOptions } from '../utils/circuit-breaker';
 import { logger } from '../utils/logger';
+import type { PayloadManager } from './payload-manager';
 
 /**
  * Resolves the delay duration from a DelayNodeConfig.
@@ -91,7 +92,8 @@ export class NodeProcessor {
         private queueManager: QueueManager,
         private workflows: WorkflowCache,
         private enqueueWorkflow: EnqueueWorkflowFn,
-        private circuitBreakerRegistry?: CircuitBreakerRegistry
+        private circuitBreakerRegistry?: CircuitBreakerRegistry,
+        private payloadManager?: PayloadManager
     ) {
         this.distributedLock = new DistributedLock(redisConnection);
     }
@@ -118,6 +120,17 @@ export class NodeProcessor {
 
     // Process a single node job
     async processNodeJob(data: NodeJobData, job: Job): Promise<ExecutionResult> {
+        // Load large payload input reference if needed (Claim Check Pattern)
+        if (this.payloadManager && data.inputData) {
+            try {
+                data.inputData = await this.payloadManager.loadIfNeeded(data.inputData);
+            } catch (error) {
+                logger.error({ executionId: data.executionId, nodeId: data.nodeId, error }, 'Failed to load input payload');
+                // Failure to load input is fatal for this node
+                throw error;
+            }
+        }
+
         const { executionId, workflowId, nodeId, inputData } = data;
         const logContext = { executionId, workflowId, nodeId, jobId: job.id };
         logger.info(logContext, `🔧 Processing node job`);
@@ -301,7 +314,9 @@ export class NodeProcessor {
                 if (parentId) {
                     const parentResult = previousResults[parentId];
                     if (parentResult?.success && parentResult.data !== undefined) {
-                        nodeInputData = parentResult.data;
+                        nodeInputData = this.payloadManager
+                            ? await this.payloadManager.loadIfNeeded(parentResult.data)
+                            : parentResult.data;
                     }
                 }
             } else {
@@ -310,7 +325,9 @@ export class NodeProcessor {
                 for (const parentId of node.inputs) {
                     const parentResult = previousResults[parentId];
                     if (parentResult?.success && parentResult.data !== undefined) {
-                        mergedData[parentId] = parentResult.data;
+                        mergedData[parentId] = this.payloadManager
+                            ? await this.payloadManager.loadIfNeeded(parentResult.data)
+                            : parentResult.data;
                     }
                 }
                 nodeInputData = mergedData;
@@ -358,6 +375,16 @@ export class NodeProcessor {
                 result = await executor.execute(context);
             }
 
+            // Offload large output if needed (Claim Check Pattern)
+            if (this.payloadManager && result.success && result.data) {
+                try {
+                    result.data = await this.payloadManager.offloadIfNeeded(executionId, `node-${nodeId}-output`, result.data);
+                } catch (error) {
+                    logger.warn({ executionId, nodeId, error }, 'Failed to offload output payload, proceeding with inline data');
+                    // Continue with inline data
+                }
+            }
+
             // Save result
             await this.stateStore.updateNodeResult(executionId, nodeId, result);
 
@@ -383,10 +410,50 @@ export class NodeProcessor {
 
             return result;
         } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+
+            // Check 'continueOnFail' policy
+            // We apply this ONLY on the last attempt
+            const maxAttempts = job.opts.attempts || 1;
+            const currentAttempt = job.attemptsMade; // BullMQ is 1-based (starts at 1)
+
+            if (node.config.retryPolicy?.continueOnFail && currentAttempt >= maxAttempts) {
+                logger.warn({ ...logContext, error: errorMessage }, `⚠️ Node ${nodeId} failed but 'continueOnFail' is enabled. Marking as success.`);
+
+                // Save result as success but with error info in data
+                // We do NOT set success: false, because that would fail the flow in checkAndEnqueueChildren logic (if we didn't handle it here)
+                // But specifically, we want downstream nodes to execute
+                const safeResult: ExecutionResult = {
+                    success: true,
+                    data: {
+                        error: errorMessage,
+                        _metadata: {
+                            continuedOnFail: true,
+                            originalError: errorMessage
+                        }
+                    },
+                    error: errorMessage // Valid to keep error string even if success=true for UI visibility
+                };
+
+                await this.stateStore.updateNodeResult(executionId, nodeId, safeResult);
+
+                // Emit completed event so UI updates correctly
+                await WorkflowEventEmitter.emitNodeCompleted(job, nodeId, workflowId, executionId, safeResult.data);
+
+                // Trigger children
+                if (node.outputs.length > 0) {
+                    await this.checkAndEnqueueChildren(executionId, workflowId, node, safeResult.nextNodes, job);
+                }
+
+                // Check workflow completion
+                await this.checkWorkflowCompletion(executionId, workflowId, job);
+
+                return safeResult;
+            }
+
             logger.error({ ...logContext, error }, `❌ Node ${nodeId} execution failed`);
 
             // Emit 'failed' event on execution failure
-            const errorMessage = error instanceof Error ? error.message : String(error);
             await WorkflowEventEmitter.emitNodeFailed(job, nodeId, workflowId, executionId, errorMessage);
 
             // Handle CircuitBreakerError specially - don't retry when circuit is open
@@ -501,14 +568,34 @@ export class NodeProcessor {
             jobId = `${executionId}-node-${nodeId}`;
         }
 
+        // Fetch node configuration for retry policy
+        let retryAttempts = 3;
+        let retryBackoff = { type: 'exponential', delay: 1000 };
+
+        // We need to fetch the workflow to get the node config
+        // Optimization: Try to get from cache first, but for reliability in enqueueing we accept overhead
+        const workflow = await this.getWorkflowWithLazyLoad(workflowId);
+        if (workflow) {
+            const node = workflow.nodes.find(n => n.id === nodeId);
+            if (node && node.config && node.config.retryPolicy) {
+                const policy = node.config.retryPolicy;
+                if (typeof policy.maxAttempts === 'number') {
+                    retryAttempts = policy.maxAttempts;
+                }
+                if (policy.backoff) {
+                    retryBackoff = {
+                        type: policy.backoff.type === 'fixed' ? 'fixed' : 'exponential',
+                        delay: policy.backoff.delay
+                    };
+                }
+            }
+        }
+
         await this.queueManager.nodeQueue.add('process-node', jobData, {
             jobId,
             delay: options.delay,
-            attempts: 3,
-            backoff: {
-                type: 'exponential',
-                delay: 1000,
-            },
+            attempts: retryAttempts,
+            backoff: retryBackoff,
         });
     }
 

@@ -224,8 +224,8 @@ registry.register('condition', {
 
         if (!conditionExpression) {
             console.warn('No condition expression provided, defaulting to true branch');
-            return { 
-                success: true, 
+            return {
+                success: true,
                 data: context.inputData,
                 nextNodes: config.trueBranch ? [config.trueBranch] : undefined
             };
@@ -235,7 +235,7 @@ registry.register('condition', {
             // Create a safe evaluation context with the input data
             const input = context.inputData;
             const data = context.inputData;
-            
+
             // Evaluate the condition expression
             // Using Function constructor for safer evaluation than eval()
             const evaluator = new Function('input', 'data', `
@@ -246,7 +246,7 @@ registry.register('condition', {
                     return false;
                 }
             `);
-            
+
             const result = evaluator(input, data);
             console.log(`Condition "${conditionExpression}" evaluated to: ${result}`);
 
@@ -261,9 +261,9 @@ registry.register('condition', {
 
             console.log(`Condition branching to: ${nextNodes.length > 0 ? nextNodes.join(', ') : 'all outputs (no branch config)'}`);
 
-            return { 
-                success: true, 
-                data: { 
+            return {
+                success: true,
+                data: {
                     ...context.inputData,
                     _conditionResult: result,
                     _conditionExpression: conditionExpression
@@ -273,7 +273,7 @@ registry.register('condition', {
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             console.error('Condition evaluation failed:', errorMessage);
-            
+
             return {
                 success: false,
                 error: `Condition evaluation failed: ${errorMessage}`,
@@ -300,6 +300,18 @@ console.log('✅ Hybrid state store initialized (Redis-first for active executio
 const circuitBreakerRegistry = new CircuitBreakerRegistry();
 console.log('✅ Circuit breaker registry initialized');
 
+// Initialize PayloadManager for Claim Check Pattern (handling large payloads)
+import { PayloadManager } from '../engine/payload-manager';
+let payloadManager: PayloadManager | undefined;
+if (drizzleStore.database) {
+    try {
+        payloadManager = new PayloadManager(drizzleStore.database);
+        console.log('📦 Payload Manager initialized (Claim Check Pattern enabled)');
+    } catch (e) {
+        console.warn('⚠️ Failed to initialize Payload Manager:', e);
+    }
+}
+
 // Initialize the workflow engine with all required dependencies
 console.log('🚀 Initializing workflow engine...');
 const engine = new WorkflowEngine(
@@ -307,7 +319,9 @@ const engine = new WorkflowEngine(
     stateStore,
     redis,
     undefined, // metricsCollector
-    circuitBreakerRegistry
+    circuitBreakerRegistry,
+    undefined, // cacheOptions
+    payloadManager
 );
 console.log('✅ Workflow engine initialized');
 
@@ -340,12 +354,12 @@ function convertToSpaneWorkflow(reactFlowWorkflow: any): WorkflowDefinition {
 
         const nodeConfig = node.config || node.data?.config || {};
         const nodeType = node.data?.type || node.type;
-        
+
         // For condition nodes, determine true/false branches based on sourceHandle
         if (nodeType === 'condition') {
             const trueEdges = edges.filter((e: any) => e.source === node.id && e.sourceHandle === 'true');
             const falseEdges = edges.filter((e: any) => e.source === node.id && e.sourceHandle === 'false');
-            
+
             // Add branch targets to config
             if (trueEdges.length > 0) {
                 nodeConfig.trueBranch = trueEdges.map((e: any) => e.target);
@@ -353,13 +367,13 @@ function convertToSpaneWorkflow(reactFlowWorkflow: any): WorkflowDefinition {
             if (falseEdges.length > 0) {
                 nodeConfig.falseBranch = falseEdges.map((e: any) => e.target);
             }
-            
+
             console.log(`🔀 Condition node ${node.id} branches:`, {
                 trueBranch: nodeConfig.trueBranch,
                 falseBranch: nodeConfig.falseBranch
             });
         }
-        
+
         console.log(`📝 Converting node ${node.id} (${node.name || node.data?.label}):`, {
             type: nodeType,
             config: nodeConfig
@@ -446,7 +460,7 @@ const app = new Elysia()
         set.headers['Access-Control-Allow-Origin'] = '*';
         set.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
         set.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization';
-        
+
         console.error(`Error ${code}:`, error);
         return {
             success: false,
@@ -455,7 +469,7 @@ const app = new Elysia()
         };
     })
     .get('/api/health', () => ({ status: 'ok' }))
-    
+
     // Queue statistics endpoint (for monitoring dashboard)
     .get('/api/stats', async () => {
         try {
@@ -484,11 +498,11 @@ const app = new Elysia()
             // Check if this is an existing saved workflow
             const existingWorkflowId = body.id || body.workflowId;
             let workflowId: string;
-            
+
             // If we have a workflow ID, check if it exists in the database
             if (existingWorkflowId) {
                 const existingWorkflow = await engine.getWorkflow(existingWorkflowId);
-                
+
                 if (existingWorkflow) {
                     // Workflow exists - just execute it, NO re-registration needed
                     workflowId = existingWorkflowId;
@@ -497,10 +511,10 @@ const app = new Elysia()
                     // Workflow ID provided but not found - use it but register first
                     workflowId = existingWorkflowId;
                     console.log(`📋 Workflow ${workflowId} not in cache, registering...`);
-                    
+
                     const spaneWorkflow = convertToSpaneWorkflow(body);
                     spaneWorkflow.id = workflowId;
-                    
+
                     const workflowWithMeta = {
                         ...spaneWorkflow,
                         meta: {
@@ -515,7 +529,7 @@ const app = new Elysia()
                 // We need to register it temporarily to execute
                 workflowId = `adhoc-${Date.now()}`;
                 console.log(`📋 Ad-hoc execution (unsaved workflow): ${workflowId}`);
-                
+
                 const spaneWorkflow = convertToSpaneWorkflow(body);
                 spaneWorkflow.id = workflowId;
 
@@ -526,7 +540,7 @@ const app = new Elysia()
                         edges: body.edges || []
                     }
                 };
-                
+
                 await engine.registerWorkflow(workflowWithMeta);
             }
 
@@ -601,7 +615,7 @@ const app = new Elysia()
             const activeOnly = query.activeOnly !== 'false';
 
             const workflows = await engine.getAllWorkflowsFromDatabase(activeOnly, limit, offset);
-            
+
             // Get total count for pagination
             let total = workflows.length;
             if ('getWorkflowCount' in stateStore) {
@@ -630,7 +644,7 @@ const app = new Elysia()
         try {
             const version = query.version ? parseInt(query.version) : undefined;
             const workflow = await engine.getWorkflowFromDatabase(params.workflowId, version);
-            
+
             if (!workflow) {
                 return {
                     success: false,
@@ -642,7 +656,7 @@ const app = new Elysia()
             // Note: Data is stored as 'reactFlowData' when saving, check both for backwards compatibility
             const reactFlowData = (workflow as any).reactFlowData || (workflow as any).meta;
             const hasReactFlowData = reactFlowData?.nodes?.length > 0;
-            
+
             // Return workflow with reactFlowData if available
             return {
                 success: true,
@@ -654,16 +668,16 @@ const app = new Elysia()
                     // Include reactFlowData so frontend can properly extract it
                     reactFlowData: hasReactFlowData ? reactFlowData : undefined,
                     // Also include nodes/edges directly for backwards compatibility
-                    nodes: hasReactFlowData 
-                        ? reactFlowData.nodes 
+                    nodes: hasReactFlowData
+                        ? reactFlowData.nodes
                         : workflow.nodes.map((n: any) => ({
                             id: n.id,
                             type: n.type,
                             position: n.position || { x: 0, y: 0 },
                             data: { label: n.id, type: n.type, config: n.config || {} }
                         })),
-                    edges: hasReactFlowData 
-                        ? reactFlowData.edges 
+                    edges: hasReactFlowData
+                        ? reactFlowData.edges
                         : [],
                 }
             };
@@ -853,7 +867,7 @@ const app = new Elysia()
     .post('/api/workflows', async ({ body }: { body: any }) => {
         try {
             const { name, nodes, edges, triggers, entryNodeId } = body;
-            
+
             if (!name || typeof name !== 'string' || name.trim() === '') {
                 return {
                     success: false,
@@ -863,14 +877,14 @@ const app = new Elysia()
 
             // Generate workflow ID
             const workflowId = `workflow-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-            
+
             // Convert React Flow format to Spane workflow
             const spaneWorkflow = convertToSpaneWorkflow({
                 nodes: nodes || [],
                 edges: edges || [],
                 trigger: triggers?.[0]
             });
-            
+
             // Override with provided values
             spaneWorkflow.id = workflowId;
             spaneWorkflow.name = name.trim();
@@ -911,7 +925,7 @@ const app = new Elysia()
     .put('/api/workflows/:workflowId', async ({ params, body }: { params: { workflowId: string }, body: any }) => {
         try {
             const { name, nodes, edges, triggers, entryNodeId, changeNotes } = body;
-            
+
             // Check if workflow exists
             const existingWorkflow = await engine.getWorkflow(params.workflowId);
             if (!existingWorkflow) {
@@ -927,7 +941,7 @@ const app = new Elysia()
                 edges: edges || [],
                 trigger: triggers?.[0]
             });
-            
+
             // Preserve workflow ID and update other fields
             spaneWorkflow.id = params.workflowId;
             spaneWorkflow.name = name?.trim() || existingWorkflow.name;
@@ -1000,7 +1014,7 @@ const app = new Elysia()
             const offset = parseInt(query.offset || '0');
 
             const executions = await stateStore.listExecutions(workflowId, limit, offset);
-            
+
             // Enrich executions with workflow names
             const enrichedExecutions = await Promise.all(
                 executions.map(async (exec: any) => {
@@ -1019,7 +1033,7 @@ const app = new Elysia()
                     };
                 })
             );
-            
+
             // Get total count for pagination
             let total = executions.length;
             if ('getExecutionCount' in stateStore) {
@@ -1048,7 +1062,7 @@ const app = new Elysia()
     .post('/api/executions/:executionId/replay', async ({ params }: { params: { executionId: string } }) => {
         try {
             const newExecutionId = await engine.replayWorkflow(params.executionId);
-            
+
             return {
                 success: true,
                 executionId: newExecutionId,
@@ -1141,7 +1155,7 @@ const app = new Elysia()
                     for await (const event of subscription) {
                         if (isClosed) break;
                         sendEvent(event);
-                        
+
                         // Close stream when workflow completes/fails/cancels
                         if (event.type === 'workflow:status') {
                             const status = (event as WorkflowStatusEvent).status;

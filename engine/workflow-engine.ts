@@ -15,6 +15,7 @@ import { HealthMonitor } from '../utils/health-monitor';
 import type { WorkflowStatusEvent } from './event-types';
 import { EventStreamManager } from './event-stream';
 import { logger } from '../utils/logger';
+import type { PayloadManager } from './payload-manager';
 
 export interface WorkflowCacheOptions {
     maxSize?: number;      // Max number of workflows to cache (default: 500)
@@ -37,7 +38,8 @@ export class WorkflowEngine {
         redisConnection: Redis,
         private metricsCollector?: MetricsCollector,
         _circuitBreakerRegistry?: CircuitBreakerRegistry,
-        cacheOptions?: WorkflowCacheOptions
+        cacheOptions?: WorkflowCacheOptions,
+        private payloadManager?: PayloadManager
     ) {
         // Initialize LRU cache with configurable limits
         const { maxSize = 500, ttlMs = 3600000 } = cacheOptions || {};
@@ -62,7 +64,8 @@ export class WorkflowEngine {
             this.queueManager,
             this.workflowCache, // Pass LRU cache reference to NodeProcessor
             this.enqueueWorkflow.bind(this),
-            _circuitBreakerRegistry // Pass circuit breaker registry for external node protection
+            _circuitBreakerRegistry, // Pass circuit breaker registry for external node protection
+            payloadManager
         );
 
         // Initialize WorkerManager
@@ -263,6 +266,18 @@ export class WorkflowEngine {
 
         const executionId = await this.stateStore.createExecution(workflowId, parentExecutionId, depth, initialData);
 
+        // Offload initial data if large (Claim Check Pattern)
+        // We do this AFTER createExecution so DB has full data, but BEFORE enqueueNode so Redis gets reference
+        let safeInitialData = initialData;
+        if (this.payloadManager && initialData) {
+            try {
+                safeInitialData = await this.payloadManager.offloadIfNeeded(executionId, 'initialData', initialData);
+            } catch (error) {
+                logger.error({ executionId, workflowId, error }, 'Failed to offload initial payload');
+                // Proceed with inline data as fallback
+            }
+        }
+
         // Track metrics
         if (this.metricsCollector) {
             this.metricsCollector.incrementWorkflowsEnqueued();
@@ -290,7 +305,7 @@ export class WorkflowEngine {
         // Enqueue all entry nodes, passing parent job reference if this is a sub-workflow
         // Also pass priority and delay options to each node
         for (const node of entryNodes) {
-            await this.enqueueNode(executionId, workflowId, node.id, initialData, parentJobId, options);
+            await this.enqueueNode(executionId, workflowId, node.id, safeInitialData, parentJobId, options);
         }
 
         // Emit 'started' workflow event directly via EventStreamManager

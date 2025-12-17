@@ -54,6 +54,23 @@ export interface DelayNodeConfig {
   durationMinutes?: number;
 }
 
+/**
+ * Configuration for node retry behavior.
+ * Allows customizing how the engine handles node failures.
+ */
+export interface RetryPolicy {
+  /** Number of retry attempts (default: 3) */
+  maxAttempts?: number;
+  /** Backoff configuration */
+  backoff?: {
+    type: 'fixed' | 'exponential';
+    /** Delay in milliseconds */
+    delay: number;
+  };
+  /** If true, the workflow will continue to the next node even if this node fails (after all retries) */
+  continueOnFail?: boolean;
+}
+
 export interface WebhookTrigger {
   type: 'webhook';
   config: {
@@ -134,7 +151,7 @@ export interface IExecutionStateStore {
   getWorkflowVersion(workflowId: string): Promise<number | null>; // Get current version ID
   listWorkflows(activeOnly?: boolean, limit?: number, offset?: number): Promise<WorkflowDefinition[]>;
   deactivateWorkflow(workflowId: string): Promise<void>;
-  
+
   // Execution listing (with pagination support)
   listExecutions?(workflowId?: string, limit?: number, offset?: number): Promise<Array<{
     executionId: string;
@@ -143,7 +160,7 @@ export interface IExecutionStateStore {
     startedAt: Date;
     completedAt?: Date;
   }>>;
-  
+
   // Count methods for pagination
   getWorkflowCount?(activeOnly?: boolean): Promise<number>;
   getExecutionCount?(workflowId?: string): Promise<number>;

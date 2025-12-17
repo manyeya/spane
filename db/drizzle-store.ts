@@ -37,6 +37,10 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
     }
   }
 
+  get database() {
+    return this.db;
+  }
+
   async close(): Promise<void> {
     await this.client.end();
   }
@@ -944,7 +948,7 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
    * List executions with optional workflow filter and pagination
    */
   async listExecutions(
-    workflowId?: string, 
+    workflowId?: string,
     limit: number = 100,
     offset: number = 0
   ): Promise<Array<{
@@ -956,7 +960,7 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
     initialData?: any;
     metadata?: any;
   }>> {
-    const conditions = workflowId 
+    const conditions = workflowId
       ? eq(schema.executions.workflowId, workflowId)
       : undefined;
 
@@ -991,7 +995,7 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
    * Get total count of executions (for pagination)
    */
   async getExecutionCount(workflowId?: string): Promise<number> {
-    const conditions = workflowId 
+    const conditions = workflowId
       ? eq(schema.executions.workflowId, workflowId)
       : undefined;
 
@@ -1190,7 +1194,7 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
         level: state.status === 'completed' ? 'info' : 'error',
         message: `Workflow execution ${state.status}`,
         timestamp: state.completedAt,
-        metadata: { 
+        metadata: {
           totalNodes: Object.keys(state.nodeResults).length,
           persistedFromRedis: true,
         },

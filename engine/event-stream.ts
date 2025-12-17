@@ -71,16 +71,19 @@ export class EventStreamManager {
     // Initialize QueueEvents for 'node-execution' queue (existing functionality)
     this.queueEvents = new QueueEvents('node-execution', {
       connection: redisConnection,
+      prefix: 'spane',
     });
 
     // Initialize QueueEvents for 'workflow-events' queue (custom events)
     this.workflowQueueEvents = new QueueEvents(this.WORKFLOW_EVENTS_QUEUE, {
       connection: redisConnection,
+      prefix: 'spane',
     });
 
     // Initialize QueueEventsProducer for publishing custom events
     this.queueEventsProducer = new QueueEventsProducer(this.WORKFLOW_EVENTS_QUEUE, {
       connection: redisConnection,
+      prefix: '{spane}',
     });
 
     // Internal event emitter for distributing events to subscribers
@@ -261,7 +264,7 @@ export class EventStreamManager {
 
     // Create an async generator that yields events
     const self = this;
-    
+
     return {
       [Symbol.asyncIterator](): AsyncIterator<WorkflowEvent> {
         let eventQueue: WorkflowEvent[] = [];
@@ -338,7 +341,7 @@ export class EventStreamManager {
    */
   async getExecutionState(executionId: string): Promise<ExecutionStateEvent | null> {
     const execution = await this.stateStore.getExecution(executionId);
-    
+
     if (!execution) {
       return null;
     }

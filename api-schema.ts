@@ -31,6 +31,14 @@ export const NodeDefinitionSchema = t.Object({
   config: t.Record(t.String(), t.Any()),
   inputs: t.Array(t.String()),
   outputs: t.Array(t.String()),
+  retryPolicy: t.Optional(t.Object({
+    maxAttempts: t.Optional(t.Number()),
+    backoff: t.Optional(t.Object({
+      type: t.Union([t.Literal('fixed'), t.Literal('exponential')]),
+      delay: t.Number(),
+    })),
+    continueOnFail: t.Optional(t.Boolean()),
+  })),
 });
 
 export const WorkflowTriggerSchema = t.Union([

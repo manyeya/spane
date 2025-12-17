@@ -21,28 +21,42 @@ export class QueueManager {
         // Initialize queues
         this.nodeQueue = new Queue<NodeJobData>('node-execution', {
             connection: redisConnection,
+            prefix: 'spane',
+            defaultJobOptions: {
+                removeOnComplete: { count: 100 }, // Keep last 100 completed jobs
+                removeOnFail: { count: 500 },     // Keep last 500 failed jobs for debugging
+            },
         });
 
         this.workflowQueue = new Queue<WorkflowJobData>('workflow-execution', {
             connection: redisConnection,
+            prefix: 'spane',
+            defaultJobOptions: {
+                removeOnComplete: { age: 3600, count: 50 }, // Keep 1 hour or 50 jobs
+                removeOnFail: { age: 86400 * 7 },           // Keep failed for 1 week
+            },
         });
 
         this.dlqQueue = new Queue<DLQItem>('dlq-execution', {
             connection: redisConnection,
+            prefix: 'spane',
         });
 
         // Initialize queue events for monitoring
         this.nodeQueueEvents = new QueueEvents('node-execution', {
             connection: redisConnection,
+            prefix: 'spane',
         });
 
         this.workflowQueueEvents = new QueueEvents('workflow-execution', {
             connection: redisConnection,
+            prefix: 'spane',
         });
 
         // Dedicated QueueEvents for caching results to avoid conflicts
         this.resultCacheEvents = new QueueEvents('node-execution', {
             connection: redisConnection,
+            prefix: '{spane}',
         });
 
         this.setupQueueEventListeners();

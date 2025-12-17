@@ -35,6 +35,7 @@ export class WorkerManager {
             {
                 connection: this.redisConnection,
                 concurrency,
+                prefix: 'spane',
             }
         );
 
@@ -49,6 +50,7 @@ export class WorkerManager {
             {
                 connection: this.redisConnection,
                 concurrency: Math.max(1, Math.floor(concurrency / 2)),
+                prefix: 'spane',
             }
         );
 

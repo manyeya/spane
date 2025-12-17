@@ -9,6 +9,7 @@ import { HealthMonitor } from './utils/health';
 import { MetricsCollector } from './utils/metrics';
 import { CircuitBreakerRegistry } from './utils/circuit-breaker';
 import { GracefulShutdown } from './utils/graceful-shutdown';
+import { PayloadManager } from './engine/payload-manager';
 
 // Re-export event types for external consumers
 export {
@@ -45,10 +46,21 @@ nodeRegistry.registerDefaultExternalNodes(); // Enable circuit breaker for http,
 // for Redis-first active execution state with database persistence on completion
 let stateStore;
 let storeType: string;
+let payloadManager: PayloadManager | undefined;
 
 if (process.env.DATABASE_URL) {
   const drizzleStore = new DrizzleExecutionStateStore(process.env.DATABASE_URL, redis);
-  
+
+  // Initialize PayloadManager for Claim Check Pattern (handling large payloads)
+  if (drizzleStore.database) {
+    try {
+      payloadManager = new PayloadManager(drizzleStore.database);
+      console.log('📦 Payload Manager initialized (Claim Check Pattern enabled)');
+    } catch (e) {
+      console.warn('⚠️ Failed to initialize Payload Manager:', e);
+    }
+  }
+
   // Use hybrid store when both Redis and DB are available (default behavior)
   // Set DISABLE_HYBRID_STORE=true to use DrizzleStore directly
   if (process.env.DISABLE_HYBRID_STORE !== 'true') {
@@ -93,7 +105,9 @@ const engine = new WorkflowEngine(
   stateStore,
   redis,
   metricsCollector,
-  circuitBreakerRegistry
+  circuitBreakerRegistry,
+  undefined, // cacheOptions
+  payloadManager
 );
 
 const api = new WorkflowAPIController(

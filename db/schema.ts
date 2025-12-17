@@ -155,3 +155,19 @@ export const stateChangeAudit = pgTable('state_change_audit', {
   index('audit_change_type_idx').on(table.changeType),
   index('audit_changed_at_idx').on(table.changedAt),
 ]);
+
+// Payload offloading table - stores large payloads to keep Redis light
+export const executionPayloads = pgTable('execution_payloads', {
+  id: text('id').primaryKey(), // UUID
+  executionId: text('execution_id').notNull(),
+  path: text('path').notNull(), // e.g., 'initialData', 'node-nodeId-output'
+  data: jsonb('data').notNull(),
+  sizeBytes: integer('size_bytes').notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  index('payloads_execution_id_idx').on(table.executionId),
+  foreignKey({
+    columns: [table.executionId],
+    foreignColumns: [executions.executionId],
+  }).onDelete('cascade'),
+]);
