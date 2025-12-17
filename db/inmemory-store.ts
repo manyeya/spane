@@ -166,14 +166,14 @@ export class InMemoryExecutionStore implements IExecutionStateStore {
     completedAt?: Date;
   }>> {
     let executions = Array.from(this.executions.values());
-    
+
     if (workflowId) {
       executions = executions.filter(e => e.workflowId === workflowId);
     }
-    
+
     // Sort by startedAt descending
     executions.sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime());
-    
+
     // Apply pagination
     return executions.slice(offset, offset + limit).map(e => ({
       executionId: e.executionId,
@@ -193,5 +193,47 @@ export class InMemoryExecutionStore implements IExecutionStateStore {
 
   async deactivateWorkflow(workflowId: string): Promise<void> {
     // No-op in memory store
+  }
+
+  async pruneExecutions(criteria: { maxAgeHours?: number; maxCount?: number }): Promise<number> {
+    const { maxAgeHours, maxCount } = criteria;
+    let deletedCount = 0;
+    const now = Date.now();
+
+    // 1. Prune by Age
+    if (maxAgeHours !== undefined) {
+      const cutOffTime = now - maxAgeHours * 60 * 60 * 1000;
+      for (const [id, execution] of this.executions.entries()) {
+        const isFinished = ['completed', 'failed', 'cancelled'].includes(execution.status);
+        if (isFinished && execution.startedAt.getTime() < cutOffTime) {
+          this.executions.delete(id);
+          this.logs.delete(id);
+          this.traces.delete(id);
+          deletedCount++;
+        }
+      }
+    }
+
+    // 2. Prune by Count
+    if (maxCount !== undefined) {
+      if (this.executions.size > maxCount) {
+        // Collect all finished executions
+        const finishedExecutions = Array.from(this.executions.values())
+          .filter(e => ['completed', 'failed', 'cancelled'].includes(e.status))
+          .sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime()); // Oldest first
+
+        const excess = this.executions.size - maxCount;
+
+        // Prune oldest finished executions up to excess count
+        const toDelete = finishedExecutions.slice(0, excess);
+        for (const execution of toDelete) {
+          this.executions.delete(execution.executionId);
+          this.logs.delete(execution.executionId);
+          this.traces.delete(execution.executionId);
+          deletedCount++;
+        }
+      }
+    }
+    return deletedCount;
   }
 }

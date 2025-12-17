@@ -671,9 +671,10 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
   // TRANSACTION SUPPORT METHODS
   // ============================================================================
 
+
   /**
    * Handle permanent job failure atomically
-   * Combines: DLQ entry + node result update + error log
+   * Combines: DLQ entry + node result update + execution failure + error log
    */
   async handlePermanentFailure(
     executionId: string,
@@ -706,7 +707,16 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
         error: errorMessage,
       });
 
-      // 3. Add error log
+      // 3. Fail the execution (since node failed permanently)
+      // This ensures the workflow stops and is marked as failed
+      await tx.update(schema.executions)
+        .set({
+          status: 'failed',
+          completedAt: new Date()
+        })
+        .where(eq(schema.executions.executionId, executionId));
+
+      // 4. Add error log
       await tx.insert(schema.logs).values({
         id: logId,
         executionId,
@@ -717,6 +727,79 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
         metadata: { dlqId, attemptsMade },
       });
     });
+  }
+
+  /**
+   * Prune old executions to prevent database bloat
+   */
+  async pruneExecutions(criteria: { maxAgeHours?: number; maxCount?: number }): Promise<number> {
+    const { maxAgeHours, maxCount } = criteria;
+    let deletedCount = 0;
+
+    await this.db.transaction(async (tx) => {
+      // 1. Prune by Age
+      if (maxAgeHours !== undefined) {
+        const cutOffDate = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000);
+
+        // Find IDs to delete first (for logging/metrics if needed, and to ensure we target correct rows)
+        const expiredExecutions = await tx
+          .select({ id: schema.executions.executionId })
+          .from(schema.executions)
+          .where(and(
+            lt(schema.executions.startedAt, cutOffDate),
+            inArray(schema.executions.status, ['completed', 'failed', 'cancelled'])
+          ));
+
+        if (expiredExecutions.length > 0) {
+          const idsToDelete = expiredExecutions.map(e => e.id);
+
+          await this.deleteExecutionsInternal(tx, idsToDelete);
+          deletedCount += idsToDelete.length;
+        }
+      }
+
+      // 2. Prune by Count (only if we still have too many)
+      if (maxCount !== undefined) {
+        // Count current
+        const result = await tx
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.executions);
+
+        const currentCount = result[0]?.count ?? 0;
+        const excess = currentCount - maxCount;
+
+        if (excess > 0) {
+          // Find oldest to delete
+          const excessExecutions = await tx
+            .select({ id: schema.executions.executionId })
+            .from(schema.executions)
+            .where(inArray(schema.executions.status, ['completed', 'failed', 'cancelled']))
+            .orderBy(schema.executions.startedAt) // Oldest first
+            .limit(excess);
+
+          if (excessExecutions.length > 0) {
+            const idsToDelete = excessExecutions.map(e => e.id);
+            await this.deleteExecutionsInternal(tx, idsToDelete);
+            deletedCount += idsToDelete.length;
+          }
+        }
+      }
+    });
+
+    return deletedCount;
+  }
+
+  private async deleteExecutionsInternal(tx: any, executionIds: string[]): Promise<void> {
+    if (executionIds.length === 0) return;
+
+    // Delete dependent records explicitly (if cascade not set, safer)
+    await tx.delete(schema.nodeResults).where(inArray(schema.nodeResults.executionId, executionIds));
+    await tx.delete(schema.logs).where(inArray(schema.logs.executionId, executionIds));
+    await tx.delete(schema.spans).where(inArray(schema.spans.executionId, executionIds));
+    await tx.delete(schema.dlqItems).where(inArray(schema.dlqItems.executionId, executionIds));
+
+    // Delete executions
+    await tx.delete(schema.executions).where(inArray(schema.executions.executionId, executionIds));
   }
 
   /**
@@ -944,7 +1027,7 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
    * List executions with optional workflow filter and pagination
    */
   async listExecutions(
-    workflowId?: string, 
+    workflowId?: string,
     limit: number = 100,
     offset: number = 0
   ): Promise<Array<{
@@ -956,7 +1039,7 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
     initialData?: any;
     metadata?: any;
   }>> {
-    const conditions = workflowId 
+    const conditions = workflowId
       ? eq(schema.executions.workflowId, workflowId)
       : undefined;
 
@@ -991,7 +1074,7 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
    * Get total count of executions (for pagination)
    */
   async getExecutionCount(workflowId?: string): Promise<number> {
-    const conditions = workflowId 
+    const conditions = workflowId
       ? eq(schema.executions.workflowId, workflowId)
       : undefined;
 
@@ -1190,7 +1273,7 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
         level: state.status === 'completed' ? 'info' : 'error',
         message: `Workflow execution ${state.status}`,
         timestamp: state.completedAt,
-        metadata: { 
+        metadata: {
           totalNodes: Object.keys(state.nodeResults).length,
           persistedFromRedis: true,
         },

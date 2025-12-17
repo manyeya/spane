@@ -9,6 +9,7 @@ import { DistributedLock } from '../utils/distributed-lock';
 import { WorkflowEventEmitter } from './event-emitter';
 import { CircuitBreakerRegistry, CircuitBreakerError, type CircuitBreakerOptions } from '../utils/circuit-breaker';
 import { logger } from '../utils/logger';
+import { PayloadManager } from './payload-manager';
 
 /**
  * Resolves the delay duration from a DelayNodeConfig.
@@ -83,6 +84,7 @@ export function getCircuitBreakerOptions(nodeConfig: any): CircuitBreakerOptions
 
 export class NodeProcessor {
     private distributedLock: DistributedLock;
+    private payloadManager: PayloadManager;
 
     constructor(
         private registry: NodeRegistry,
@@ -94,6 +96,7 @@ export class NodeProcessor {
         private circuitBreakerRegistry?: CircuitBreakerRegistry
     ) {
         this.distributedLock = new DistributedLock(redisConnection);
+        this.payloadManager = new PayloadManager();
     }
 
     /**
@@ -118,7 +121,11 @@ export class NodeProcessor {
 
     // Process a single node job
     async processNodeJob(data: NodeJobData, job: Job): Promise<ExecutionResult> {
-        const { executionId, workflowId, nodeId, inputData } = data;
+        const { executionId, workflowId, nodeId } = data;
+
+        // Deserialize input data (handle large payloads)
+        const inputData = await this.payloadManager.deserialize(data.inputData);
+
         const logContext = { executionId, workflowId, nodeId, jobId: job.id };
         logger.info(logContext, `🔧 Processing node job`);
 
@@ -358,6 +365,11 @@ export class NodeProcessor {
                 result = await executor.execute(context);
             }
 
+            // Serialize output data (handle large payloads)
+            if (result.success && result.data) {
+                result.data = await this.payloadManager.serialize(result.data);
+            }
+
             // Save result
             await this.stateStore.updateNodeResult(executionId, nodeId, result);
 
@@ -370,6 +382,7 @@ export class NodeProcessor {
             }
 
             // Emit 'completed' event on successful execution
+            // We emit the serialized payload reference to keep event payload small
             await WorkflowEventEmitter.emitNodeCompleted(job, nodeId, workflowId, executionId, result.data);
 
             // If this node succeeded, check and enqueue/skip its children

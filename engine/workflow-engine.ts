@@ -15,6 +15,8 @@ import { HealthMonitor } from '../utils/health-monitor';
 import type { WorkflowStatusEvent } from './event-types';
 import { EventStreamManager } from './event-stream';
 import { logger } from '../utils/logger';
+import { PayloadManager } from './payload-manager';
+import { config } from '../config';
 
 export interface WorkflowCacheOptions {
     maxSize?: number;      // Max number of workflows to cache (default: 500)
@@ -28,8 +30,10 @@ export class WorkflowEngine {
     private workerManager: WorkerManager;
     private timeoutMonitor?: TimeoutMonitor;
     private healthMonitor?: HealthMonitor;
+    private pruningInterval?: Timer;
     private eventStreamManager: EventStreamManager;
     private workflowCache: LRUCache<string, WorkflowDefinition>;
+    private payloadManager: PayloadManager;
 
     constructor(
         registry: NodeRegistry,
@@ -64,6 +68,8 @@ export class WorkflowEngine {
             this.enqueueWorkflow.bind(this),
             _circuitBreakerRegistry // Pass circuit breaker registry for external node protection
         );
+
+        this.payloadManager = new PayloadManager();
 
         // Initialize WorkerManager
         this.workerManager = new WorkerManager(
@@ -261,7 +267,10 @@ export class WorkflowEngine {
             throw new Error(`Maximum sub-workflow depth (${MAX_DEPTH}) exceeded`);
         }
 
-        const executionId = await this.stateStore.createExecution(workflowId, parentExecutionId, depth, initialData);
+        // Handle large payload offloading using Claim Check pattern
+        const processedInitialData = await this.payloadManager.serialize(initialData);
+
+        const executionId = await this.stateStore.createExecution(workflowId, parentExecutionId, depth, processedInitialData);
 
         // Track metrics
         if (this.metricsCollector) {
@@ -290,7 +299,7 @@ export class WorkflowEngine {
         // Enqueue all entry nodes, passing parent job reference if this is a sub-workflow
         // Also pass priority and delay options to each node
         for (const node of entryNodes) {
-            await this.enqueueNode(executionId, workflowId, node.id, initialData, parentJobId, options);
+            await this.enqueueNode(executionId, workflowId, node.id, processedInitialData, parentJobId, options);
         }
 
         // Emit 'started' workflow event directly via EventStreamManager
@@ -423,6 +432,36 @@ export class WorkflowEngine {
         }
         if (this.healthMonitor) {
             this.healthMonitor.start();
+        }
+
+        // Start Execution Pruning Scheduler (hourly)
+        if (config.pruning.enabled && this.stateStore.pruneExecutions) {
+            logger.info('🧹 Execution pruning enabled');
+
+            // Initial prune (async, don't await)
+            this.runPruning().catch(err => logger.error({ error: err }, 'Initial pruning failed'));
+
+            // Schedule interval (1 hour)
+            this.pruningInterval = setInterval(() => {
+                this.runPruning().catch(err => logger.error({ error: err }, 'Scheduled pruning failed'));
+            }, 3600000); // 1 hour
+        }
+    }
+
+    private async runPruning() {
+        if (!this.stateStore.pruneExecutions) return;
+
+        logger.info('🧹 Running execution pruning...');
+        try {
+            const count = await this.stateStore.pruneExecutions({
+                maxAgeHours: config.pruning.maxAgeHours,
+                maxCount: config.pruning.maxCount
+            });
+            if (count > 0) {
+                logger.info({ count }, '🧹 Pruned old executions');
+            }
+        } catch (error) {
+            logger.error({ error }, '❌ Execution pruning failed');
         }
     }
 
@@ -647,6 +686,9 @@ export class WorkflowEngine {
         }
         if (this.healthMonitor) {
             this.healthMonitor.stop();
+        }
+        if (this.pruningInterval) {
+            clearInterval(this.pruningInterval);
         }
 
         // Close event stream manager
