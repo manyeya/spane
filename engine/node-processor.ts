@@ -8,6 +8,7 @@ import { QueueManager } from './queue-manager';
 import { DistributedLock } from '../utils/distributed-lock';
 import { WorkflowEventEmitter } from './event-emitter';
 import { CircuitBreakerRegistry, CircuitBreakerError, type CircuitBreakerOptions } from '../utils/circuit-breaker';
+import { logger } from '../utils/logger';
 
 /**
  * Resolves the delay duration from a DelayNodeConfig.
@@ -24,7 +25,7 @@ export function resolveDuration(config: DelayNodeConfig | undefined): number | n
     if (!config) {
         return null;
     }
-    
+
     if (typeof config.duration === 'number') {
         return config.duration;
     }
@@ -63,19 +64,19 @@ export const DEFAULT_CIRCUIT_BREAKER_OPTIONS: CircuitBreakerOptions = {
 export function getCircuitBreakerOptions(nodeConfig: any): CircuitBreakerOptions {
     const config = nodeConfig || {};
     const cbConfig = config.circuitBreaker || {};
-    
+
     return {
-        failureThreshold: typeof cbConfig.failureThreshold === 'number' 
-            ? cbConfig.failureThreshold 
+        failureThreshold: typeof cbConfig.failureThreshold === 'number'
+            ? cbConfig.failureThreshold
             : DEFAULT_CIRCUIT_BREAKER_OPTIONS.failureThreshold,
-        successThreshold: typeof cbConfig.successThreshold === 'number' 
-            ? cbConfig.successThreshold 
+        successThreshold: typeof cbConfig.successThreshold === 'number'
+            ? cbConfig.successThreshold
             : DEFAULT_CIRCUIT_BREAKER_OPTIONS.successThreshold,
-        timeout: typeof cbConfig.timeout === 'number' 
-            ? cbConfig.timeout 
+        timeout: typeof cbConfig.timeout === 'number'
+            ? cbConfig.timeout
             : DEFAULT_CIRCUIT_BREAKER_OPTIONS.timeout,
-        monitoringPeriod: typeof cbConfig.monitoringPeriod === 'number' 
-            ? cbConfig.monitoringPeriod 
+        monitoringPeriod: typeof cbConfig.monitoringPeriod === 'number'
+            ? cbConfig.monitoringPeriod
             : DEFAULT_CIRCUIT_BREAKER_OPTIONS.monitoringPeriod,
     };
 }
@@ -118,7 +119,8 @@ export class NodeProcessor {
     // Process a single node job
     async processNodeJob(data: NodeJobData, job: Job): Promise<ExecutionResult> {
         const { executionId, workflowId, nodeId, inputData } = data;
-        console.log(`🔧 Processing node job: executionId=${executionId}, workflowId=${workflowId}, nodeId=${nodeId}`);
+        const logContext = { executionId, workflowId, nodeId, jobId: job.id };
+        logger.info(logContext, `🔧 Processing node job`);
 
         // Handle virtual root node (for workflows with multiple entry points)
         if (nodeId === '__root__') {
@@ -129,15 +131,14 @@ export class NodeProcessor {
         const workflow = await this.getWorkflowWithLazyLoad(workflowId);
 
         if (!workflow) {
-            console.error(`❌ Workflow ${workflowId} not found in NodeProcessor.`);
-            console.error(`Available workflows in cache: ${Array.from(this.workflows.keys()).join(', ')}`);
+            logger.error({ ...logContext, availableWorkflows: Array.from(this.workflows.keys()) }, `❌ Workflow ${workflowId} not found in NodeProcessor.`);
             throw new Error(`Workflow ${workflowId} not found`);
         }
 
         const node = workflow.nodes.find(n => n.id === nodeId);
 
         if (!node) {
-            console.error(`❌ Node ${nodeId} not found in workflow ${workflowId}`);
+            logger.error(logContext, `❌ Node ${nodeId} not found in workflow ${workflowId}`);
             throw new Error(`Node ${nodeId} not found in workflow ${workflowId}`); // Keep throw for logical correctness
         }
 
@@ -210,9 +211,8 @@ export class NodeProcessor {
                     }
                 });
 
-                console.log(`💾 Checkpoint saved: Node ${nodeId} waiting for child ${result.childExecutionId}`);
+                logger.info({ ...logContext, childExecutionId: result.childExecutionId }, `💾 Checkpoint saved: Node ${nodeId} waiting for child ${result.childExecutionId}`);
 
-                // Return success - job completes and frees the worker!
                 return {
                     success: true,
                     data: {
@@ -245,7 +245,7 @@ export class NodeProcessor {
         const existingResults = await this.stateStore.getNodeResults(executionId, [nodeId]);
         const existingResult = existingResults[nodeId];
         if (existingResult && (existingResult.success || existingResult.skipped)) {
-            console.log(`- Idempotency check: Node ${nodeId} already processed with status: ${existingResult.skipped ? 'skipped' : 'success'}. Skipping.`);
+            logger.info(logContext, `- Idempotency check: Node ${nodeId} already processed with status: ${existingResult.skipped ? 'skipped' : 'success'}. Skipping.`);
             return existingResult;
         }
 
@@ -256,12 +256,12 @@ export class NodeProcessor {
 
         // Check execution status before running
         if (executionState?.status === 'cancelled') {
-            console.log(`🚫 Execution ${executionId} is cancelled. Skipping node ${nodeId}.`);
+            logger.info(logContext, `🚫 Execution ${executionId} is cancelled. Skipping node ${nodeId}.`);
             return { success: false, error: 'Workflow execution cancelled' };
         }
 
         if (executionState?.status === 'paused') {
-            console.log(`⏸️ Execution ${executionId} is paused. Moving to delayed queue.`);
+            logger.info(logContext, `⏸️ Execution ${executionId} is paused. Moving to delayed queue.`);
             await job.moveToDelayed(Date.now() + 5000, job.token); // Retry in 5 seconds
             throw new DelayedError();
         }
@@ -276,7 +276,7 @@ export class NodeProcessor {
             }
 
             if (current > rateLimit) {
-                console.log(`⏳ Rate limit exceeded for ${node.type}. Re-queueing.`);
+                logger.info(logContext, `⏳ Rate limit exceeded for ${node.type}. Re-queueing.`);
                 await job.moveToDelayed(Date.now() + 1000, job.token);
                 throw new DelayedError();
             }
@@ -329,30 +329,30 @@ export class NodeProcessor {
         };
 
         // Execute the node
-        console.log(`▶️ Executing node ${nodeId} (${node.type})`);
-        
+        logger.info(logContext, `▶️ Executing node ${nodeId} (${node.type})`);
+
         // Emit 'running' event at start of node execution
         await WorkflowEventEmitter.emitNodeStarted(job, nodeId, workflowId, executionId);
-        
+
         try {
             let result: ExecutionResult;
-            
+
             // Wrap external node execution with circuit breaker if registry is available
             const cbKey = this.circuitBreakerRegistry ? this.registry.getCircuitBreakerKey(node.type, node.config) : null;
             if (this.circuitBreakerRegistry && cbKey) {
                 const cbOptions = getCircuitBreakerOptions(node.config);
                 const breaker = this.circuitBreakerRegistry.getOrCreate(cbKey, cbOptions);
-                
+
                 // Log circuit breaker usage (debug level)
                 const cbStats = breaker.getStats();
-                console.debug(`🔌 [CircuitBreaker] Wrapping ${node.type} node (${nodeId}) with circuit breaker: ${cbKey}, state: ${cbStats.state}, failures: ${cbStats.failureCount}`);
-                
+                logger.debug(logContext, `🔌 [CircuitBreaker] Wrapping ${node.type} node (${nodeId}) with circuit breaker: ${cbKey}, state: ${cbStats.state}, failures: ${cbStats.failureCount}`);
+
                 result = await breaker.execute(() => executor.execute(context));
-                
+
                 // Log successful execution through circuit breaker
                 const postStats = breaker.getStats();
                 if (postStats.state === 'CLOSED' && cbStats.state !== 'CLOSED') {
-                    console.log(`🔌 [CircuitBreaker] '${cbKey}' closed after recovery - node ${nodeId} execution succeeded`);
+                    logger.info(logContext, `🔌 [CircuitBreaker] '${cbKey}' closed after recovery - node ${nodeId} execution succeeded`);
                 }
             } else {
                 result = await executor.execute(context);
@@ -363,7 +363,7 @@ export class NodeProcessor {
 
             // Handle node failure - fail the entire workflow
             if (!result.success) {
-                console.error(`❌ Node ${nodeId} returned failure result: ${result.error}`);
+                logger.error({ ...logContext, error: result.error }, `❌ Node ${nodeId} returned failure result: ${result.error}`);
                 await WorkflowEventEmitter.emitNodeFailed(job, nodeId, workflowId, executionId, result.error || 'Node execution failed');
                 await this.handleWorkflowError(executionId, workflowId, new Error(result.error || 'Node execution failed'), job);
                 return result;
@@ -374,7 +374,7 @@ export class NodeProcessor {
 
             // If this node succeeded, check and enqueue/skip its children
             if (node.outputs.length > 0) {
-                console.log(`📤 Node ${nodeId} completed successfully, checking ${node.outputs.length} children`);
+                logger.info(logContext, `📤 Node ${nodeId} completed successfully, checking ${node.outputs.length} children`);
                 await this.checkAndEnqueueChildren(executionId, workflowId, node, result.nextNodes, job);
             }
 
@@ -383,23 +383,23 @@ export class NodeProcessor {
 
             return result;
         } catch (error) {
-            console.error(`❌ Node ${nodeId} execution failed:`, error);
-            
+            logger.error({ ...logContext, error }, `❌ Node ${nodeId} execution failed`);
+
             // Emit 'failed' event on execution failure
             const errorMessage = error instanceof Error ? error.message : String(error);
             await WorkflowEventEmitter.emitNodeFailed(job, nodeId, workflowId, executionId, errorMessage);
-            
+
             // Handle CircuitBreakerError specially - don't retry when circuit is open
             if (error instanceof CircuitBreakerError) {
                 // Log when circuit is open and preventing execution
                 const cbKey = this.registry.getCircuitBreakerKey(node.type, node.config);
                 const breaker = cbKey ? this.circuitBreakerRegistry?.get(cbKey) : null;
                 const nextRetryTime = breaker?.getStats().nextAttempt || 'unknown';
-                console.log(`🔌 [CircuitBreaker] '${cbKey}' is OPEN - prevented execution for node ${nodeId}. Next retry: ${nextRetryTime}`);
+                logger.info(logContext, `🔌 [CircuitBreaker] '${cbKey}' is OPEN - prevented execution for node ${nodeId}. Next retry: ${nextRetryTime}`);
                 // Throw UnrecoverableError to prevent BullMQ retries - the circuit is open
                 throw new UnrecoverableError(`Circuit breaker open: ${errorMessage}`);
             }
-            
+
             throw error; // Let BullMQ handle retries for other errors
         }
     }
@@ -414,7 +414,7 @@ export class NodeProcessor {
             const shouldRun = !nextNodes || nextNodes.includes(childNodeId);
 
             if (!shouldRun) {
-                console.log(`🚫 Node ${childNodeId} excluded by conditional branching. Marking as skipped.`);
+                logger.info({ executionId, workflowId, childNodeId }, `🚫 Node ${childNodeId} excluded by conditional branching. Marking as skipped.`);
                 await this.skipNode(executionId, workflowId, childNodeId, job);
                 continue;
             }
@@ -432,10 +432,10 @@ export class NodeProcessor {
             });
 
             if (allParentsCompleted) {
-                console.log(`✅ All parents of ${childNodeId} resolved, enqueueing`);
+                logger.info({ executionId, workflowId, childNodeId }, `✅ All parents of ${childNodeId} resolved, enqueueing`);
                 await this.enqueueNode(executionId, workflowId, childNodeId);
             } else {
-                console.log(`⏳ Child node ${childNodeId} waiting for other parents`);
+                logger.info({ executionId, workflowId, childNodeId }, `⏳ Child node ${childNodeId} waiting for other parents`);
             }
         }
     }
@@ -465,10 +465,10 @@ export class NodeProcessor {
     }
 
     private async enqueueNode(
-        executionId: string, 
-        workflowId: string, 
-        nodeId: string, 
-        options: { 
+        executionId: string,
+        workflowId: string,
+        nodeId: string,
+        options: {
             delay?: number;
             subWorkflowStep?: 'initial' | 'waiting-children' | 'complete';
             childExecutionId?: string;
@@ -525,10 +525,10 @@ export class NodeProcessor {
         // Use distributed lock to prevent race condition when multiple nodes complete simultaneously
         const lockKey = `completion:${executionId}`;
         const lockToken = await this.distributedLock.acquire(lockKey, 5000);
-        
+
         if (!lockToken) {
             // Another process is checking completion, skip
-            console.log(`⏳ Skipping completion check for ${executionId} - another process is handling it`);
+            logger.info({ executionId, workflowId }, `⏳ Skipping completion check for ${executionId} - another process is handling it`);
             return;
         }
 
@@ -538,8 +538,8 @@ export class NodeProcessor {
 
             if (pendingCount === 0) {
                 await this.stateStore.setExecutionStatus(executionId, 'completed');
-                console.log(`🎉 Workflow ${executionId} completed successfully`);
-                
+                logger.info({ executionId, workflowId }, `🎉 Workflow ${executionId} completed successfully`);
+
                 // Emit 'completed' workflow event
                 if (job) {
                     await WorkflowEventEmitter.emitWorkflowStatus(job, {
@@ -548,7 +548,7 @@ export class NodeProcessor {
                         status: 'completed',
                     });
                 }
-                
+
                 await this.notifyParentWorkflow(executionId, 'completed');
             }
         } finally {
@@ -558,7 +558,7 @@ export class NodeProcessor {
 
     async handleWorkflowError(executionId: string, workflowId: string, error: any, job?: Job): Promise<void> {
         await this.stateStore.setExecutionStatus(executionId, 'failed');
-        
+
         // Emit 'failed' workflow event
         if (job) {
             const errorMessage = error instanceof Error ? error.message : String(error);
@@ -569,7 +569,7 @@ export class NodeProcessor {
                 error: errorMessage,
             });
         }
-        
+
         await this.notifyParentWorkflow(executionId, 'failed');
     }
 
@@ -582,7 +582,7 @@ export class NodeProcessor {
         const { parentExecutionId, parentNodeId, parentWorkflowId } = metadata;
 
         if (parentExecutionId && parentNodeId) {
-            console.log(`🔔 Notifying parent workflow ${parentExecutionId} (node ${parentNodeId}) of child ${executionId} ${status}`);
+            logger.info({ executionId, parentExecutionId, parentNodeId, status }, `🔔 Notifying parent workflow ${parentExecutionId} (node ${parentNodeId}) of child ${executionId} ${status}`);
             // Pass sub-workflow state for resumption
             await this.enqueueNode(parentExecutionId, parentWorkflowId || 'unknown', parentNodeId, {
                 subWorkflowStep: 'complete',
@@ -611,55 +611,55 @@ export class NodeProcessor {
     ): Promise<ExecutionResult> {
         const { executionId, workflowId, nodeId } = data;
         const config = node.config as DelayNodeConfig;
-        
+
         // Resolve duration from config
         const duration = resolveDuration(config);
-        
+
         // Validation: Check for missing duration configuration
         if (duration === null) {
             const error = 'Delay node missing duration configuration';
-            console.error(`❌ ${error}: nodeId=${nodeId}`);
+            logger.error({ executionId, nodeId }, `❌ ${error}`);
             await WorkflowEventEmitter.emitNodeFailed(job, nodeId, workflowId, executionId, error);
             return { success: false, error };
         }
-        
+
         // Validation: Check for negative duration
         if (duration < 0) {
             const error = 'Delay duration must be positive';
-            console.error(`❌ ${error}: nodeId=${nodeId}, duration=${duration}`);
+            logger.error({ executionId, nodeId, duration }, `❌ ${error}`);
             await WorkflowEventEmitter.emitNodeFailed(job, nodeId, workflowId, executionId, error);
             return { success: false, error };
         }
-        
+
         // Warning: Log if duration exceeds 24 hours
         const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
         if (duration > TWENTY_FOUR_HOURS_MS) {
-            console.warn(`⚠️ Delay node ${nodeId} has duration exceeding 24 hours: ${duration}ms`);
+            logger.warn({ executionId, nodeId, duration }, `⚠️ Delay node ${nodeId} has duration exceeding 24 hours: ${duration}ms`);
         }
-        
+
         // Determine current step
         const currentStep = data.delayStep || 'initial';
-        
+
         if (currentStep === 'initial') {
             // Initial processing: emit started event and move to delayed queue
-            console.log(`⏳ Delay node ${nodeId} starting with duration ${duration}ms`);
-            
+            logger.info({ executionId, nodeId, duration }, `⏳ Delay node ${nodeId} starting with duration ${duration}ms`);
+
             // Emit node:started event
             await WorkflowEventEmitter.emitNodeStarted(job, nodeId, workflowId, executionId);
-            
+
             // Emit node:delayed event with expected resume time
             const resumeTime = Date.now() + duration;
             await WorkflowEventEmitter.emitNodeDelayed(job, nodeId, workflowId, executionId, resumeTime);
-            
+
             // Enqueue the resumed job with delay
             await this.enqueueNode(executionId, workflowId, nodeId, {
                 delay: duration,
                 delayStep: 'resumed',
                 delayStartTime: Date.now(),
             });
-            
-            console.log(`💾 Delay node ${nodeId} moved to delayed queue, will resume at ${new Date(resumeTime).toISOString()}`);
-            
+
+            logger.info({ executionId, nodeId, resumeTime }, `💾 Delay node ${nodeId} moved to delayed queue, will resume at ${new Date(resumeTime).toISOString()}`);
+
             // Return success - this job completes, the delayed job will handle completion
             return {
                 success: true,
@@ -670,24 +670,24 @@ export class NodeProcessor {
                 }
             };
         }
-        
+
         // Resumed step: delay has expired, complete the node
         if (currentStep === 'resumed') {
-            console.log(`▶️ Delay node ${nodeId} resuming after delay`);
-            
+            logger.info({ executionId, nodeId }, `▶️ Delay node ${nodeId} resuming after delay`);
+
             // Re-check workflow status before completing
             const currentExecution = await this.stateStore.getExecution(executionId);
             if (currentExecution?.status === 'cancelled') {
-                console.log(`🚫 Workflow ${executionId} was cancelled during delay. Skipping node ${nodeId}.`);
+                logger.info({ executionId, nodeId }, `🚫 Workflow ${executionId} was cancelled during delay. Skipping node ${nodeId}.`);
                 return { success: false, error: 'Workflow execution cancelled' };
             }
-            
+
             // Gather input data from parent nodes (same logic as regular nodes)
             let outputData: any = data.inputData;
-            
+
             if (node.inputs.length > 0) {
                 const previousResults = await this.stateStore.getNodeResults(executionId, node.inputs);
-                
+
                 if (node.inputs.length === 1) {
                     // Single parent: Pass data directly
                     const parentId = node.inputs[0];
@@ -709,31 +709,31 @@ export class NodeProcessor {
                     outputData = mergedData;
                 }
             }
-            
+
             // Save result
             const result: ExecutionResult = {
                 success: true,
                 data: outputData,
             };
             await this.stateStore.updateNodeResult(executionId, nodeId, result);
-            
+
             // Emit node:completed event
             await WorkflowEventEmitter.emitNodeCompleted(job, nodeId, workflowId, executionId, outputData);
-            
-            console.log(`✅ Delay node ${nodeId} completed successfully`);
-            
+
+            logger.info({ executionId, nodeId }, `✅ Delay node ${nodeId} completed successfully`);
+
             // Enqueue downstream nodes
             if (node.outputs.length > 0) {
-                console.log(`📤 Delay node ${nodeId} completed, checking ${node.outputs.length} children`);
+                logger.info({ executionId, nodeId }, `📤 Delay node ${nodeId} completed, checking ${node.outputs.length} children`);
                 await this.checkAndEnqueueChildren(executionId, workflowId, node, undefined, job);
             }
-            
+
             // Check if workflow is complete
             await this.checkWorkflowCompletion(executionId, workflowId, job);
-            
+
             return result;
         }
-        
+
         // Invalid step
         return {
             success: false,
@@ -778,7 +778,7 @@ export class NodeProcessor {
                     }
                 }
 
-                console.log(`🔀 Sub-workflow ${workflowId} starting (parent: ${parentExecutionId}, depth: ${depth + 1})`);
+                logger.info({ parentExecutionId, depth: depth + 1, workflowId }, `🔀 Sub-workflow ${workflowId} starting`);
 
                 // Start child workflow (normal enqueue, no parent reference needed)
                 const newChildExecutionId = await this.enqueueWorkflow(
@@ -796,7 +796,7 @@ export class NodeProcessor {
                 };
                 await this.stateStore.updateExecutionMetadata(newChildExecutionId, metadata);
 
-                console.log(`✅ Sub-workflow checkpoint: ${workflowId} started, parent node will resume when child completes`);
+                logger.info({ workflowId, newChildExecutionId }, `✅ Sub-workflow checkpoint: ${workflowId} started, parent node will resume when child completes`);
 
                 // Return with checkpoint flag - parent job will complete and free the worker!
                 return {

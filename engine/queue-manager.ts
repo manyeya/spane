@@ -3,6 +3,7 @@ import { Redis } from 'ioredis';
 import { MetricsCollector } from '../utils/metrics';
 import type { NodeJobData, WorkflowJobData, DLQItem } from './types';
 import type { IExecutionStateStore } from '../types';
+import { logger } from '../utils/logger';
 
 export class QueueManager {
     public nodeQueue: Queue<NodeJobData>;
@@ -56,23 +57,23 @@ export class QueueManager {
 
     private setupQueueEventListeners(): void {
         this.nodeQueueEvents.on('completed', ({ jobId, returnvalue }) => {
-            console.log(`✓ Node job ${jobId} completed with result:`, returnvalue);
+            logger.info({ jobId, returnvalue }, `✓ Node job ${jobId} completed`);
         });
 
         this.nodeQueueEvents.on('failed', async ({ jobId, failedReason }) => {
-            console.error(`✗ Node job ${jobId} failed:`, failedReason);
+            logger.error({ jobId, failedReason }, `✗ Node job ${jobId} failed`);
         });
 
         this.nodeQueueEvents.on('progress', ({ jobId, data }) => {
-            console.log(`⟳ Node job ${jobId} progress:`, data);
+            logger.debug({ jobId, data }, `⟳ Node job ${jobId} progress`);
         });
 
         this.workflowQueueEvents.on('completed', ({ jobId }) => {
-            console.log(`✓ Workflow job ${jobId} completed`);
+            logger.info({ jobId }, `✓ Workflow job ${jobId} completed`);
         });
 
         this.workflowQueueEvents.on('failed', ({ jobId, failedReason }) => {
-            console.error(`✗ Workflow job ${jobId} failed:`, failedReason);
+            logger.error({ jobId, failedReason }, `✗ Workflow job ${jobId} failed`);
         });
 
         // --- Result Caching Listener ---
@@ -87,7 +88,7 @@ export class QueueManager {
                     await this.stateStore.cacheNodeResult(executionId, nodeId, result);
                 }
             } catch (error) {
-                console.error(`Error caching result for job ${jobId}:`, error);
+                logger.error({ jobId, error }, `Error caching result for job ${jobId}`);
             }
         });
     }

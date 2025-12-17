@@ -1,4 +1,5 @@
 import type { Queue, Worker } from 'bullmq';
+import { logger } from './logger';
 
 export interface MetricsData {
     // Counters
@@ -134,7 +135,7 @@ export class MetricsCollector {
                 totalDelayed += counts.delayed || 0;
                 totalFailed += counts.failed || 0;
             } catch (error) {
-                console.error(`Failed to get job counts for queue ${queue.name}:`, error);
+                logger.error({ queueName: queue.name, error }, `Failed to get job counts for queue ${queue.name}`);
                 // Continue with other queues
             }
         }
@@ -152,7 +153,7 @@ export class MetricsCollector {
                     activeWorkers++;
                 }
             } catch (error) {
-                console.error(`Failed to check worker status for ${worker.name}:`, error);
+                logger.error({ workerName: worker.name, error }, `Failed to check worker status for ${worker.name}`);
                 // Continue with other workers
             }
         }
