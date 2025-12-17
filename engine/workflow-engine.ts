@@ -14,6 +14,7 @@ import { TimeoutMonitor } from '../utils/timeout-monitor';
 import { HealthMonitor } from '../utils/health-monitor';
 import type { WorkflowStatusEvent } from './event-types';
 import { EventStreamManager } from './event-stream';
+import { logger } from '../utils/logger';
 
 export interface WorkflowCacheOptions {
     maxSize?: number;      // Max number of workflows to cache (default: 500)
@@ -49,7 +50,7 @@ export class WorkflowEngine {
         // Initialize components
         this.queueManager = new QueueManager(redisConnection, stateStore, metricsCollector);
         this.dlqManager = new DLQManager(this.queueManager);
-        
+
         // Initialize EventStreamManager for real-time event streaming
         this.eventStreamManager = new EventStreamManager(redisConnection, stateStore);
 
@@ -88,11 +89,12 @@ export class WorkflowEngine {
 
     // Helper to log to both console and state store
     private async log(executionId: string, nodeId: string | undefined, level: 'info' | 'warn' | 'error' | 'debug', message: string, metadata?: any): Promise<void> {
-        // Console log
-        const prefix = `[${level.toUpperCase()}] [${executionId}]${nodeId ? ` [${nodeId}]` : ''}`;
-        if (level === 'error') console.error(`${prefix} ${message}`);
-        else if (level === 'warn') console.warn(`${prefix} ${message}`);
-        else console.log(`${prefix} ${message}`);
+        // Structured log
+        const logContext = { executionId, nodeId, ...metadata };
+        if (level === 'error') logger.error(logContext, message);
+        else if (level === 'warn') logger.warn(logContext, message);
+        else if (level === 'debug') logger.debug(logContext, message);
+        else logger.info(logContext, message);
 
         // Store log
         await this.stateStore.addLog({
@@ -111,13 +113,13 @@ export class WorkflowEngine {
         try {
             // Save to database (with versioning)
             const versionId = await this.stateStore.saveWorkflow(workflow, changeNotes);
-            console.log(`✅ Saved workflow ${workflow.id} to database (version ID: ${versionId})`);
+            logger.info({ workflowId: workflow.id, versionId }, `✅ Saved workflow ${workflow.id} to database (version ID: ${versionId})`);
         } catch (error) {
             // If database doesn't support workflow persistence, just log and continue
             if (error instanceof Error && error.message.includes('not supported')) {
-                console.log(`💡 Workflow ${workflow.id} registered in-memory only (no database persistence)`);
+                logger.info({ workflowId: workflow.id }, `💡 Workflow ${workflow.id} registered in-memory only (no database persistence)`);
             } else {
-                console.error(`Failed to save workflow ${workflow.id} to database:`, error);
+                logger.error({ workflowId: workflow.id, error }, `Failed to save workflow ${workflow.id} to database`);
                 // Don't throw - allow in-memory registration to proceed
             }
         }
@@ -137,7 +139,7 @@ export class WorkflowEngine {
                         const existingJob = existingJobs.find(job => job.id === jobId);
                         if (existingJob) {
                             await this.queueManager.workflowQueue.removeRepeatableByKey(existingJob.key);
-                            console.log(`🔄 Removed existing schedule for workflow ${workflow.id}`);
+                            logger.info({ workflowId: workflow.id }, `🔄 Removed existing schedule for workflow ${workflow.id}`);
                         }
 
                         // Add new repeatable job
@@ -152,10 +154,10 @@ export class WorkflowEngine {
                                 } as any, // BullMQ RepeatOptions type may not include tz in all versions
                             }
                         );
-                        console.log(`⏰ Registered schedule for workflow ${workflow.id}: ${trigger.config.cron}`);
+                        logger.info({ workflowId: workflow.id, cron: trigger.config.cron }, `⏰ Registered schedule for workflow ${workflow.id}: ${trigger.config.cron}`);
                     } catch (error) {
                         const errorMsg = `Failed to register schedule trigger for workflow ${workflow.id}: ${error instanceof Error ? error.message : String(error)}`;
-                        console.error(`❌ ${errorMsg}`);
+                        logger.error({ workflowId: workflow.id, error }, errorMsg);
                         throw new Error(errorMsg);
                     }
                 }
@@ -268,7 +270,7 @@ export class WorkflowEngine {
 
         // Determine entry nodes: use entryNodeId if specified, otherwise detect nodes with empty inputs
         let entryNodes: typeof workflow.nodes;
-        
+
         if (workflow.entryNodeId) {
             // Use the specified entry node
             const entryNode = workflow.nodes.find(n => n.id === workflow.entryNodeId);
@@ -300,7 +302,7 @@ export class WorkflowEngine {
             status: 'started',
         };
         await this.eventStreamManager.emit(startedEvent);
-        
+
         await this.log(executionId, undefined, 'info', `Workflow ${workflowId} started (Execution ID: ${executionId})`);
         return executionId;
     }
@@ -371,7 +373,7 @@ export class WorkflowEngine {
                             continue;
                         }
 
-                        console.log(`🔗 Webhook triggered workflow ${workflow.id} (path: ${path})`);
+                        logger.info({ workflowId: workflow.id, path }, `🔗 Webhook triggered workflow ${workflow.id} (path: ${path})`);
                         const executionId = await this.enqueueWorkflow(workflow.id, data);
                         triggeredExecutionIds.push(executionId);
                     }
@@ -412,7 +414,7 @@ export class WorkflowEngine {
 
         // Start event stream for real-time updates
         this.eventStreamManager.start().catch((error) => {
-            console.error('[WorkflowEngine] Failed to start event stream:', error);
+            logger.error({ error }, '[WorkflowEngine] Failed to start event stream');
         });
 
         // Start monitors
@@ -439,7 +441,7 @@ export class WorkflowEngine {
         // Get workflow ID for event emission
         const execution = await this.stateStore.getExecution(executionId);
         const workflowId = execution?.workflowId || 'unknown';
-        
+
         // Update database status
         await this.stateStore.setExecutionStatus(executionId, 'cancelled');
 
@@ -466,14 +468,16 @@ export class WorkflowEngine {
         };
         await this.eventStreamManager.emit(cancelledEvent);
 
-        console.log(`🚫 Workflow ${executionId} cancelled (removed ${removedCount} pending jobs)`);
+        await this.eventStreamManager.emit(cancelledEvent);
+
+        logger.info({ executionId, removedCount }, `🚫 Workflow ${executionId} cancelled (removed ${removedCount} pending jobs)`);
     }
 
     async pauseWorkflow(executionId: string): Promise<void> {
         // Get workflow ID for event emission
         const execution = await this.stateStore.getExecution(executionId);
         const workflowId = execution?.workflowId || 'unknown';
-        
+
         // Update database status
         await this.stateStore.setExecutionStatus(executionId, 'paused');
 
@@ -506,7 +510,7 @@ export class WorkflowEngine {
 
                     pausedCount++;
                 } catch (error) {
-                    console.warn(`  ⚠️ Failed to pause job ${job.id}:`, error);
+                    logger.warn({ jobId: job.id, error }, `  ⚠️ Failed to pause job ${job.id}`);
                 }
             }
         }
@@ -543,8 +547,7 @@ export class WorkflowEngine {
                 }
             }
         }
-
-        console.log(`▶️ Workflow ${executionId} resumed (promoted ${resumedCount} jobs)`);
+        logger.info({ executionId, resumedCount }, `▶️ Workflow ${executionId} resumed(promoted ${resumedCount} jobs)`);
     }
 
     async getJobStatus(jobId: string): Promise<{ exists: boolean; status?: string }> {
@@ -569,7 +572,7 @@ export class WorkflowEngine {
                 const id = await this.enqueueWorkflow(wf.workflowId, wf.initialData, undefined, 0, undefined, wf.options);
                 executionIds.push(id);
             } catch (error) {
-                console.error(`Failed to enqueue workflow ${wf.workflowId} in bulk:`, error);
+                logger.error({ workflowId: wf.workflowId, error }, `Failed to enqueue workflow ${wf.workflowId} in bulk`);
                 executionIds.push(''); // Push empty string to maintain index alignment or handle error differently
             }
         }
@@ -636,7 +639,7 @@ export class WorkflowEngine {
 
     // Graceful shutdown
     async close(): Promise<void> {
-        console.log('🛑 Shutting down workflow engine...');
+        logger.info('🛑 Shutting down workflow engine...');
 
         // Stop monitors
         if (this.timeoutMonitor) {
@@ -651,6 +654,6 @@ export class WorkflowEngine {
 
         await this.workerManager.close();
         await this.queueManager.close();
-        console.log('✓ Workflow engine shutdown complete');
+        logger.info('✓ Workflow engine shutdown complete');
     }
 }

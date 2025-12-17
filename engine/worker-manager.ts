@@ -5,6 +5,7 @@ import type { NodeJobData, WorkflowJobData } from './types';
 import { NodeProcessor, type EnqueueWorkflowFn } from './node-processor';
 import { DLQManager } from './dlq-manager';
 import type { IExecutionStateStore } from '../types';
+import { logger } from '../utils/logger';
 
 export class WorkerManager {
     public nodeWorker?: Worker<NodeJobData>;
@@ -26,7 +27,7 @@ export class WorkerManager {
             'node-execution',
             async (job: Job<NodeJobData>) => {
                 await job.updateProgress(0);
-                console.log(`🚀 Processing node job ${job.id} of type ${job.name}`);
+                logger.info({ jobId: job.id, jobName: job.name }, `🚀 Processing node job ${job.id} of type ${job.name}`);
                 const result = await this.nodeProcessor.processNodeJob(job.data, job);
                 await job.updateProgress(100);
                 return result;
@@ -41,7 +42,7 @@ export class WorkerManager {
         this.workflowWorker = new Worker<WorkflowJobData>(
             'workflow-execution',
             async (job: Job<WorkflowJobData>) => {
-                console.log(`⏰ Processing workflow job ${job.id} for ${job.data.workflowId}`);
+                logger.info({ jobId: job.id, workflowId: job.data.workflowId }, `⏰ Processing workflow job ${job.id} for ${job.data.workflowId}`);
                 // Start a new execution for this workflow
                 await this.enqueueWorkflow(job.data.workflowId, job.data.initialData);
             },
@@ -52,7 +53,7 @@ export class WorkerManager {
         );
 
         this.nodeWorker.on('completed', (job) => {
-            console.log(`✓ Node worker completed job ${job.id}`);
+            logger.info({ jobId: job.id }, `✓ Node worker completed job ${job.id}`);
 
             // Track metrics
             if (this.metricsCollector) {
@@ -66,12 +67,12 @@ export class WorkerManager {
                 return;
             }
 
-            console.error(`✗ Node worker failed job ${job?.id}:`, err.message);
+            logger.error({ jobId: job?.id, error: err.message }, `✗ Node worker failed job ${job?.id}`);
 
             if (job) {
                 // Check if we have exhausted all attempts
                 if (job.attemptsMade >= (job.opts.attempts || 1)) {
-                    console.log(`💀 Job ${job.id} has exhausted all retries. Moving to DLQ.`);
+                    logger.warn({ jobId: job.id }, `💀 Job ${job.id} has exhausted all retries. Moving to DLQ.`);
 
                     const { executionId, nodeId } = job.data;
 
@@ -105,7 +106,7 @@ export class WorkerManager {
                         const { workflowId } = job.data;
                         await this.nodeProcessor.handleWorkflowError(executionId, workflowId, err, job);
                     } catch (criticalError) {
-                        console.error(`CRITICAL: Permanent failure handling failed for job ${job.id} (Execution: ${executionId}):`, criticalError);
+                        logger.error({ jobId: job.id, executionId, error: criticalError }, `CRITICAL: Permanent failure handling failed for job ${job.id}`);
                         // Log to external monitoring system if available
                         // TODO: Send to external alerting system (e.g., Sentry, DataDog)
                     }
@@ -114,18 +115,18 @@ export class WorkerManager {
         });
 
         this.nodeWorker.on('progress', (job, progress) => {
-            console.log(`⟳ Node job ${job.id} at ${progress}%`);
+            logger.debug({ jobId: job.id, progress }, `⟳ Node job ${job.id} at ${progress}%`);
         });
 
         this.workflowWorker.on('completed', (job) => {
-            console.log(`✓ Workflow worker completed job ${job.id}`);
+            logger.info({ jobId: job.id }, `✓ Workflow worker completed job ${job.id}`);
         });
 
         this.workflowWorker.on('failed', (job, err) => {
-            console.error(`✗ Workflow worker failed job ${job?.id}:`, err.message);
+            logger.error({ jobId: job?.id, error: err.message }, `✗ Workflow worker failed job ${job?.id}`);
         });
 
-        console.log(`👷 Workers started with concurrency: ${concurrency}`);
+        logger.info({ concurrency }, `👷 Workers started with concurrency: ${concurrency}`);
     }
 
     async close(): Promise<void> {
