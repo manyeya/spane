@@ -233,11 +233,30 @@ registry.register('condition', {
         }
 
         try {
+            // Prepare execution scope:
+            // 1. Flatten inputData for direct access (priority given to inputData keys)
+            // 2. Add 'nodes' object for accessing any historical node
+            // 3. Add 'input' alias for explicit input access
+            const scope: any = {
+                ...(typeof context.inputData === 'object' ? context.inputData : {}),
+                input: context.inputData,
+                nodes: {}
+            };
+
+            // Populate nodes helper from allNodeResults
+            if (context.allNodeResults) {
+                for (const [id, res] of Object.entries(context.allNodeResults)) {
+                    if (res.success && res.data !== undefined) {
+                        scope.nodes[id] = { data: res.data };
+                    }
+                }
+            }
+
             // Evaluate the condition expression using JSONata
             const expression = jsonata(conditionExpression);
-            const result = await expression.evaluate(context.inputData);
+            const result = await expression.evaluate(scope);
 
-            console.log(`Condition "${conditionExpression}" evaluated to: ${result}`);
+
 
             // Determine which branch to take based on the result
             // trueBranch and falseBranch are set by the workflow converter based on sourceHandle
@@ -248,8 +267,6 @@ registry.register('condition', {
             } else if (!result && config.falseBranch) {
                 nextNodes.push(...(Array.isArray(config.falseBranch) ? config.falseBranch : [config.falseBranch]));
             }
-
-            console.log(`Condition branching to: ${nextNodes.length > 0 ? nextNodes.join(', ') : 'all outputs (no branch config)'}`);
 
             return {
                 success: true,
@@ -262,7 +279,7 @@ registry.register('condition', {
             };
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-            console.error('Condition evaluation failed:', errorMessage);
+
 
             return {
                 success: false,

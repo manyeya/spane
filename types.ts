@@ -115,8 +115,10 @@ export interface ExecutionContext {
   inputData: any;
   /** The node's own configuration (from workflow definition) */
   nodeConfig?: Record<string, any>;
-  /** All completed node results, keyed by node ID */
+  /** All completed node results, keyed by node ID (direct parents) */
   previousResults: Record<string, ExecutionResult>; // Results from upstream nodes
+  /** All node results in the current execution (keyed by node ID), allowing access to any ancestor */
+  allNodeResults?: Record<string, ExecutionResult>;
   /** ID of parent execution if this is a sub-workflow (undefined for root workflows) */
   parentExecutionId?: string;
   /** Nesting depth (0 for root workflows, increments for each sub-workflow level) */

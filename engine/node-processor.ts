@@ -341,6 +341,7 @@ export class NodeProcessor {
             inputData: nodeInputData,
             nodeConfig: node.config,
             previousResults,
+            allNodeResults: executionState?.nodeResults, // Pass full execution history
             parentExecutionId: executionState?.parentExecutionId,
             depth: executionState?.depth || 0,
         };
