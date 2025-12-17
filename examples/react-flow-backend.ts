@@ -8,6 +8,7 @@ import type { WorkflowDefinition, NodeDefinition, ExecutionContext, ExecutionRes
 import { DrizzleExecutionStateStore } from '../db/drizzle-store';
 import { HybridExecutionStateStore } from '../db/hybrid-store';
 import { CircuitBreakerRegistry } from '../utils/circuit-breaker';
+import jsonata from 'jsonata';
 
 // Initialize Redis connection
 console.log('🔌 Connecting to Redis...');
@@ -232,27 +233,16 @@ registry.register('condition', {
         }
 
         try {
-            // Create a safe evaluation context with the input data
-            const input = context.inputData;
-            const data = context.inputData;
+            // Evaluate the condition expression using JSONata
+            const expression = jsonata(conditionExpression);
+            const result = await expression.evaluate(context.inputData);
 
-            // Evaluate the condition expression
-            // Using Function constructor for safer evaluation than eval()
-            const evaluator = new Function('input', 'data', `
-                try {
-                    return !!(${conditionExpression});
-                } catch (e) {
-                    console.error('Condition evaluation error:', e);
-                    return false;
-                }
-            `);
-
-            const result = evaluator(input, data);
             console.log(`Condition "${conditionExpression}" evaluated to: ${result}`);
 
             // Determine which branch to take based on the result
             // trueBranch and falseBranch are set by the workflow converter based on sourceHandle
             const nextNodes: string[] = [];
+            // Handle both boolean true and truthy results (like non-empty arrays/objects)
             if (result && config.trueBranch) {
                 nextNodes.push(...(Array.isArray(config.trueBranch) ? config.trueBranch : [config.trueBranch]));
             } else if (!result && config.falseBranch) {
@@ -265,7 +255,7 @@ registry.register('condition', {
                 success: true,
                 data: {
                     ...context.inputData,
-                    _conditionResult: result,
+                    _conditionResult: !!result,
                     _conditionExpression: conditionExpression
                 },
                 nextNodes: nextNodes.length > 0 ? nextNodes : undefined
@@ -299,6 +289,8 @@ console.log('✅ Hybrid state store initialized (Redis-first for active executio
 // Initialize circuit breaker registry for external node protection
 const circuitBreakerRegistry = new CircuitBreakerRegistry();
 console.log('✅ Circuit breaker registry initialized');
+
+import { applyAutoLayout } from '../utils/layout';
 
 // Initialize PayloadManager for Claim Check Pattern (handling large payloads)
 import { PayloadManager } from '../engine/payload-manager';
@@ -547,7 +539,8 @@ const app = new Elysia()
             // Enqueue workflow for execution
             const executionId = await engine.enqueueWorkflow(workflowId, {
                 source: 'manual',
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                ...(body.initialData || {})
             });
 
             return {
@@ -763,6 +756,42 @@ const app = new Elysia()
                 error: 'Timeout monitoring not available'
             };
         } catch (error) {
+            return {
+                success: false,
+                error: (error as Error).message
+            };
+        }
+    })
+
+    // Auto-layout endpoint
+    .post('/api/workflows/layout', ({ body }: { body: any }) => {
+        try {
+            const { nodes, edges, options } = body;
+
+            if (!nodes || !Array.isArray(nodes)) {
+                return {
+                    success: false,
+                    error: 'Invalid nodes array'
+                };
+            }
+
+            if (!edges || !Array.isArray(edges)) {
+                return {
+                    success: false,
+                    error: 'Invalid edges array'
+                };
+            }
+
+            console.log(`📐 Applying auto-layout to ${nodes.length} nodes and ${edges.length} edges`);
+            const result = applyAutoLayout(nodes, edges, options);
+
+            return {
+                success: true,
+                nodes: result.nodes,
+                edges: result.edges
+            };
+        } catch (error) {
+            console.error('Layout failed:', error);
             return {
                 success: false,
                 error: (error as Error).message
