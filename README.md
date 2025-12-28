@@ -202,6 +202,282 @@ See `api.ts` for REST endpoints:
 - `GET /health` - Health check
 - `GET /metrics` - Prometheus metrics
 
+## Creating Workflows
+
+### Programmatic (Without API)
+
+```typescript
+import { Redis } from 'ioredis';
+import { WorkflowEngine } from './engine/workflow-engine';
+import { NodeRegistry } from './engine/registry';
+import { InMemoryExecutionStore } from './db/inmemory-store';
+import type { WorkflowDefinition, INodeExecutor, ExecutionContext, ExecutionResult } from './types';
+
+// 1. Create a node executor
+class HttpExecutor implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    const { url, method = 'GET' } = context.nodeConfig || {};
+    
+    const response = await fetch(url, {
+      method,
+      body: method !== 'GET' ? JSON.stringify(context.inputData) : undefined,
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    const data = await response.json();
+    return { success: true, data };
+  }
+}
+
+class TransformExecutor implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    // Transform input data
+    const transformed = {
+      ...context.inputData,
+      processedAt: new Date().toISOString()
+    };
+    return { success: true, data: transformed };
+  }
+}
+
+// 2. Set up registry and engine
+const redis = new Redis();
+const registry = new NodeRegistry();
+registry.register('http', new HttpExecutor());
+registry.register('transform', new TransformExecutor());
+
+const stateStore = new InMemoryExecutionStore();
+const engine = new WorkflowEngine(registry, stateStore, redis);
+
+// 3. Define workflow
+const workflow: WorkflowDefinition = {
+  id: 'fetch-and-transform',
+  name: 'Fetch and Transform',
+  entryNodeId: 'fetch',
+  nodes: [
+    {
+      id: 'fetch',
+      type: 'http',
+      config: { url: 'https://api.example.com/data' },
+      inputs: [],
+      outputs: ['transform']
+    },
+    {
+      id: 'transform',
+      type: 'transform',
+      config: {},
+      inputs: ['fetch'],
+      outputs: []
+    }
+  ]
+};
+
+// 4. Register and execute
+await engine.registerWorkflow(workflow);
+engine.startWorkers(5);
+
+const executionId = await engine.enqueueWorkflow('fetch-and-transform', { userId: 123 });
+console.log('Started execution:', executionId);
+
+// Check status
+const execution = await stateStore.getExecution(executionId);
+console.log('Status:', execution?.status);
+```
+
+### Via REST API
+
+Start the server first:
+```bash
+bun start
+```
+
+#### Register a Workflow
+
+```bash
+curl -X POST http://localhost:3000/api/workflows \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "my-workflow",
+    "name": "My Workflow",
+    "entryNodeId": "start",
+    "nodes": [
+      {
+        "id": "start",
+        "type": "transform",
+        "config": {},
+        "inputs": [],
+        "outputs": ["process"]
+      },
+      {
+        "id": "process",
+        "type": "http",
+        "config": { "url": "https://api.example.com" },
+        "inputs": ["start"],
+        "outputs": []
+      }
+    ]
+  }'
+```
+
+Response:
+```json
+{
+  "success": true,
+  "message": "Workflow registered",
+  "workflowId": "my-workflow"
+}
+```
+
+#### Execute a Workflow
+
+```bash
+curl -X POST http://localhost:3000/api/workflows/my-workflow/execute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "initialData": { "userId": 123, "action": "signup" }
+  }'
+```
+
+Response:
+```json
+{
+  "success": true,
+  "executionId": "exec_abc123",
+  "message": "Workflow execution enqueued"
+}
+```
+
+#### Check Execution Status
+
+```bash
+curl http://localhost:3000/api/executions/exec_abc123
+```
+
+Response:
+```json
+{
+  "success": true,
+  "execution": {
+    "executionId": "exec_abc123",
+    "workflowId": "my-workflow",
+    "status": "completed",
+    "nodeResults": {
+      "start": { "success": true, "data": { "userId": 123, "processedAt": "..." } },
+      "process": { "success": true, "data": { "response": "..." } }
+    },
+    "startedAt": "2024-01-01T00:00:00.000Z",
+    "completedAt": "2024-01-01T00:00:01.000Z"
+  }
+}
+```
+
+#### Control Execution
+
+```bash
+# Pause
+curl -X POST http://localhost:3000/api/executions/exec_abc123/pause
+
+# Resume
+curl -X POST http://localhost:3000/api/executions/exec_abc123/resume
+
+# Cancel
+curl -X POST http://localhost:3000/api/executions/exec_abc123/cancel
+```
+
+#### Stream Events (SSE)
+
+```bash
+curl -N http://localhost:3000/api/executions/exec_abc123/stream
+```
+
+Events:
+```
+data: {"type":"execution:state","executionId":"exec_abc123","status":"running",...}
+
+data: {"type":"node:progress","nodeId":"start","status":"running",...}
+
+data: {"type":"node:progress","nodeId":"start","status":"completed",...}
+
+data: {"type":"workflow:status","status":"completed",...}
+```
+
+### Workflow with Triggers
+
+```typescript
+const workflow: WorkflowDefinition = {
+  id: 'triggered-workflow',
+  name: 'Triggered Workflow',
+  entryNodeId: 'start',
+  nodes: [
+    { id: 'start', type: 'transform', config: {}, inputs: [], outputs: [] }
+  ],
+  triggers: [
+    // Webhook trigger - POST /api/webhooks/user-signup
+    { type: 'webhook', config: { path: 'user-signup', method: 'POST' } },
+    
+    // Schedule trigger - runs every hour
+    { type: 'schedule', config: { cron: '0 * * * *' } }
+  ]
+};
+```
+
+Trigger via webhook:
+```bash
+curl -X POST http://localhost:3000/api/webhooks/user-signup \
+  -H "Content-Type: application/json" \
+  -d '{ "email": "user@example.com" }'
+```
+
+### Conditional Branching
+
+Return `nextNodes` from executor to control which branches execute:
+
+```typescript
+class RouterExecutor implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    const { value } = context.inputData;
+    
+    // Only execute the matching branch
+    if (value > 100) {
+      return { success: true, data: { routed: 'high' }, nextNodes: ['high-value'] };
+    } else {
+      return { success: true, data: { routed: 'low' }, nextNodes: ['low-value'] };
+    }
+  }
+}
+```
+
+### Sub-Workflows
+
+```typescript
+// Child workflow
+const childWorkflow: WorkflowDefinition = {
+  id: 'send-email',
+  name: 'Send Email',
+  entryNodeId: 'send',
+  nodes: [
+    { id: 'send', type: 'email', config: {}, inputs: [], outputs: [] }
+  ]
+};
+
+// Parent workflow calling child
+const parentWorkflow: WorkflowDefinition = {
+  id: 'onboarding',
+  name: 'User Onboarding',
+  entryNodeId: 'validate',
+  nodes: [
+    { id: 'validate', type: 'transform', config: {}, inputs: [], outputs: ['call-email'] },
+    {
+      id: 'call-email',
+      type: 'sub-workflow',
+      config: { workflowId: 'send-email' },
+      inputs: ['validate'],
+      outputs: []
+    }
+  ]
+};
+```
+
 ## Known Limitations
 
 - Drizzle store has known issues (see `critical-missing-parts.md`)
