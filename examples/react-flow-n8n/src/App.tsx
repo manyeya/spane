@@ -261,7 +261,7 @@ function App() {
                 // Map node types to React Flow component types
                 let reactFlowType = node.type;
                 const dataType = node.data?.type || node.type;
-                
+
                 if (['trigger', 'schedule', 'manual', 'webhook'].includes(dataType)) {
                     reactFlowType = 'trigger';
                 } else if (dataType === 'condition') {
@@ -271,11 +271,11 @@ function App() {
                 } else if (['action', 'http', 'transform', 'email', 'database'].includes(dataType)) {
                     reactFlowType = 'action';
                 }
-                
+
                 if (['trigger', 'action', 'condition', 'delay'].includes(node.type)) {
                     reactFlowType = node.type;
                 }
-                
+
                 return {
                     id: node.id,
                     type: reactFlowType || 'action',
@@ -348,7 +348,7 @@ function App() {
             setShowDLQPanel(panel === 'dlq');
             setShowVersionHistory(panel === 'versions');
             setShowExecutionControl(panel === 'control');
-            
+
             // Load data for the panel being opened
             if (panel === 'dlq') {
                 loadDLQItems();
@@ -430,7 +430,7 @@ function App() {
         try {
             const detail = await executionService.getExecution(executionId);
             setExecutionDetail(detail);
-            
+
             // If execution is running or paused, show control panel hint
             if (detail.status === 'running' || detail.status === 'paused') {
                 setNotification({ type: 'success', message: 'Use Control panel to manage this execution' });
@@ -458,18 +458,18 @@ function App() {
         try {
             setNotification({ type: 'success', message: 'Starting replay...' });
             const newExecutionId = await executionService.replayExecution(executionId);
-            
+
             // Navigate to the new execution view
             setSelectedExecutionId(newExecutionId);
             setShowExecutionHistory(true);
-            
+
             // Load the new execution details
             const detail = await executionService.getExecution(newExecutionId);
             setExecutionDetail(detail);
-            
+
             // Refresh execution list to include the new execution
             await loadExecutions(executionWorkflowFilter || undefined);
-            
+
             setNotification({ type: 'success', message: `Replay started (ID: ${newExecutionId})` });
         } catch (error) {
             console.error('Failed to replay execution:', error);
@@ -486,7 +486,7 @@ function App() {
         try {
             setSelectedWorkflowId(workflowId);
             const workflow = await workflowService.getWorkflow(workflowId);
-            
+
             // Convert workflow nodes to React Flow format with proper data structure
             const loadedNodes = workflow.nodes.map((node: any) => {
                 // Determine the React Flow node type (trigger, action, or condition)
@@ -494,7 +494,7 @@ function App() {
                 // We need to map it to the React Flow component type
                 let reactFlowType = node.type;
                 const dataType = node.data?.type || node.type;
-                
+
                 // Map specific types to React Flow component types
                 if (['trigger', 'schedule', 'manual', 'webhook'].includes(dataType)) {
                     reactFlowType = 'trigger';
@@ -505,12 +505,12 @@ function App() {
                 } else if (['action', 'http', 'transform', 'email', 'database'].includes(dataType)) {
                     reactFlowType = 'action';
                 }
-                
+
                 // If the node already has a valid React Flow type, use it
                 if (['trigger', 'action', 'condition', 'delay'].includes(node.type)) {
                     reactFlowType = node.type;
                 }
-                
+
                 return {
                     id: node.id,
                     type: reactFlowType || 'action',
@@ -582,7 +582,7 @@ function App() {
 
             // Create workflow in backend (will be saved when user adds nodes and saves)
             setNotification({ type: 'success', message: `Created new workflow: ${name}` });
-            
+
             // Refresh workflow list
             await loadWorkflows();
         } catch (error) {
@@ -598,7 +598,7 @@ function App() {
     const handleDeleteWorkflow = async (workflowId: string) => {
         try {
             await workflowService.deleteWorkflow(workflowId);
-            
+
             // Clear canvas if deleted workflow was selected
             if (selectedWorkflowId === workflowId) {
                 setNodes([]);
@@ -784,8 +784,8 @@ function App() {
                                     ...node.data,
                                     status: statusUpdate.nodeStatuses[node.id] || 'idle',
                                     // Include result data for condition nodes to show which branch was taken
-                                    result: node.type === 'condition' && nodeResult?.data 
-                                        ? nodeResult.data 
+                                    result: node.type === 'condition' && nodeResult?.data
+                                        ? nodeResult.data
                                         : node.data.result
                                 }
                             };
@@ -918,7 +918,7 @@ function App() {
                     <span>{executionStatus}</span>
                 </div>
                 {/* Health Status Indicator - Requirements: 7.3, 7.4 */}
-                <div 
+                <div
                     className={`health-indicator ${healthStatus.overall}`}
                     onClick={handleHealthIndicatorClick}
                     title={`System Health: ${healthStatus.overall}. Click for details.`}
@@ -927,30 +927,30 @@ function App() {
                     <span>{healthStatus.overall === 'healthy' ? 'Healthy' : healthStatus.overall === 'degraded' ? 'Degraded' : 'Unhealthy'}</span>
                 </div>
                 <div className="header-actions">
-                    <button 
-                        className={`btn btn-secondary ${activePanel === 'history' ? 'active' : ''}`} 
+                    <button
+                        className={`btn btn-secondary ${activePanel === 'history' ? 'active' : ''}`}
                         onClick={() => togglePanel('history')}
                         title="Execution History"
                     >
                         📊 History
                     </button>
-                    <button 
-                        className={`btn btn-secondary ${activePanel === 'control' ? 'active' : ''}`} 
+                    <button
+                        className={`btn btn-secondary ${activePanel === 'control' ? 'active' : ''}`}
                         onClick={() => togglePanel('control')}
                         title="Execution Controls"
                         disabled={!executionDetail}
                     >
                         🎮 Control
                     </button>
-                    <button 
-                        className={`btn btn-secondary ${activePanel === 'dlq' ? 'active' : ''}`} 
+                    <button
+                        className={`btn btn-secondary ${activePanel === 'dlq' ? 'active' : ''}`}
                         onClick={() => togglePanel('dlq')}
                         title="Dead Letter Queue"
                     >
                         ⚠️ DLQ
                     </button>
-                    <button 
-                        className={`btn btn-secondary ${activePanel === 'versions' ? 'active' : ''}`} 
+                    <button
+                        className={`btn btn-secondary ${activePanel === 'versions' ? 'active' : ''}`}
                         onClick={() => togglePanel('versions')}
                         title="Version History"
                         disabled={!selectedWorkflowId}
@@ -1025,14 +1025,14 @@ function App() {
                         </div>
                     </div>
                 )}
-
-                <NodeConfigPanel
-                    node={selectedNode}
-                    onClose={() => setSelectedNode(null)}
-                    onUpdate={updateNodeData}
-                />
-
-                {showResults && (
+                {selectedNode && (
+                    <NodeConfigPanel
+                        node={selectedNode}
+                        nodeResults={nodeResults} // Pass execution history for autocomplete
+                        onClose={onPaneClick}
+                        onUpdate={updateNodeData}
+                    />
+                )}     {showResults && (
                     <ExecutionResultsPanel
                         nodeResults={nodeResults}
                         selectedNodeId={selectedNode?.id || null}

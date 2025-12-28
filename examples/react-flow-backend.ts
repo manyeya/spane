@@ -233,29 +233,25 @@ registry.register('condition', {
         }
 
         try {
-            // Prepare execution scope:
-            // 1. Flatten inputData for direct access (priority given to inputData keys)
-            // 2. Add 'nodes' object for accessing any historical node
-            // 3. Add 'input' alias for explicit input access
-            const scope: any = {
-                ...(typeof context.inputData === 'object' ? context.inputData : {}),
-                input: context.inputData,
-                nodes: {}
-            };
-
-            // Populate nodes helper from allNodeResults
-            if (context.allNodeResults) {
-                for (const [id, res] of Object.entries(context.allNodeResults)) {
-                    if (res.success && res.data !== undefined) {
-                        scope.nodes[id] = { data: res.data };
-                    }
-                }
-            }
-
             // Evaluate the condition expression using JSONata
             const expression = jsonata(conditionExpression);
-            const result = await expression.evaluate(scope);
 
+            // Register $node helper function
+            expression.registerFunction('node', (nodeId: string) => {
+                if (!context.allNodeResults) return undefined;
+                return context.allNodeResults[nodeId]?.data;
+            });
+
+            // Prepare scope (data) and bindings (variables/functions)
+            // 1. Data: The inputData itself (allows direct access like 'price')
+            // 2. Bindings: 
+            //    - $input: explicit access to input data
+            //    - $node: helper function (registered above)
+            const bindings = {
+                input: context.inputData
+            };
+
+            const result = await expression.evaluate(context.inputData, bindings);
 
 
             // Determine which branch to take based on the result

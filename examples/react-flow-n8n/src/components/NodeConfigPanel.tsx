@@ -3,14 +3,16 @@ import { TriggerNodeData } from '../nodes/TriggerNode';
 import { ActionNodeData } from '../nodes/ActionNode';
 import { ConditionNodeData } from '../nodes/ConditionNode';
 import { DelayNodeData } from '../nodes/DelayNode';
+import { AutocompleteInput } from './AutocompleteInput';
 
 interface NodeConfigPanelProps {
     node: any | null;
+    nodeResults?: Record<string, any>; // Optional execution results
     onClose: () => void;
     onUpdate: (nodeId: string, data: Partial<any>) => void;
 }
 
-const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpdate }) => {
+const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, nodeResults, onClose, onUpdate }) => {
     if (!node) return null;
 
     const handleLabelChange = (label: string) => {
@@ -43,11 +45,12 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
                 <>
                     <div className="config-field">
                         <label>Webhook URL Path</label>
-                        <input
-                            type="text"
+                        <AutocompleteInput
+                            storageKey="webhook-urls"
                             value={data.config?.url || ''}
-                            onChange={(e) => handleConfigChange({ url: e.target.value })}
+                            onValueChange={(value) => handleConfigChange({ url: value })}
                             placeholder="/webhook/my-workflow"
+                            executionData={nodeResults}
                         />
                         <div className="config-field-hint">
                             The path where this webhook will be accessible
@@ -71,7 +74,7 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
         const cb = node.data.config?.circuitBreaker || {};
         return (
             <div className="circuit-breaker-config">
-                <div 
+                <div
                     className="config-section-header"
                     onClick={() => setShowCircuitBreaker(!showCircuitBreaker)}
                     style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
@@ -87,8 +90,8 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
                                 type="number"
                                 min="1"
                                 value={cb.failureThreshold || ''}
-                                onChange={(e) => handleCircuitBreakerChange({ 
-                                    failureThreshold: e.target.value ? parseInt(e.target.value) : undefined 
+                                onChange={(e) => handleCircuitBreakerChange({
+                                    failureThreshold: e.target.value ? parseInt(e.target.value) : undefined
                                 })}
                                 placeholder="5 (default)"
                             />
@@ -102,8 +105,8 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
                                 type="number"
                                 min="1"
                                 value={cb.successThreshold || ''}
-                                onChange={(e) => handleCircuitBreakerChange({ 
-                                    successThreshold: e.target.value ? parseInt(e.target.value) : undefined 
+                                onChange={(e) => handleCircuitBreakerChange({
+                                    successThreshold: e.target.value ? parseInt(e.target.value) : undefined
                                 })}
                                 placeholder="2 (default)"
                             />
@@ -118,8 +121,8 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
                                 min="1000"
                                 step="1000"
                                 value={cb.timeout || ''}
-                                onChange={(e) => handleCircuitBreakerChange({ 
-                                    timeout: e.target.value ? parseInt(e.target.value) : undefined 
+                                onChange={(e) => handleCircuitBreakerChange({
+                                    timeout: e.target.value ? parseInt(e.target.value) : undefined
                                 })}
                                 placeholder="60000 (default - 1 min)"
                             />
@@ -134,8 +137,8 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
                                 min="1000"
                                 step="1000"
                                 value={cb.monitoringPeriod || ''}
-                                onChange={(e) => handleCircuitBreakerChange({ 
-                                    monitoringPeriod: e.target.value ? parseInt(e.target.value) : undefined 
+                                onChange={(e) => handleCircuitBreakerChange({
+                                    monitoringPeriod: e.target.value ? parseInt(e.target.value) : undefined
                                 })}
                                 placeholder="120000 (default - 2 min)"
                             />
@@ -168,11 +171,12 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
                     </div>
                     <div className="config-field">
                         <label>URL</label>
-                        <input
-                            type="text"
+                        <AutocompleteInput
+                            storageKey="http-urls"
                             value={data.config?.url || ''}
-                            onChange={(e) => handleConfigChange({ url: e.target.value })}
+                            onValueChange={(value) => handleConfigChange({ url: value })}
                             placeholder="https://api.example.com/endpoint"
+                            executionData={nodeResults}
                         />
                     </div>
                     {renderCircuitBreakerConfig()}
@@ -235,11 +239,12 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
             <>
                 <div className="config-field">
                     <label>Condition Expression</label>
-                    <textarea
+                    <AutocompleteInput
+                        storageKey="condition-expressions"
                         value={data.config?.condition || ''}
-                        onChange={(e) => handleConfigChange({ condition: e.target.value })}
-                        placeholder="input.value > 100"
-                        rows={4}
+                        onValueChange={(value) => handleConfigChange({ condition: value })}
+                        placeholder="input.price > 50"
+                        executionData={nodeResults}
                     />
                     <div className="config-field-hint">
                         JavaScript expression that evaluates to true or false.
@@ -250,29 +255,29 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
                 <div className="config-field">
                     <label>Examples</label>
                     <div className="config-examples">
-                        <button 
-                            type="button" 
+                        <button
+                            type="button"
                             className="example-btn"
                             onClick={() => handleConfigChange({ condition: 'input.status === "success"' })}
                         >
                             Status check
                         </button>
-                        <button 
-                            type="button" 
+                        <button
+                            type="button"
                             className="example-btn"
                             onClick={() => handleConfigChange({ condition: 'input.value > 100' })}
                         >
                             Number comparison
                         </button>
-                        <button 
-                            type="button" 
+                        <button
+                            type="button"
                             className="example-btn"
                             onClick={() => handleConfigChange({ condition: 'input.items && input.items.length > 0' })}
                         >
                             Array not empty
                         </button>
-                        <button 
-                            type="button" 
+                        <button
+                            type="button"
                             className="example-btn"
                             onClick={() => handleConfigChange({ condition: 'input.data?.ok === true' })}
                         >
@@ -357,7 +362,7 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
 
         const handleDurationChange = (value: string) => {
             const numValue = value === '' ? undefined : parseFloat(value);
-            
+
             // Clear all duration fields and set only the selected unit
             const newConfig: any = {
                 duration: undefined,
@@ -382,7 +387,7 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
             // Convert existing value to new unit
             const currentValue = getCurrentValue();
             setDurationUnit(newUnit);
-            
+
             if (currentValue) {
                 // Re-apply the value with the new unit
                 handleDurationChange(currentValue);
@@ -420,57 +425,57 @@ const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onClose, onUpda
                 <div className="config-field">
                     <label>Quick Presets</label>
                     <div className="config-examples">
-                        <button 
-                            type="button" 
+                        <button
+                            type="button"
                             className="example-btn"
                             onClick={() => {
                                 setDurationUnit('seconds');
-                                handleConfigChange({ 
-                                    duration: undefined, 
-                                    durationSeconds: 5, 
-                                    durationMinutes: undefined 
+                                handleConfigChange({
+                                    duration: undefined,
+                                    durationSeconds: 5,
+                                    durationMinutes: undefined
                                 });
                             }}
                         >
                             5 seconds
                         </button>
-                        <button 
-                            type="button" 
+                        <button
+                            type="button"
                             className="example-btn"
                             onClick={() => {
                                 setDurationUnit('seconds');
-                                handleConfigChange({ 
-                                    duration: undefined, 
-                                    durationSeconds: 30, 
-                                    durationMinutes: undefined 
+                                handleConfigChange({
+                                    duration: undefined,
+                                    durationSeconds: 30,
+                                    durationMinutes: undefined
                                 });
                             }}
                         >
                             30 seconds
                         </button>
-                        <button 
-                            type="button" 
+                        <button
+                            type="button"
                             className="example-btn"
                             onClick={() => {
                                 setDurationUnit('minutes');
-                                handleConfigChange({ 
-                                    duration: undefined, 
-                                    durationSeconds: undefined, 
-                                    durationMinutes: 1 
+                                handleConfigChange({
+                                    duration: undefined,
+                                    durationSeconds: undefined,
+                                    durationMinutes: 1
                                 });
                             }}
                         >
                             1 minute
                         </button>
-                        <button 
-                            type="button" 
+                        <button
+                            type="button"
                             className="example-btn"
                             onClick={() => {
                                 setDurationUnit('minutes');
-                                handleConfigChange({ 
-                                    duration: undefined, 
-                                    durationSeconds: undefined, 
-                                    durationMinutes: 5 
+                                handleConfigChange({
+                                    duration: undefined,
+                                    durationSeconds: undefined,
+                                    durationMinutes: 5
                                 });
                             }}
                         >
