@@ -34,6 +34,7 @@ export interface SubWorkflowConfig {
   workflowId: string; // ID of the sub-workflow to execute
   inputMapping?: Record<string, string>; // Map parent data keys to sub-workflow input keys
   outputMapping?: Record<string, string>; // Map sub-workflow output keys to parent data keys
+  continueOnFail?: boolean; // If true, parent workflow continues even if sub-workflow fails
 }
 
 /**
@@ -123,6 +124,27 @@ export interface ExecutionContext {
   parentExecutionId?: string;
   /** Nesting depth (0 for root workflows, increments for each sub-workflow level) */
   depth: number;
+  /**
+   * Trigger manual rate limiting for external API calls.
+   * 
+   * Call this when an external API returns a rate limit response (e.g., HTTP 429).
+   * After calling this function, the executor MUST throw the returned error
+   * to properly move the job back to the waiting queue.
+   * 
+   * @param duration - Duration in milliseconds to rate limit (e.g., from Retry-After header)
+   * @returns An error that MUST be thrown by the executor
+   * 
+   * @example
+   * ```typescript
+   * // In an HTTP node executor:
+   * if (response.status === 429) {
+   *     const retryAfter = parseInt(response.headers.get('retry-after') || '60', 10) * 1000;
+   *     const error = await context.rateLimit(retryAfter);
+   *     throw error;
+   * }
+   * ```
+   */
+  rateLimit?: (duration: number) => Promise<Error>;
 }
 
 export interface ExecutionResult {

@@ -14,6 +14,9 @@ import type { NodeDefinition, WorkflowDefinition } from "../../types";
  * - BullMQ's duplicate rejection mechanism works correctly with our ID format
  * 
  * **Validates: Requirements 3.2, 7.2**
+ * 
+ * Note: The old subWorkflowStep and childExecutionId fields have been removed
+ * as part of the BullMQ improvements cleanup.
  */
 
 // Arbitrary for generating valid execution IDs
@@ -37,20 +40,21 @@ const childCountArb = fc.integer({ min: 1, max: 5 });
  * 
  * Key change: Child nodes now use deterministic job IDs without timestamps
  * Format: `${executionId}-node-${nodeId}` (no timestamp)
+ * 
+ * Note: subWorkflowStep and childExecutionId have been removed from NodeJobData.
  */
 function generateChildJobId(
   executionId: string,
   nodeId: string,
   options?: {
-    subWorkflowStep?: 'initial' | 'waiting-children' | 'complete';
-    childExecutionId?: string;
+    delayStep?: 'initial' | 'resumed';
   }
 ): string {
   // Use deterministic job IDs to prevent duplicate job creation (idempotency)
-  // - For sub-workflow resume jobs: include childExecutionId for uniqueness
+  // - For delay node resume jobs: include delayStep for uniqueness
   // - For regular child nodes: use format `${executionId}-node-${nodeId}` (no timestamp)
-  if (options?.subWorkflowStep) {
-    return `${executionId}-node-${nodeId}-resume-${options.childExecutionId}`;
+  if (options?.delayStep === 'resumed') {
+    return `${executionId}-node-${nodeId}-delay-resumed`;
   }
   return `${executionId}-node-${nodeId}`;
 }
@@ -199,9 +203,7 @@ describe("Idempotent child enqueueing property tests", () => {
             }
 
             // Property: Job ID should not contain timestamp
-            // Timestamps are 13-digit numbers starting with 1 (e.g., 1701849600000)
-            // We check for timestamp-like patterns, not just any 13 digits
-            expect(firstJobId).not.toMatch(/1[0-9]{12}/); // No 13-digit timestamp starting with 1
+            expect(firstJobId).not.toMatch(/1[0-9]{12}/);
           }
         ),
         { numRuns: 100 }
@@ -282,7 +284,7 @@ describe("Idempotent child enqueueing property tests", () => {
           async (executionIds, workflowId, nodeId) => {
             // Ensure unique execution IDs
             const uniqueExecutionIds = [...new Set(executionIds)];
-            if (uniqueExecutionIds.length < 2) return; // Skip if not enough unique IDs
+            if (uniqueExecutionIds.length < 2) return;
 
             const queue = new MockJobQueue();
 
@@ -317,13 +319,12 @@ describe("Idempotent child enqueueing property tests", () => {
         fc.asyncProperty(
           executionIdArb,
           workflowIdArb,
-          fc.integer({ min: 2, max: 10 }), // Fan-out to 2-10 children
+          fc.integer({ min: 2, max: 10 }),
           retryCountArb,
           async (executionId, workflowId, fanOutCount, retryCount) => {
             const queue = new MockJobQueue();
             const childNodeIds = Array.from({ length: fanOutCount }, (_, i) => `fanout-child-${i}`);
 
-            // Simulate parent completing multiple times (retries)
             let totalEnqueued = 0;
             let totalRejected = 0;
 
@@ -338,7 +339,7 @@ describe("Idempotent child enqueueing property tests", () => {
               totalRejected += result.rejectedCount;
             }
 
-            // Property: Total enqueued should equal number of children (first attempt succeeds)
+            // Property: Total enqueued should equal number of children
             expect(totalEnqueued).toBe(fanOutCount);
 
             // Property: Total rejected should equal (retryCount - 1) * fanOutCount
@@ -352,30 +353,25 @@ describe("Idempotent child enqueueing property tests", () => {
       );
     });
 
-    test("resume jobs use different ID format than regular child jobs", async () => {
+    test("delay resume jobs use different ID format than regular child jobs", async () => {
       await fc.assert(
         fc.asyncProperty(
           executionIdArb,
           nodeIdArb,
-          executionIdArb, // childExecutionId
-          async (executionId, nodeId, childExecutionId) => {
+          async (executionId, nodeId) => {
             const regularJobId = generateChildJobId(executionId, nodeId);
-            const resumeJobId = generateChildJobId(executionId, nodeId, {
-              subWorkflowStep: 'complete',
-              childExecutionId,
+            const delayResumeJobId = generateChildJobId(executionId, nodeId, {
+              delayStep: 'resumed',
             });
 
-            // Property: Resume job ID should be different from regular job ID
-            expect(resumeJobId).not.toBe(regularJobId);
+            // Property: Delay resume job ID should be different from regular job ID
+            expect(delayResumeJobId).not.toBe(regularJobId);
 
-            // Property: Resume job ID should contain 'resume' indicator
-            expect(resumeJobId).toContain('-resume-');
+            // Property: Delay resume job ID should contain 'delay-resumed' indicator
+            expect(delayResumeJobId).toContain('-delay-resumed');
 
-            // Property: Resume job ID should contain child execution ID
-            expect(resumeJobId).toContain(childExecutionId);
-
-            // Property: Regular job ID should not contain 'resume'
-            expect(regularJobId).not.toContain('-resume-');
+            // Property: Regular job ID should not contain 'delay-resumed'
+            expect(regularJobId).not.toContain('-delay-resumed');
           }
         ),
         { numRuns: 100 }

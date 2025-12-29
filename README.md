@@ -195,10 +195,21 @@ Set `DATABASE_URL` to enable Drizzle store.
 
 See `api.ts` for REST endpoints:
 - `POST /api/workflows` - Register workflow
+- `GET /api/workflows` - List all workflows
+- `GET /api/workflows/:id` - Get workflow definition
+- `GET /api/workflows/:id/versions` - Get workflow version history
+- `GET /api/workflows/:id/versions/:version` - Get specific workflow version
 - `POST /api/workflows/:id/execute` - Execute workflow
 - `GET /api/executions/:id` - Get execution status
 - `POST /api/executions/:id/pause|resume|cancel` - Control execution
 - `GET /api/executions/:id/events` - SSE event stream
+- `GET /api/schedulers` - List all job schedulers
+- `GET /api/schedulers/:id` - Get specific scheduler
+- `GET /api/workflows/:id/schedules` - Get schedules for a workflow
+- `PUT /api/workflows/:id/schedules` - Create/update schedule for a workflow
+- `DELETE /api/workflows/:id/schedules` - Remove all schedules for a workflow
+- `GET /api/dlq` - List DLQ items
+- `POST /api/dlq/:id/retry` - Retry DLQ item
 - `GET /health` - Health check
 - `GET /metrics` - Prometheus metrics
 
@@ -477,6 +488,662 @@ const parentWorkflow: WorkflowDefinition = {
   ]
 };
 ```
+
+## FlowProducer Sub-Workflow Execution
+
+The engine uses BullMQ's FlowProducer for sub-workflow execution, leveraging native parent-child job dependencies instead of a checkpoint/resume pattern. This provides better reliability and simpler code.
+
+### How It Works
+
+When a `sub-workflow` node executes:
+
+1. **Flow Creation**: The engine creates a BullMQ flow with an aggregator job as the parent and sub-workflow nodes as children
+2. **Dependency Management**: BullMQ automatically manages job dependencies - child jobs must complete before the aggregator runs
+3. **Result Aggregation**: The aggregator job uses `getChildrenValues()` to collect results from all completed child jobs
+4. **Parent Notification**: Once aggregation completes, the parent workflow node is notified to continue
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    FlowProducer Flow Structure                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│                    ┌──────────────────────┐                     │
+│                    │  Aggregator Job      │                     │
+│                    │  (waits for children)│                     │
+│                    └──────────┬───────────┘                     │
+│                               │                                  │
+│              ┌────────────────┼────────────────┐                │
+│              │                │                │                │
+│              ▼                ▼                ▼                │
+│     ┌────────────┐   ┌────────────┐   ┌────────────┐           │
+│     │ Final Node │   │ Final Node │   │ Final Node │           │
+│     │     A      │   │     B      │   │     C      │           │
+│     └─────┬──────┘   └─────┬──────┘   └────────────┘           │
+│           │                │                                    │
+│           ▼                ▼                                    │
+│     ┌────────────┐   ┌────────────┐                            │
+│     │ Entry Node │   │ Entry Node │                            │
+│     │     1      │   │     2      │                            │
+│     └────────────┘   └────────────┘                            │
+│                                                                  │
+│  Note: In BullMQ flows, children execute BEFORE their parent    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Sub-Workflow Configuration
+
+Configure sub-workflow nodes with input/output mapping and error handling:
+
+```typescript
+const parentWorkflow: WorkflowDefinition = {
+  id: 'order-processing',
+  name: 'Order Processing',
+  entryNodeId: 'validate-order',
+  nodes: [
+    {
+      id: 'validate-order',
+      type: 'transform',
+      config: {},
+      inputs: [],
+      outputs: ['process-payment']
+    },
+    {
+      id: 'process-payment',
+      type: 'sub-workflow',
+      config: {
+        workflowId: 'payment-workflow',
+        
+        // Map parent data to sub-workflow input
+        inputMapping: {
+          'amount': 'orderTotal',      // sub-workflow receives 'amount' from parent's 'orderTotal'
+          'currency': 'orderCurrency'
+        },
+        
+        // Map sub-workflow output back to parent
+        outputMapping: {
+          'transactionId': 'paymentId',  // parent receives 'transactionId' from sub-workflow's 'paymentId'
+          'status': 'paymentStatus'
+        },
+        
+        // Continue parent workflow even if sub-workflow fails
+        continueOnFail: false
+      },
+      inputs: ['validate-order'],
+      outputs: ['send-confirmation']
+    },
+    {
+      id: 'send-confirmation',
+      type: 'email',
+      config: {},
+      inputs: ['process-payment'],
+      outputs: []
+    }
+  ]
+};
+```
+
+### Input/Output Mapping
+
+Data flows between parent and sub-workflows through configurable mappings:
+
+**Input Mapping** - Transform parent node output to sub-workflow input:
+```typescript
+// Parent node outputs: { orderTotal: 99.99, orderCurrency: 'USD', customerId: 123 }
+inputMapping: {
+  'amount': 'orderTotal',     // Sub-workflow receives: { amount: 99.99, currency: 'USD' }
+  'currency': 'orderCurrency'
+}
+```
+
+**Output Mapping** - Transform sub-workflow results back to parent:
+```typescript
+// Sub-workflow outputs: { paymentId: 'pay_123', paymentStatus: 'completed' }
+outputMapping: {
+  'transactionId': 'paymentId',  // Parent receives: { transactionId: 'pay_123', status: 'completed' }
+  'status': 'paymentStatus'
+}
+```
+
+### Error Handling with continueOnFail
+
+The `continueOnFail` option controls how failures propagate:
+
+```typescript
+// Default behavior (continueOnFail: false)
+// - If any sub-workflow node fails, the entire sub-workflow fails
+// - Parent workflow node fails and stops execution
+// - Uses BullMQ's failParentOnFailure: true
+
+// With continueOnFail: true
+// - Sub-workflow continues even if some nodes fail
+// - Parent workflow receives partial results
+// - Uses BullMQ's ignoreDependencyOnFailure: true
+config: {
+  workflowId: 'optional-enrichment',
+  continueOnFail: true  // Parent continues even if enrichment fails
+}
+```
+
+### Nested Sub-Workflows
+
+Sub-workflows can call other sub-workflows up to 10 levels deep:
+
+```typescript
+// Level 0: Main workflow
+const mainWorkflow = {
+  id: 'main',
+  nodes: [
+    { id: 'start', type: 'transform', ... },
+    { id: 'call-level1', type: 'sub-workflow', config: { workflowId: 'level1-workflow' }, ... }
+  ]
+};
+
+// Level 1: First sub-workflow
+const level1Workflow = {
+  id: 'level1-workflow',
+  nodes: [
+    { id: 'process', type: 'transform', ... },
+    { id: 'call-level2', type: 'sub-workflow', config: { workflowId: 'level2-workflow' }, ... }
+  ]
+};
+
+// Level 2: Nested sub-workflow
+const level2Workflow = {
+  id: 'level2-workflow',
+  nodes: [
+    { id: 'deep-process', type: 'transform', ... }
+  ]
+};
+```
+
+Each nesting level creates its own execution record with `parentExecutionId` linking back to the caller.
+
+### Aggregator Node
+
+The aggregator is a virtual node (`__aggregator__`) that:
+
+1. Waits for all sub-workflow nodes to complete (handled by BullMQ)
+2. Collects results using `job.getChildrenValues()`
+3. Applies output mapping to transform results
+4. Marks the sub-workflow execution as completed
+5. Notifies the parent workflow to continue
+
+For workflows with multiple final nodes (nodes with no outputs), results are merged:
+
+```typescript
+// Sub-workflow with multiple final nodes
+const multiOutputWorkflow = {
+  id: 'parallel-enrichment',
+  nodes: [
+    { id: 'start', type: 'transform', inputs: [], outputs: ['enrich-a', 'enrich-b'] },
+    { id: 'enrich-a', type: 'http', inputs: ['start'], outputs: [] },  // Final node
+    { id: 'enrich-b', type: 'http', inputs: ['start'], outputs: [] }   // Final node
+  ]
+};
+
+// Aggregated result structure:
+// {
+//   'enrich-a': { ... result from enrich-a ... },
+//   'enrich-b': { ... result from enrich-b ... }
+// }
+```
+
+### Execution State
+
+Sub-workflow executions are tracked separately in the state store:
+
+```typescript
+// Query sub-workflow execution
+const childExecution = await stateStore.getExecution(childExecutionId);
+
+// Execution includes:
+// - workflowId: The sub-workflow ID
+// - parentExecutionId: Links to parent workflow execution
+// - depth: Nesting level (0 for main workflow, 1+ for sub-workflows)
+// - status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+// - nodeResults: Results from each node in the sub-workflow
+```
+
+### Limitations
+
+- Maximum nesting depth: 10 levels
+- Sub-workflow must exist and be registered before parent workflow executes
+- Input/output mappings only work with object data (not primitives)
+- All sub-workflow nodes share the same `continueOnFail` setting
+
+## Engine Configuration
+
+The workflow engine supports various configuration options for fine-tuning behavior and enabling advanced BullMQ features. Pass configuration when creating the engine:
+
+```typescript
+import { WorkflowEngine } from './engine/workflow-engine';
+import type { EngineConfig } from './engine/config';
+
+const engineConfig: EngineConfig = {
+    useFlowProducerForSubWorkflows: true,
+    useNativeRateLimiting: true,
+    workerConcurrency: 10,
+    rateLimiter: {
+        max: 100,
+        duration: 1000, // 100 jobs per second
+    },
+};
+
+const engine = new WorkflowEngine(
+    registry,
+    stateStore,
+    redis,
+    metricsCollector,
+    circuitBreakerRegistry,
+    cacheOptions,
+    payloadManager,
+    engineConfig // Pass config as last parameter
+);
+```
+
+### Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `useFlowProducerForSubWorkflows` | boolean | `false` | Use BullMQ FlowProducer for sub-workflow execution instead of checkpoint/resume pattern. Enables native parent-child job dependencies. |
+| `useNativeRateLimiting` | boolean | `false` | Use BullMQ's native Worker rate limiting instead of custom Redis INCR/EXPIRE implementation. |
+| `useJobSchedulers` | boolean | `true` | Use `upsertJobScheduler` for schedule management. Always enabled (legacy repeatable jobs code removed). |
+| `useWorkerThreads` | boolean | `false` | Run node processing in separate worker threads for CPU isolation (sandboxed execution). |
+| `useSimplifiedEventStream` | boolean | `false` | Use `job.updateProgress()` for events instead of QueueEventsProducer. Simplifies event streaming. |
+| `workerConcurrency` | number | `5` | Number of jobs to process in parallel per worker. |
+| `rateLimiter` | object | `undefined` | Global rate limiter for node execution worker. Only applies when `useNativeRateLimiting` is enabled. |
+| `processorFile` | string | `undefined` | Path to sandboxed processor file. Only used when `useWorkerThreads` is enabled. |
+
+### Rate Limiter Configuration
+
+When `useNativeRateLimiting` is enabled, you can configure the rate limiter:
+
+```typescript
+const engineConfig: EngineConfig = {
+    useNativeRateLimiting: true,
+    rateLimiter: {
+        max: 50,       // Maximum jobs to process
+        duration: 1000, // Within this time window (ms)
+    },
+};
+```
+
+This limits the worker to processing 50 jobs per second across all node types.
+
+### Feature Flags
+
+All feature flags default to `false` (except `useJobSchedulers`) to maintain backward compatibility. Enable features incrementally as needed:
+
+```typescript
+// Minimal config - uses all defaults
+const engine = new WorkflowEngine(registry, stateStore, redis);
+
+// Enable specific features
+const engine = new WorkflowEngine(registry, stateStore, redis, undefined, undefined, undefined, undefined, {
+    useFlowProducerForSubWorkflows: true, // Better sub-workflow handling
+    useNativeRateLimiting: true,          // BullMQ native rate limiting
+    workerConcurrency: 10,                // Higher parallelism
+});
+```
+
+### Accessing Configuration
+
+You can retrieve the current engine configuration at runtime:
+
+```typescript
+const config = engine.getConfig();
+console.log('Worker concurrency:', config.workerConcurrency);
+console.log('Using FlowProducer:', config.useFlowProducerForSubWorkflows);
+```
+
+## Job Schedulers
+
+The engine uses BullMQ's `upsertJobScheduler` for managing scheduled workflow triggers. This provides idempotent schedule registration without manual cleanup.
+
+### Registering Schedules
+
+Schedules are automatically registered when you register a workflow with schedule triggers:
+
+```typescript
+const workflow: WorkflowDefinition = {
+    id: 'daily-report',
+    name: 'Daily Report',
+    entryNodeId: 'generate',
+    nodes: [...],
+    triggers: [
+        {
+            type: 'schedule',
+            config: {
+                cron: '0 9 * * *',      // Every day at 9 AM
+                timezone: 'America/New_York'
+            }
+        }
+    ]
+};
+
+await engine.registerWorkflow(workflow);
+// Schedule is automatically created/updated
+```
+
+### Managing Schedules Programmatically
+
+```typescript
+// Register a schedule directly
+await engine.registerScheduleWithUpsert(
+    'my-workflow',
+    '0 */6 * * *',        // Every 6 hours
+    'Europe/London'        // Optional timezone
+);
+
+// List all active schedulers
+const schedulers = await engine.getJobSchedulers();
+for (const scheduler of schedulers) {
+    console.log(`${scheduler.id}: ${scheduler.pattern} (next: ${new Date(scheduler.next!)})`);
+}
+
+// Get a specific scheduler
+const scheduler = await engine.getJobScheduler('schedule:my-workflow:0 */6 * * *');
+
+// Remove all schedulers for a workflow
+const removedCount = await engine.removeWorkflowSchedulers('my-workflow');
+console.log(`Removed ${removedCount} schedulers`);
+```
+
+### Schedule Management REST API
+
+The following REST API endpoints are available for managing schedules:
+
+#### List All Schedulers
+
+```bash
+# Get all active schedulers
+curl http://localhost:3000/api/schedulers
+
+# With pagination and sorting
+curl "http://localhost:3000/api/schedulers?start=0&end=10&asc=true"
+```
+
+Response:
+```json
+{
+  "success": true,
+  "schedulers": [
+    {
+      "id": "schedule:daily-report:0 9 * * *",
+      "pattern": "0 9 * * *",
+      "tz": "America/New_York",
+      "next": 1704110400000
+    },
+    {
+      "id": "schedule:hourly-sync:0 * * * *",
+      "pattern": "0 * * * *",
+      "next": 1704067200000
+    }
+  ],
+  "count": 2
+}
+```
+
+#### Get Specific Scheduler
+
+```bash
+# URL-encode the scheduler ID (colons become %3A)
+curl http://localhost:3000/api/schedulers/schedule%3Amy-workflow%3A0%20%2A%20%2A%20%2A%20%2A
+```
+
+Response:
+```json
+{
+  "success": true,
+  "scheduler": {
+    "id": "schedule:my-workflow:0 * * * *",
+    "pattern": "0 * * * *",
+    "next": 1704067200000
+  }
+}
+```
+
+#### Get Schedules for a Workflow
+
+```bash
+curl http://localhost:3000/api/workflows/my-workflow/schedules
+```
+
+Response:
+```json
+{
+  "success": true,
+  "schedulers": [
+    {
+      "id": "schedule:my-workflow:0 * * * *",
+      "pattern": "0 * * * *",
+      "next": 1704067200000
+    },
+    {
+      "id": "schedule:my-workflow:0 9 * * *",
+      "pattern": "0 9 * * *",
+      "tz": "UTC",
+      "next": 1704110400000
+    }
+  ],
+  "count": 2
+}
+```
+
+#### Create or Update a Schedule
+
+```bash
+curl -X PUT http://localhost:3000/api/workflows/my-workflow/schedules \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cron": "0 */6 * * *",
+    "timezone": "Europe/London"
+  }'
+```
+
+Response:
+```json
+{
+  "success": true,
+  "message": "Schedule registered",
+  "schedulerId": "schedule:my-workflow:0 */6 * * *"
+}
+```
+
+This endpoint is idempotent - calling it multiple times with the same parameters will update the existing schedule rather than creating duplicates.
+
+#### Remove All Schedules for a Workflow
+
+```bash
+curl -X DELETE http://localhost:3000/api/workflows/my-workflow/schedules
+```
+
+Response:
+```json
+{
+  "success": true,
+  "message": "Removed 2 scheduler(s)",
+  "removedCount": 2
+}
+```
+
+### Scheduler ID Format
+
+Scheduler IDs follow the pattern: `schedule:{workflowId}:{cronPattern}`
+
+For example:
+- `schedule:daily-report:0 9 * * *` - Daily report at 9 AM
+- `schedule:hourly-sync:0 * * * *` - Hourly sync at the top of each hour
+- `schedule:weekly-cleanup:0 0 * * 0` - Weekly cleanup on Sundays at midnight
+
+### Cron Pattern Reference
+
+The cron pattern follows standard cron syntax:
+
+```
+┌───────────── minute (0-59)
+│ ┌───────────── hour (0-23)
+│ │ ┌───────────── day of month (1-31)
+│ │ │ ┌───────────── month (1-12)
+│ │ │ │ ┌───────────── day of week (0-6, Sunday=0)
+│ │ │ │ │
+* * * * *
+```
+
+Common patterns:
+- `0 * * * *` - Every hour at minute 0
+- `*/15 * * * *` - Every 15 minutes
+- `0 9 * * *` - Every day at 9:00 AM
+- `0 9 * * 1-5` - Weekdays at 9:00 AM
+- `0 0 1 * *` - First day of every month at midnight
+- `0 */6 * * *` - Every 6 hours
+
+### Timezone Support
+
+Schedules support IANA timezone identifiers:
+
+```typescript
+// Examples of valid timezones
+'America/New_York'
+'Europe/London'
+'Asia/Tokyo'
+'UTC'
+'America/Los_Angeles'
+```
+
+If no timezone is specified, the schedule runs in the server's local timezone.
+
+## Sandboxed Processors (Worker Threads)
+
+The engine supports running node execution in separate worker threads for CPU isolation. This is useful for CPU-intensive operations that might block the main event loop.
+
+### Enabling Sandboxed Processors
+
+```typescript
+const engineConfig: EngineConfig = {
+    useWorkerThreads: true,
+    workerConcurrency: 10,
+};
+
+const engine = new WorkflowEngine(
+    registry,
+    stateStore,
+    redis,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    engineConfig
+);
+```
+
+### Prerequisites
+
+Before enabling sandboxed processors, ensure the TypeScript processor file has been compiled to JavaScript:
+
+```bash
+# Compile the sandbox processor
+bun build engine/processors/node-processor.sandbox.ts \
+  --outdir engine/processors \
+  --target node
+```
+
+### How It Works
+
+When `useWorkerThreads: true` is enabled:
+
+1. **Worker Thread Execution**: Node jobs are processed in separate worker threads instead of the main event loop
+2. **Data Serialization**: Job data is automatically serialized/deserialized when passing between threads
+3. **CPU Isolation**: Long-running or CPU-intensive nodes don't block other job processing
+4. **Crash Recovery**: Worker thread crashes are isolated and don't affect other jobs
+
+### Architecture
+
+```
+Main Thread                          Worker Thread
+┌─────────────────┐                  ┌─────────────────┐
+│  WorkerManager  │                  │ Sandbox Processor│
+│                 │  serialize       │                 │
+│  Job Data ──────┼─────────────────►│  deserialize    │
+│                 │                  │       │         │
+│                 │                  │       ▼         │
+│                 │                  │  Process Node   │
+│                 │                  │       │         │
+│                 │  deserialize     │       ▼         │
+│  Result ◄───────┼─────────────────┤  serialize      │
+└─────────────────┘                  └─────────────────┘
+```
+
+### Serialization Support
+
+The following data types are automatically handled during serialization:
+
+| Type | Serialization |
+|------|---------------|
+| Primitives | Pass through |
+| Date | ISO string |
+| Error | Object with message/stack |
+| BigInt | String with type marker |
+| Buffer/Uint8Array | Base64 string |
+| Map/Set | Object with type marker |
+| Functions | Removed (warning logged) |
+| Symbols | Removed (warning logged) |
+| Circular refs | Replaced with null |
+
+### Custom Processor File
+
+You can specify a custom processor file:
+
+```typescript
+const engineConfig: EngineConfig = {
+    useWorkerThreads: true,
+    processorFile: '/path/to/my-custom-processor.js',
+};
+```
+
+### Environment Variables
+
+When running in worker threads, the sandboxed processor needs these environment variables:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SPANE_REDIS_URL` or `REDIS_URL` | Yes | Redis connection URL |
+| `SPANE_DATABASE_URL` or `DATABASE_URL` | No | Database URL (uses InMemoryStore if not set) |
+| `SPANE_ENGINE_CONFIG` | No | JSON string of EngineConfig options |
+| `NODE_ENV` | No | Set to "production" to disable serialization warnings |
+
+### Error Handling
+
+The engine handles sandboxed processor errors automatically:
+
+- **Worker crashes**: Detected and logged, BullMQ recovers automatically
+- **Stalled jobs**: Detected when worker crashes mid-execution, automatically retried
+- **Serialization errors**: Caught and returned as failure results
+- **Missing processor file**: Throws descriptive error at startup
+
+### When to Use Sandboxed Processors
+
+**Use sandboxed processors when:**
+- Running CPU-intensive node operations
+- Processing untrusted or third-party node executors
+- Needing true parallelism on multi-core systems
+- Wanting crash isolation between jobs
+
+**Use inline processors (default) when:**
+- Running I/O-bound operations (HTTP, database)
+- Developing and debugging
+- Running in resource-constrained environments
+- Processing simple, fast node operations
+
+### Example
+
+See `examples/sandboxed-processor-setup.ts` for comprehensive examples including:
+- Basic setup
+- Custom processor paths
+- Serialization considerations
+- Error handling
+- Combining with other features
+- Monitoring and debugging
 
 ## Known Limitations
 

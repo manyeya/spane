@@ -14,7 +14,7 @@ import type { IExecutionStateStore } from "../../types";
  * 
  * These tests verify that:
  * - Workflow status events (started, cancelled, paused, completed) do not create BullMQ jobs
- * - Event emission uses direct EventStreamManager.emit() without nodeQueue.add()
+ * - Event emission uses direct EventStreamManager.emitLocal() without nodeQueue.add()
  */
 
 // ============================================================================
@@ -136,7 +136,7 @@ describe("No job creation for events property tests", () => {
             (initialCounts.prioritized ?? 0);
 
           // Emit the workflow event via EventStreamManager
-          await eventStreamManager.emit(event);
+          eventStreamManager.emitLocal(event);
 
           // Wait a bit for any potential job creation
           await new Promise(resolve => setTimeout(resolve, 50));
@@ -171,7 +171,7 @@ describe("No job creation for events property tests", () => {
 
             // Emit all events
             for (const event of events) {
-              await eventStreamManager.emit(event);
+              eventStreamManager.emitLocal(event);
             }
 
             // Wait a bit for any potential job creation
@@ -197,7 +197,7 @@ describe("No job creation for events property tests", () => {
       await fc.assert(
         fc.asyncProperty(workflowStatusEventArb, async (event) => {
           // Emit the workflow event
-          await eventStreamManager.emit(event);
+          eventStreamManager.emitLocal(event);
 
           // Wait a bit for any potential job creation
           await new Promise(resolve => setTimeout(resolve, 50));
@@ -234,7 +234,7 @@ describe("No job creation for events property tests", () => {
           status,
         };
 
-        await eventStreamManager.emit(event);
+        eventStreamManager.emitLocal(event);
 
         // Wait a bit
         await new Promise(resolve => setTimeout(resolve, 50));

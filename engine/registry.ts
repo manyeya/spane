@@ -69,6 +69,51 @@ export class NodeRegistry {
     return this.rateLimits.get(nodeType);
   }
 
+  /**
+   * Get all registered rate limits.
+   * Returns a Map of nodeType -> limitPerSecond.
+   */
+  getAllRateLimits(): Map<string, number> {
+    return new Map(this.rateLimits);
+  }
+
+  /**
+   * Aggregate rate limits from all registered node types into a single
+   * BullMQ-compatible rate limiter configuration.
+   * 
+   * The aggregation strategy uses the most restrictive (lowest) rate limit
+   * across all registered node types to ensure no node type exceeds its limit.
+   * 
+   * @returns RateLimiterConfig compatible with BullMQ Worker limiter option,
+   *          or undefined if no rate limits are registered.
+   * 
+   * @example
+   * // If http nodes have 10/sec and email nodes have 5/sec,
+   * // the aggregated config will be { max: 5, duration: 1000 }
+   * const config = registry.getAggregatedRateLimiterConfig();
+   * // { max: 5, duration: 1000 }
+   */
+  getAggregatedRateLimiterConfig(): { max: number; duration: number } | undefined {
+    if (this.rateLimits.size === 0) {
+      return undefined;
+    }
+
+    // Find the most restrictive (lowest) rate limit
+    let minLimit = Infinity;
+    for (const limit of this.rateLimits.values()) {
+      if (limit < minLimit) {
+        minLimit = limit;
+      }
+    }
+
+    // BullMQ limiter uses max jobs per duration (in ms)
+    // Our rate limits are per second, so duration = 1000ms
+    return {
+      max: minLimit,
+      duration: 1000,
+    };
+  }
+
   // Circuit breaker support for external nodes
   private circuitBreakerExtractors: Map<string, CircuitBreakerKeyExtractor> = new Map();
 

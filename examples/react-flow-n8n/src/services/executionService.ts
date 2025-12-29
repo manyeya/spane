@@ -29,13 +29,14 @@ export interface ExecutionDetail extends ExecutionSummary {
 }
 
 export interface NodeResult {
-    status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+    status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'delayed';
     success?: boolean;
     output?: unknown;
     data?: unknown;
     error?: string;
     startedAt?: Date;
     completedAt?: Date;
+    resumeAt?: number;
 }
 
 interface ExecutionAPIResponse {
@@ -379,9 +380,14 @@ export class ExecutionService {
         if (result.success === false) return 'failed';
         if (result.status) {
             const status = result.status as string;
-            if (['pending', 'running', 'completed', 'failed', 'skipped'].includes(status)) {
+            if (['pending', 'running', 'completed', 'failed', 'skipped', 'delayed'].includes(status)) {
                 return status as NodeResult['status'];
             }
+        }
+        // Check for delayed state from data
+        const data = result.data as Record<string, unknown> | undefined;
+        if (data?.delayed === true || data?.resumeAt) {
+            return 'delayed';
         }
         return 'pending';
     }
@@ -446,13 +452,20 @@ export class ExecutionService {
                         const nodeStatus = this.mapNodeEventStatus(data.status);
                         currentDetail.nodeStatuses[data.nodeId] = nodeStatus;
                         
-                        if (data.data !== undefined || data.error) {
-                            currentDetail.nodeResults[data.nodeId] = {
+                        if (data.data !== undefined || data.error || nodeStatus === 'delayed') {
+                            const nodeResult: NodeResult = {
                                 status: nodeStatus,
                                 success: data.status === 'completed',
                                 data: data.data,
                                 error: data.error,
                             };
+                            
+                            // Capture resumeAt for delayed nodes
+                            if (nodeStatus === 'delayed' && data.data?.resumeAt) {
+                                nodeResult.resumeAt = data.data.resumeAt;
+                            }
+                            
+                            currentDetail.nodeResults[data.nodeId] = nodeResult;
                         }
                         
                         currentDetail.completedNodes = this.countCompletedNodes(
@@ -519,6 +532,7 @@ export class ExecutionService {
             case 'completed': return 'completed';
             case 'failed': return 'failed';
             case 'skipped': return 'skipped';
+            case 'delayed': return 'delayed';
             default: return 'pending';
         }
     }

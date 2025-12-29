@@ -29,8 +29,29 @@ export {
   isErrorEvent,
 } from './engine/event-types';
 
+// Re-export engine configuration types
+export {
+  type EngineConfig,
+  type RateLimiterConfig,
+  DEFAULT_ENGINE_CONFIG,
+  mergeEngineConfig,
+} from './engine/config';
+
 // Re-export event emitter for external consumers
 export { WorkflowEventEmitter } from './engine/event-emitter';
+
+// Re-export FlowProducer types from BullMQ for sub-workflow handling
+export {
+  FlowProducer,
+  type FlowJob,
+  type FlowChildJob,
+  type FlowOpts,
+  type FlowProducerListener,
+  RateLimitError,
+} from 'bullmq';
+
+// Re-export rate limiting utilities for external node executors
+export { RateLimitError as WorkerRateLimitError, isRateLimitError } from './engine/worker-manager';
 
 // Initialize Redis connection
 const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {

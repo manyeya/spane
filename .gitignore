@@ -6,6 +6,9 @@ out
 dist
 *.tgz
 
+# compiled sandbox processor (build artifact)
+engine/processors/node-processor.sandbox.js
+
 # code coverage
 coverage
 *.lcov

@@ -1,6 +1,6 @@
 import type { WorkflowDefinition } from './workflowConverter';
 
-export type ExecutionStatus = 'idle' | 'running' | 'success' | 'error' | 'paused' | 'cancelled';
+export type ExecutionStatus = 'idle' | 'running' | 'success' | 'error' | 'paused' | 'cancelled' | 'delayed';
 
 export interface ExecutionResult {
     executionId: string;
@@ -226,6 +226,12 @@ class ExecutionManager {
                             currentNodeResults[nodeEvent.nodeId] = {
                                 skipped: true,
                             };
+                        } else if (nodeEvent.status === 'delayed') {
+                            // Track delayed status for delay nodes
+                            currentNodeResults[nodeEvent.nodeId] = {
+                                success: true,
+                                data: { delayed: true, ...nodeEvent.data },
+                            };
                         }
 
                         callbacks.onNodeProgress?.(nodeEvent);
@@ -322,7 +328,7 @@ class ExecutionManager {
             case 'completed': return 'success';
             case 'failed': return 'error';
             case 'skipped': return 'idle'; // Use idle for skipped nodes
-            case 'delayed': return 'running'; // Delayed nodes are still "in progress"
+            case 'delayed': return 'delayed'; // Delayed nodes show waiting state
             default: return 'idle';
         }
     }
@@ -347,7 +353,11 @@ class ExecutionManager {
      */
     private mapNodeResultToStatus(result: any): ExecutionStatus {
         if (result.skipped) return 'idle';
-        if (result.success === true) return 'success';
+        if (result.success === true) {
+            // Check if this is a delayed node that's waiting
+            if (result.data?.delayed === true) return 'delayed';
+            return 'success';
+        }
         if (result.success === false) return 'error';
         return 'idle';
     }

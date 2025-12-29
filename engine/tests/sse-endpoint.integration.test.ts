@@ -48,8 +48,16 @@ class MockEventStreamManager {
 
   /**
    * Emit an event (simulates receiving from QueueEvents)
+   * @deprecated Use emitLocal() instead
    */
   emit(event: WorkflowEvent): void {
+    this.emitter.emit('event', event);
+  }
+
+  /**
+   * Emit an event locally (simulates EventStreamManager.emitLocal())
+   */
+  emitLocal(event: WorkflowEvent): void {
     this.emitter.emit('event', event);
   }
 
@@ -383,7 +391,7 @@ describe("SSE endpoint integration tests", () => {
         workflowId,
         status: 'running',
       };
-      eventStreamManager.emit(matchingEvent);
+      eventStreamManager.emitLocal(matchingEvent);
 
       // Should receive the matching event
       const result = await Promise.race([
@@ -422,7 +430,7 @@ describe("SSE endpoint integration tests", () => {
         workflowId: 'wf-other',
         status: 'completed',
       };
-      eventStreamManager.emit(otherEvent);
+      eventStreamManager.emitLocal(otherEvent);
 
       // Should timeout (no event received)
       const result = await Promise.race([
@@ -464,8 +472,8 @@ describe("SSE endpoint integration tests", () => {
         status: 'completed',
       };
 
-      eventStreamManager.emit(event1);
-      eventStreamManager.emit(event2);
+      eventStreamManager.emitLocal(event1);
+      eventStreamManager.emitLocal(event2);
 
       // Should receive both events
       const result1 = await Promise.race([
@@ -576,7 +584,7 @@ describe("SSE endpoint integration tests", () => {
         workflowId: 'wf-test',
         status: 'completed',
       };
-      eventStreamManager.emit(newEvent);
+      eventStreamManager.emitLocal(newEvent);
 
       // Should receive the new event
       const result = await Promise.race([

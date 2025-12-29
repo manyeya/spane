@@ -4,7 +4,28 @@ import { QueueEvents, QueueEventsProducer } from "bullmq";
 import type { QueueEventsListener } from "bullmq";
 import Redis from "ioredis";
 import type { WorkflowStatusEvent, WorkflowStatus } from "../event-types";
-import type { WorkflowEventPayload, WorkflowEventsListener } from "../event-stream";
+
+/**
+ * Custom event payload for workflow events published via QueueEventsProducer.
+ * Defined locally since EventStreamManager no longer uses QueueEventsProducer.
+ */
+interface WorkflowEventPayload {
+  executionId: string;
+  workflowId: string;
+  error?: string;
+}
+
+/**
+ * Extended QueueEventsListener interface for custom workflow events.
+ * Defined locally for testing BullMQ's native QueueEventsProducer functionality.
+ */
+interface WorkflowEventsListener extends QueueEventsListener {
+  'workflow:started': (args: WorkflowEventPayload, id: string) => void;
+  'workflow:completed': (args: WorkflowEventPayload, id: string) => void;
+  'workflow:failed': (args: WorkflowEventPayload, id: string) => void;
+  'workflow:cancelled': (args: WorkflowEventPayload, id: string) => void;
+  'workflow:paused': (args: WorkflowEventPayload, id: string) => void;
+}
 
 /**
  * Property-based tests for cross-instance event propagation.
@@ -84,7 +105,7 @@ describe("Cross-instance event propagation property tests", () => {
   /**
    * **Feature: architecture-refactor, Property 2: Cross-instance event propagation**
    * 
-   * *For any* workflow event emitted via EventStreamManager.emit(), 
+   * *For any* workflow event emitted via EventStreamManager.emitLocal(), 
    * all EventStreamManager instances connected to the same Redis 
    * SHALL receive the event within the Redis Pub/Sub latency window.
    * 

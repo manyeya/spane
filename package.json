@@ -7,11 +7,15 @@
     "start": "bun run index.ts",
     "dev": "bun --watch run index.ts",
     "build": "bun build index.ts --outdir dist --target bun",
+    "build:sandbox": "bun build engine/processors/node-processor.sandbox.ts --outfile engine/processors/node-processor.sandbox.js --target bun --format esm",
+    "build:all": "bun run build && bun run build:sandbox",
     "setup": "bun install && echo '✅ Dependencies installed. Make sure Redis is running on localhost:6379 or set REDIS_URL environment variable.'",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "purge:queues": "bun run scripts/purge-queues.ts"
+    "purge:queues": "bun run scripts/purge-queues.ts",
+    "migrate:schedulers": "bun run scripts/migrate-to-job-schedulers.ts",
+    "migrate:schedulers:dry": "bun run scripts/migrate-to-job-schedulers.ts --dry-run --verbose"
   },
   "devDependencies": {
     "@types/bun": "latest",
@@ -26,7 +30,7 @@
   },
   "dependencies": {
     "@elysiajs/cors": "^1.4.0",
-    "bullmq": "^5.1.5",
+    "bullmq": "^5.66.4",
     "dagre": "^0.8.5",
     "drizzle-orm": "^0.44.7",
     "elysia": "^1.4.16",

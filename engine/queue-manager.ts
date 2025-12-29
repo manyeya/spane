@@ -1,4 +1,4 @@
-import { Queue, QueueEvents } from 'bullmq';
+import { Queue, QueueEvents, FlowProducer } from 'bullmq';
 import { Redis } from 'ioredis';
 import { MetricsCollector } from '../utils/metrics';
 import type { NodeJobData, WorkflowJobData, DLQItem } from './types';
@@ -10,8 +10,8 @@ export class QueueManager {
     public workflowQueue: Queue<WorkflowJobData>;
     public dlqQueue: Queue<DLQItem>;
     public nodeQueueEvents: QueueEvents;
-    public workflowQueueEvents: QueueEvents;
     public resultCacheEvents: QueueEvents;
+    public flowProducer!: FlowProducer;
 
     constructor(
         private redisConnection: Redis,
@@ -48,15 +48,16 @@ export class QueueManager {
             prefix: 'spane',
         });
 
-        this.workflowQueueEvents = new QueueEvents('workflow-execution', {
-            connection: redisConnection,
-            prefix: 'spane',
-        });
-
         // Dedicated QueueEvents for caching results to avoid conflicts
         this.resultCacheEvents = new QueueEvents('node-execution', {
             connection: redisConnection,
             prefix: '{spane}',
+        });
+
+        // Initialize FlowProducer for sub-workflow handling
+        this.flowProducer = new FlowProducer({
+            connection: redisConnection,
+            prefix: 'spane',
         });
 
         this.setupQueueEventListeners();
@@ -82,14 +83,6 @@ export class QueueManager {
             logger.debug({ jobId, data }, `⟳ Node job ${jobId} progress`);
         });
 
-        this.workflowQueueEvents.on('completed', ({ jobId }) => {
-            logger.info({ jobId }, `✓ Workflow job ${jobId} completed`);
-        });
-
-        this.workflowQueueEvents.on('failed', ({ jobId, failedReason }) => {
-            logger.error({ jobId, failedReason }, `✗ Workflow job ${jobId} failed`);
-        });
-
         // --- Result Caching Listener ---
         this.resultCacheEvents.on('completed', async ({ jobId, returnvalue }) => {
             try {
@@ -99,6 +92,18 @@ export class QueueManager {
                     // The returnvalue is the ExecutionResult, already in the correct format.
                     // BullMQ might return it as string if it's from Redis
                     const result = typeof returnvalue === 'string' ? JSON.parse(returnvalue) : returnvalue;
+                    
+                    // Skip caching for delay node initial step results.
+                    // When a delay node first processes, it returns { success: true, data: { delayed: true, ... } }
+                    // and enqueues a resumed job. We should NOT cache this intermediate result because:
+                    // 1. It would cause getPendingNodeCount to count the node as "completed"
+                    // 2. The actual completion happens when the resumed job runs after the delay expires
+                    // The resumed job will save the final result via updateNodeResult in processDelayNode.
+                    if (result?.data?.delayed === true) {
+                        logger.debug({ jobId, executionId, nodeId }, `Skipping cache for delay node initial step`);
+                        return;
+                    }
+                    
                     await this.stateStore.cacheNodeResult(executionId, nodeId, result);
                 }
             } catch (error) {
@@ -112,7 +117,33 @@ export class QueueManager {
         await this.workflowQueue.close();
         await this.dlqQueue.close();
         await this.nodeQueueEvents.close();
-        await this.workflowQueueEvents.close();
         await this.resultCacheEvents.close();
+        await this.flowProducer.close();
+    }
+
+    /**
+     * Trigger manual rate limiting for the node execution queue.
+     * 
+     * This method should be called when an external API returns a rate limit response
+     * (e.g., HTTP 429). After calling this method, the caller MUST throw RateLimitError
+     * to properly move the job back to the waiting queue.
+     * 
+     * Note: The worker must have a limiter.max option configured for this to work.
+     * 
+     * @param duration - Duration in milliseconds to rate limit
+     * 
+     * @example
+     * ```typescript
+     * // In a node executor when receiving HTTP 429:
+     * if (response.status === 429) {
+     *     const retryAfter = parseInt(response.headers['retry-after'] || '60', 10) * 1000;
+     *     await queueManager.rateLimit(retryAfter);
+     *     throw new RateLimitError();
+     * }
+     * ```
+     */
+    async rateLimit(duration: number): Promise<void> {
+        logger.info({ duration }, `🚦 Manual rate limit triggered for ${duration}ms`);
+        await this.nodeQueue.rateLimit(duration);
     }
 }

@@ -1141,21 +1141,41 @@ const app = new Elysia()
                 let isClosed = false;
                 let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
+                // Helper to check if controller is still usable
+                const isControllerOpen = () => {
+                    if (isClosed) return false;
+                    try {
+                        // Check if controller is in a valid state
+                        return controller.desiredSize !== null;
+                    } catch {
+                        return false;
+                    }
+                };
+
                 // Helper to send SSE event safely
                 const sendEvent = (event: WorkflowEvent | ErrorEvent) => {
-                    if (isClosed) return;
+                    if (!isControllerOpen()) return false;
                     try {
                         const data = `data: ${JSON.stringify(event)}\n\n`;
                         controller.enqueue(encoder.encode(data));
+                        return true;
                     } catch (e) {
                         console.error('[SSE] Error sending event:', e);
                         isClosed = true;
+                        return false;
                     }
                 };
 
                 // Helper to send heartbeat safely
                 const sendHeartbeat = () => {
-                    if (isClosed) return;
+                    if (!isControllerOpen()) {
+                        // Controller closed, stop heartbeat
+                        if (heartbeatInterval) {
+                            clearInterval(heartbeatInterval);
+                            heartbeatInterval = null;
+                        }
+                        return;
+                    }
                     try {
                         controller.enqueue(encoder.encode(': heartbeat\n\n'));
                     } catch (e) {
@@ -1165,6 +1185,20 @@ const app = new Elysia()
                             clearInterval(heartbeatInterval);
                             heartbeatInterval = null;
                         }
+                    }
+                };
+
+                // Helper to close controller safely
+                const closeController = () => {
+                    isClosed = true;
+                    if (heartbeatInterval) {
+                        clearInterval(heartbeatInterval);
+                        heartbeatInterval = null;
+                    }
+                    try {
+                        controller.close();
+                    } catch (e) {
+                        // Already closed, ignore
                     }
                 };
 
@@ -1180,12 +1214,15 @@ const app = new Elysia()
                             code: 'EXECUTION_NOT_FOUND',
                         };
                         sendEvent(errorEvent);
-                        controller.close();
+                        closeController();
                         return;
                     }
 
                     // Send initial state as first event
-                    sendEvent(initialState);
+                    if (!sendEvent(initialState)) {
+                        closeController();
+                        return;
+                    }
 
                     // Subscribe to filtered events for this executionId (Requirement 2.1)
                     const subscription = eventStreamManager.subscribe(executionId);
@@ -1195,8 +1232,11 @@ const app = new Elysia()
 
                     // Stream events - this loop runs indefinitely until client disconnects
                     for await (const event of subscription) {
-                        if (isClosed) break;
-                        sendEvent(event);
+                        if (isClosed || !isControllerOpen()) break;
+                        
+                        if (!sendEvent(event)) {
+                            break;
+                        }
 
                         // Close stream when workflow completes/fails/cancels
                         if (event.type === 'workflow:status') {
@@ -1210,7 +1250,7 @@ const app = new Elysia()
                 } catch (error: any) {
                     // Handle errors during streaming
                     console.error('[SSE] Stream error:', error);
-                    if (!isClosed) {
+                    if (isControllerOpen()) {
                         const errorEvent: ErrorEvent = {
                             type: 'error',
                             message: error.message || 'Stream error',
@@ -1219,15 +1259,7 @@ const app = new Elysia()
                         sendEvent(errorEvent);
                     }
                 } finally {
-                    isClosed = true;
-                    if (heartbeatInterval) {
-                        clearInterval(heartbeatInterval);
-                    }
-                    try {
-                        controller.close();
-                    } catch (e) {
-                        // Already closed
-                    }
+                    closeController();
                 }
             },
 

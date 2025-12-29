@@ -54,7 +54,7 @@ class LocalEventEmitterMock {
 
   /**
    * Emit event to local subscribers synchronously.
-   * This mirrors the first step of EventStreamManager.emit()
+   * This mirrors the first step of EventStreamManager.emitLocal()
    */
   emit(event: WorkflowStatusEvent): void {
     // Emit locally immediately (synchronous)
@@ -84,8 +84,8 @@ describe("Local event delivery property tests", () => {
   /**
    * **Feature: architecture-refactor, Property 1: Local event delivery is immediate**
    * 
-   * *For any* workflow event emitted via EventStreamManager.emit(), 
-   * all local subscribers SHALL receive the event before the emit() call returns.
+   * *For any* workflow event emitted via EventStreamManager.emitLocal(), 
+   * all local subscribers SHALL receive the event before the emitLocal() call returns.
    * 
    * **Validates: Requirements 1.1**
    */

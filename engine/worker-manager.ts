@@ -1,15 +1,33 @@
-import { Worker, Job, DelayedError } from 'bullmq';
+import { Worker, Job, DelayedError, RateLimitError } from 'bullmq';
 import { Redis } from 'ioredis';
+import * as path from 'path';
+import * as fs from 'fs';
 import { MetricsCollector } from '../utils/metrics';
 import type { NodeJobData, WorkflowJobData } from './types';
 import { NodeProcessor, type EnqueueWorkflowFn } from './node-processor';
 import { DLQManager } from './dlq-manager';
 import type { IExecutionStateStore } from '../types';
 import { logger } from '../utils/logger';
+import type { EngineConfig } from './config';
+import { serializeJobData, deserializeExecutionResult } from './processors/serialization';
+
+// Re-export RateLimitError for external use (e.g., in node executors)
+export { RateLimitError };
+
+/**
+ * Check if an error is a RateLimitError from BullMQ.
+ * RateLimitError is thrown when manual rate limiting is triggered via worker.rateLimit().
+ * This error should not be treated as a job failure - the job will be moved back to waiting.
+ */
+export function isRateLimitError(err: Error): boolean {
+    // Check by name since RateLimitError might be thrown as Worker.RateLimitError()
+    return err.name === 'RateLimitError' || err instanceof RateLimitError;
+}
 
 export class WorkerManager {
     public nodeWorker?: Worker<NodeJobData>;
     public workflowWorker?: Worker<WorkflowJobData>;
+    private config?: EngineConfig;
 
     constructor(
         private redisConnection: Redis,
@@ -17,26 +35,74 @@ export class WorkerManager {
         private dlqManager: DLQManager,
         private stateStore: IExecutionStateStore,
         private enqueueWorkflow: EnqueueWorkflowFn,
-        private metricsCollector?: MetricsCollector
-    ) { }
+        private metricsCollector?: MetricsCollector,
+        config?: EngineConfig
+    ) {
+        this.config = config;
+    }
 
     // Start worker processes
-    startWorkers(concurrency: number = 5): void {
+    startWorkers(concurrency?: number): void {
+        // Use config values with fallbacks
+        const workerConcurrency = concurrency ?? this.config?.workerConcurrency ?? 5;
+
+        // Build worker options
+        const nodeWorkerOptions: any = {
+            connection: this.redisConnection,
+            concurrency: workerConcurrency,
+            prefix: 'spane',
+        };
+
+        // Add native rate limiting if configured
+        if (this.config?.useNativeRateLimiting && this.config?.rateLimiter) {
+            nodeWorkerOptions.limiter = {
+                max: this.config.rateLimiter.max,
+                duration: this.config.rateLimiter.duration,
+            };
+            logger.info(
+                { max: this.config.rateLimiter.max, duration: this.config.rateLimiter.duration },
+                '🚦 Native rate limiting enabled'
+            );
+        }
+
+        // Determine processor: file path for sandboxed execution or inline function
+        let processorPath: string | undefined;
+        if (this.config?.useWorkerThreads) {
+            // Use processor file path for sandboxed worker threads
+            // Default to the compiled sandbox processor if no custom path provided
+            processorPath = this.config.processorFile 
+                ?? path.join(__dirname, 'processors', 'node-processor.sandbox.js');
+            
+            // Validate that the processor file exists before starting workers
+            // This prevents cryptic errors when the sandbox processor hasn't been compiled
+            if (!fs.existsSync(processorPath)) {
+                const errorMsg = `Sandboxed processor file not found: ${processorPath}. ` +
+                    'Ensure the TypeScript processor has been compiled to JavaScript.';
+                logger.error({ processorPath }, errorMsg);
+                throw new Error(errorMsg);
+            }
+            
+            nodeWorkerOptions.useWorkerThreads = true;
+            
+            logger.info(
+                { processorPath },
+                '🧵 Worker threads enabled with sandboxed processor'
+            );
+        }
+
         // Worker for individual node execution
+        // When processorPath is provided, BullMQ runs the processor in a separate worker thread
+        // Otherwise, use inline processor function
         this.nodeWorker = new Worker<NodeJobData>(
             'node-execution',
-            async (job: Job<NodeJobData>) => {
+            processorPath ?? (async (job: Job<NodeJobData>) => {
                 await job.updateProgress(0);
                 logger.info({ jobId: job.id, jobName: job.name }, `🚀 Processing node job ${job.id} of type ${job.name}`);
                 const result = await this.nodeProcessor.processNodeJob(job.data, job);
                 await job.updateProgress(100);
                 return result;
-            },
-            {
-                connection: this.redisConnection,
-                concurrency,
-                prefix: 'spane',
-            }
+            }),
+            nodeWorkerOptions
         );
 
         // Worker for workflow orchestration (if needed for non-flow workflows)
@@ -49,7 +115,7 @@ export class WorkerManager {
             },
             {
                 connection: this.redisConnection,
-                concurrency: Math.max(1, Math.floor(concurrency / 2)),
+                concurrency: Math.max(1, Math.floor(workerConcurrency / 2)),
                 prefix: 'spane',
             }
         );
@@ -66,6 +132,13 @@ export class WorkerManager {
         this.nodeWorker.on('failed', async (job, err) => {
             // Ignore DelayedError (used for pause/rate-limit)
             if (err instanceof DelayedError || err.name === 'DelayedError') {
+                return;
+            }
+
+            // Ignore RateLimitError (used for manual rate limiting)
+            // When Worker.RateLimitError() is thrown, the job is moved back to waiting, not failed
+            if (isRateLimitError(err)) {
+                logger.debug({ jobId: job?.id }, `⏳ Job ${job?.id} rate limited, will be retried`);
                 return;
             }
 
@@ -120,6 +193,75 @@ export class WorkerManager {
             logger.debug({ jobId: job.id, progress }, `⟳ Node job ${job.id} at ${progress}%`);
         });
 
+        // Handle worker-level errors (including sandbox/worker thread crashes)
+        // This is CRITICAL - without this handler, errors can cause the worker to stop processing
+        this.nodeWorker.on('error', (err) => {
+            // Determine if this is a sandbox-related error
+            const isSandboxError = this.config?.useWorkerThreads && (
+                err.message?.includes('worker_threads') ||
+                err.message?.includes('Worker terminated') ||
+                err.message?.includes('sandbox') ||
+                err.message?.includes('child process') ||
+                err.name === 'WorkerTerminatedError'
+            );
+
+            if (isSandboxError) {
+                logger.error(
+                    { 
+                        error: err.message, 
+                        stack: err.stack,
+                        useWorkerThreads: this.config?.useWorkerThreads,
+                        processorFile: this.config?.processorFile
+                    },
+                    '💥 Sandbox processor crashed - worker thread error detected'
+                );
+
+                // Track sandbox-specific metrics if available
+                if (this.metricsCollector) {
+                    this.metricsCollector.incrementNodesFailed();
+                }
+            } else {
+                logger.error(
+                    { error: err.message, stack: err.stack },
+                    '⚠️ Node worker error occurred'
+                );
+            }
+
+            // Note: BullMQ will automatically recover from most errors
+            // The worker continues to process jobs after emitting the error event
+            // Jobs that were being processed when the error occurred will be
+            // moved to failed or stalled state depending on the error type
+        });
+
+        // Handle stalled jobs - these can occur when sandbox processes crash mid-execution
+        // A job becomes stalled when the worker processing it crashes or loses connection
+        // before completing the job, and the lock expires
+        this.nodeWorker.on('stalled', async (jobId, prev) => {
+            logger.warn(
+                { 
+                    jobId, 
+                    previousState: prev,
+                    useWorkerThreads: this.config?.useWorkerThreads
+                },
+                `⚠️ Job ${jobId} stalled (previous state: ${prev}) - may indicate sandbox crash`
+            );
+
+            // Track stalled jobs in metrics
+            if (this.metricsCollector) {
+                // Stalled jobs are moved back to wait, so they'll be retried
+                // We don't increment failed count here since the job will be retried
+            }
+
+            // If using worker threads, a stalled job likely indicates a sandbox crash
+            // Log additional context for debugging
+            if (this.config?.useWorkerThreads) {
+                logger.info(
+                    { jobId },
+                    '🔄 Stalled job will be automatically retried by BullMQ'
+                );
+            }
+        });
+
         this.workflowWorker.on('completed', (job) => {
             logger.info({ jobId: job.id }, `✓ Workflow worker completed job ${job.id}`);
         });
@@ -128,7 +270,15 @@ export class WorkerManager {
             logger.error({ jobId: job?.id, error: err.message }, `✗ Workflow worker failed job ${job?.id}`);
         });
 
-        logger.info({ concurrency }, `👷 Workers started with concurrency: ${concurrency}`);
+        // Handle workflow worker errors to prevent unhandled exceptions
+        this.workflowWorker.on('error', (err) => {
+            logger.error(
+                { error: err.message, stack: err.stack },
+                '⚠️ Workflow worker error occurred'
+            );
+        });
+
+        logger.info({ concurrency: workerConcurrency }, `👷 Workers started with concurrency: ${workerConcurrency}`);
     }
 
     async close(): Promise<void> {
@@ -138,5 +288,18 @@ export class WorkerManager {
         if (this.workflowWorker) {
             await this.workflowWorker.close();
         }
+    }
+
+    /**
+     * Get the RateLimitError class for throwing after calling queue.rateLimit().
+     * This is a convenience method to access Worker.RateLimitError.
+     * 
+     * Note: Manual rate limiting should be done via QueueManager.rateLimit() method,
+     * then throw this error to move the job back to waiting.
+     * 
+     * @returns A new RateLimitError instance
+     */
+    static getRateLimitError(): Error {
+        return Worker.RateLimitError();
     }
 }

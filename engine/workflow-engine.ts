@@ -16,6 +16,7 @@ import type { WorkflowStatusEvent } from './event-types';
 import { EventStreamManager } from './event-stream';
 import { logger } from '../utils/logger';
 import type { PayloadManager } from './payload-manager';
+import { type EngineConfig, mergeEngineConfig } from './config';
 
 export interface WorkflowCacheOptions {
     maxSize?: number;      // Max number of workflows to cache (default: 500)
@@ -31,6 +32,7 @@ export class WorkflowEngine {
     private healthMonitor?: HealthMonitor;
     private eventStreamManager: EventStreamManager;
     private workflowCache: LRUCache<string, WorkflowDefinition>;
+    private config: EngineConfig;
 
     constructor(
         registry: NodeRegistry,
@@ -39,8 +41,12 @@ export class WorkflowEngine {
         private metricsCollector?: MetricsCollector,
         _circuitBreakerRegistry?: CircuitBreakerRegistry,
         cacheOptions?: WorkflowCacheOptions,
-        private payloadManager?: PayloadManager
+        private payloadManager?: PayloadManager,
+        engineConfig?: Partial<EngineConfig>
     ) {
+        // Merge user config with defaults
+        this.config = mergeEngineConfig(engineConfig);
+
         // Initialize LRU cache with configurable limits
         const { maxSize = 500, ttlMs = 3600000 } = cacheOptions || {};
         this.workflowCache = new LRUCache<string, WorkflowDefinition>({
@@ -65,7 +71,8 @@ export class WorkflowEngine {
             this.workflowCache, // Pass LRU cache reference to NodeProcessor
             this.enqueueWorkflow.bind(this),
             _circuitBreakerRegistry, // Pass circuit breaker registry for external node protection
-            payloadManager
+            payloadManager,
+            this.config // Pass engine config for feature flags
         );
 
         // Initialize WorkerManager
@@ -75,7 +82,8 @@ export class WorkflowEngine {
             this.dlqManager,
             stateStore,
             this.enqueueWorkflow.bind(this),
-            metricsCollector
+            metricsCollector,
+            this.config
         );
 
         // Initialize monitors (optional, only if using DrizzleStore)
@@ -130,34 +138,16 @@ export class WorkflowEngine {
         // Update in-memory cache
         this.workflowCache.set(workflow.id, workflow);
 
-        // Handle Schedule Triggers
+        // Handle Schedule Triggers using upsertJobScheduler (idempotent, no manual cleanup needed)
         if (workflow.triggers) {
             for (const trigger of workflow.triggers) {
                 if (trigger.type === 'schedule') {
-                    const jobId = `schedule:${workflow.id}:${trigger.config.cron}`;
-
                     try {
-                        // Remove existing job to make registration idempotent
-                        const existingJobs = await this.queueManager.workflowQueue.getRepeatableJobs();
-                        const existingJob = existingJobs.find(job => job.id === jobId);
-                        if (existingJob) {
-                            await this.queueManager.workflowQueue.removeRepeatableByKey(existingJob.key);
-                            logger.info({ workflowId: workflow.id }, `🔄 Removed existing schedule for workflow ${workflow.id}`);
-                        }
-
-                        // Add new repeatable job
-                        await this.queueManager.workflowQueue.add(
-                            'workflow-execution',
-                            { workflowId: workflow.id },
-                            {
-                                jobId,
-                                repeat: {
-                                    pattern: trigger.config.cron,
-                                    ...(trigger.config.timezone && { tz: trigger.config.timezone }),
-                                } as any, // BullMQ RepeatOptions type may not include tz in all versions
-                            }
+                        await this.registerScheduleWithUpsert(
+                            workflow.id,
+                            trigger.config.cron,
+                            trigger.config.timezone
                         );
-                        logger.info({ workflowId: workflow.id, cron: trigger.config.cron }, `⏰ Registered schedule for workflow ${workflow.id}: ${trigger.config.cron}`);
                     } catch (error) {
                         const errorMsg = `Failed to register schedule trigger for workflow ${workflow.id}: ${error instanceof Error ? error.message : String(error)}`;
                         logger.error({ workflowId: workflow.id, error }, errorMsg);
@@ -166,6 +156,142 @@ export class WorkflowEngine {
                 }
             }
         }
+    }
+
+    /**
+     * Register a schedule trigger using BullMQ's upsertJobScheduler.
+     * This is idempotent - calling it multiple times with the same parameters
+     * will update the existing schedule rather than creating duplicates.
+     * 
+     * @param workflowId - The workflow ID to schedule
+     * @param cron - Cron pattern for the schedule
+     * @param timezone - Optional timezone for the cron schedule
+     */
+    async registerScheduleWithUpsert(
+        workflowId: string,
+        cron: string,
+        timezone?: string
+    ): Promise<void> {
+        const schedulerId = `schedule:${workflowId}:${cron}`;
+
+        await this.queueManager.workflowQueue.upsertJobScheduler(
+            schedulerId,
+            {
+                pattern: cron,
+                ...(timezone && { tz: timezone }),
+            },
+            {
+                name: 'workflow-execution',
+                data: { workflowId },
+            }
+        );
+
+        logger.info(
+            { workflowId, cron, timezone, schedulerId },
+            `⏰ Upserted schedule for workflow ${workflowId}: ${cron}`
+        );
+    }
+
+    /**
+     * Remove all job schedulers associated with a workflow.
+     * Used when deactivating a workflow to stop scheduled executions.
+     * 
+     * @param workflowId - The workflow ID to deactivate schedules for
+     * @returns Number of schedulers removed
+     */
+    async removeWorkflowSchedulers(workflowId: string): Promise<number> {
+        const schedulers = await this.queueManager.workflowQueue.getJobSchedulers();
+        let removedCount = 0;
+
+        for (const scheduler of schedulers) {
+            // Scheduler IDs follow the pattern: schedule:{workflowId}:{cron}
+            const schedulerId = scheduler.id;
+            if (schedulerId && schedulerId.startsWith(`schedule:${workflowId}:`)) {
+                await this.queueManager.workflowQueue.removeJobScheduler(schedulerId);
+                logger.info(
+                    { workflowId, schedulerId },
+                    `🗑️ Removed scheduler ${schedulerId} for workflow ${workflowId}`
+                );
+                removedCount++;
+            }
+        }
+
+        if (removedCount > 0) {
+            logger.info(
+                { workflowId, removedCount },
+                `✅ Removed ${removedCount} scheduler(s) for workflow ${workflowId}`
+            );
+        } else {
+            logger.debug(
+                { workflowId },
+                `No schedulers found for workflow ${workflowId}`
+            );
+        }
+
+        return removedCount;
+    }
+
+    /**
+     * Get all active job schedulers.
+     * Returns a list of job schedulers with their IDs, patterns, and next execution times.
+     * Useful for monitoring scheduled workflows and building dashboards.
+     * 
+     * @param start - Start index for pagination (default: 0)
+     * @param end - End index for pagination (default: -1 for all)
+     * @param asc - Sort by next execution time ascending (default: true)
+     * @returns Array of job scheduler objects
+     */
+    async getJobSchedulers(
+        start: number = 0,
+        end: number = -1,
+        asc: boolean = true
+    ): Promise<Array<{
+        id: string;
+        pattern?: string;
+        every?: number;
+        tz?: string;
+        next?: number;
+        endDate?: number;
+    }>> {
+        const schedulers = await this.queueManager.workflowQueue.getJobSchedulers(start, end, asc);
+        return schedulers
+            .filter(scheduler => scheduler.id != null)
+            .map(scheduler => ({
+                id: scheduler.id!,
+                pattern: scheduler.pattern,
+                every: scheduler.every,
+                tz: scheduler.tz,
+                next: scheduler.next,
+                endDate: scheduler.endDate,
+            }));
+    }
+
+    /**
+     * Get a specific job scheduler by ID.
+     * 
+     * @param schedulerId - The scheduler ID to look up
+     * @returns The job scheduler object or null if not found
+     */
+    async getJobScheduler(schedulerId: string): Promise<{
+        id: string;
+        pattern?: string;
+        every?: number;
+        tz?: string;
+        next?: number;
+        endDate?: number;
+    } | null> {
+        const scheduler = await this.queueManager.workflowQueue.getJobScheduler(schedulerId);
+        if (!scheduler || !scheduler.id) {
+            return null;
+        }
+        return {
+            id: scheduler.id,
+            pattern: scheduler.pattern,
+            every: scheduler.every,
+            tz: scheduler.tz,
+            next: scheduler.next,
+            endDate: scheduler.endDate,
+        };
     }
 
     /**
@@ -212,6 +338,13 @@ export class WorkflowEngine {
             size: this.workflowCache.size,
             maxSize: this.workflowCache.max,
         };
+    }
+
+    /**
+     * Get the current engine configuration
+     */
+    getConfig(): EngineConfig {
+        return this.config;
     }
 
     /**
@@ -316,7 +449,7 @@ export class WorkflowEngine {
             workflowId,
             status: 'started',
         };
-        await this.eventStreamManager.emit(startedEvent);
+        this.eventStreamManager.emitLocal(startedEvent);
 
         await this.log(executionId, undefined, 'info', `Workflow ${workflowId} started (Execution ID: ${executionId})`);
         return executionId;
@@ -424,8 +557,9 @@ export class WorkflowEngine {
     }
 
     // Start worker processes
-    startWorkers(concurrency: number = 5): void {
-        this.workerManager.startWorkers(concurrency);
+    startWorkers(concurrency?: number): void {
+        // Use provided concurrency, or fall back to config value
+        this.workerManager.startWorkers(concurrency ?? this.config.workerConcurrency);
 
         // Start event stream for real-time updates
         this.eventStreamManager.start().catch((error) => {
@@ -481,9 +615,7 @@ export class WorkflowEngine {
             workflowId,
             status: 'cancelled',
         };
-        await this.eventStreamManager.emit(cancelledEvent);
-
-        await this.eventStreamManager.emit(cancelledEvent);
+        this.eventStreamManager.emitLocal(cancelledEvent);
 
         logger.info({ executionId, removedCount }, `🚫 Workflow ${executionId} cancelled (removed ${removedCount} pending jobs)`);
     }
@@ -538,7 +670,7 @@ export class WorkflowEngine {
             workflowId,
             status: 'paused',
         };
-        await this.eventStreamManager.emit(pausedEvent);
+        this.eventStreamManager.emitLocal(pausedEvent);
 
         console.log(`⏸️ Workflow ${executionId} paused (delayed ${pausedCount} jobs)`);
     }

@@ -582,6 +582,135 @@ export class WorkflowAPIController {
     });
 
 
+    // ============================================================================
+    // SCHEDULE MANAGEMENT ENDPOINTS
+    // ============================================================================
+
+    // Get all job schedulers
+    this.app.get('/api/schedulers', async ({ query, set }) => {
+      try {
+        const start = parseInt(query.start as string || '0');
+        const end = parseInt(query.end as string || '-1');
+        const asc = query.asc !== 'false'; // Default to ascending
+
+        const schedulers = await this.engine.getJobSchedulers(start, end, asc);
+
+        return {
+          success: true,
+          schedulers,
+          count: schedulers.length,
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    });
+
+    // Get a specific job scheduler by ID
+    this.app.get('/api/schedulers/:schedulerId', async ({ params, set }) => {
+      try {
+        const { schedulerId } = params;
+        const scheduler = await this.engine.getJobScheduler(decodeURIComponent(schedulerId));
+
+        if (!scheduler) {
+          set.status = 404;
+          return {
+            success: false,
+            error: 'Scheduler not found',
+          };
+        }
+
+        return {
+          success: true,
+          scheduler,
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    });
+
+    // Create or update a schedule for a workflow
+    this.app.put('/api/workflows/:workflowId/schedules', async ({ params, body, set }) => {
+      try {
+        const { workflowId } = params;
+        const { cron, timezone } = body as { cron: string; timezone?: string };
+
+        if (!cron) {
+          set.status = 400;
+          return {
+            success: false,
+            error: 'cron pattern is required',
+          };
+        }
+
+        await this.engine.registerScheduleWithUpsert(workflowId, cron, timezone);
+
+        return {
+          success: true,
+          message: 'Schedule registered',
+          schedulerId: `schedule:${workflowId}:${cron}`,
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    });
+
+    // Remove all schedules for a workflow
+    this.app.delete('/api/workflows/:workflowId/schedules', async ({ params, set }) => {
+      try {
+        const { workflowId } = params;
+        const removedCount = await this.engine.removeWorkflowSchedulers(workflowId);
+
+        return {
+          success: true,
+          message: `Removed ${removedCount} scheduler(s)`,
+          removedCount,
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    });
+
+    // Get schedules for a specific workflow
+    this.app.get('/api/workflows/:workflowId/schedules', async ({ params, set }) => {
+      try {
+        const { workflowId } = params;
+        const allSchedulers = await this.engine.getJobSchedulers();
+        
+        // Filter schedulers for this workflow
+        const workflowSchedulers = allSchedulers.filter(
+          scheduler => scheduler.id.startsWith(`schedule:${workflowId}:`)
+        );
+
+        return {
+          success: true,
+          schedulers: workflowSchedulers,
+          count: workflowSchedulers.length,
+        };
+      } catch (error: any) {
+        set.status = 500;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    });
+
     // Webhook endpoint (supports multi-segment paths like /foo/bar)
     this.app.all('/api/webhooks/*', async ({ params, body, request, set }) => {
       try {

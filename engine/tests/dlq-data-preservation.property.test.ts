@@ -9,10 +9,13 @@ import type { NodeJobData, DLQItem } from "../types";
  * 
  * These tests verify that:
  * - When retrying a DLQ item, the re-enqueued job contains all original NodeJobData fields
- * - Sub-workflow state fields (subWorkflowStep, childExecutionId) are preserved
+ * - Delay node state fields (delayStep, delayStartTime) are preserved
  * - The correct job name 'process-node' is used
  * 
  * **Validates: Requirements 6.1, 6.2**
+ * 
+ * Note: The old subWorkflowStep and childExecutionId fields have been removed
+ * as part of the BullMQ improvements cleanup.
  */
 
 // Arbitrary for generating valid execution IDs
@@ -24,9 +27,9 @@ const workflowIdArb = fc.stringMatching(/^wf-[a-z0-9]{4,12}$/);
 // Arbitrary for generating valid node IDs
 const nodeIdArb = fc.stringMatching(/^node-[a-z0-9]{2,8}$/);
 
-// Arbitrary for sub-workflow step types (including undefined)
-const subWorkflowStepArb = fc.option(
-  fc.constantFrom('initial', 'waiting-children', 'complete') as fc.Arbitrary<'initial' | 'waiting-children' | 'complete'>,
+// Arbitrary for delay step types (including undefined)
+const delayStepArb = fc.option(
+  fc.constantFrom('initial', 'resumed') as fc.Arbitrary<'initial' | 'resumed'>,
   { nil: undefined }
 );
 
@@ -45,8 +48,8 @@ const nodeJobDataArb = fc.record({
   workflowId: workflowIdArb,
   nodeId: nodeIdArb,
   inputData: inputDataArb,
-  subWorkflowStep: subWorkflowStepArb,
-  childExecutionId: fc.option(executionIdArb, { nil: undefined }),
+  delayStep: delayStepArb,
+  delayStartTime: fc.option(fc.integer({ min: 1000000000000, max: 9999999999999 }), { nil: undefined }),
 });
 
 // Arbitrary for generating DLQItem
@@ -102,7 +105,7 @@ describe("DLQ data preservation property tests", () => {
    * **Feature: workflow-engine-bugfixes, Property 7: DLQ data preservation**
    * 
    * *For any* DLQ item being retried, the re-enqueued job SHALL contain all original 
-   * NodeJobData fields including `subWorkflowStep` and `childExecutionId`.
+   * NodeJobData fields including delay node state fields.
    * 
    * **Validates: Requirements 6.1, 6.2**
    */
@@ -125,17 +128,17 @@ describe("DLQ data preservation property tests", () => {
       );
     });
 
-    test("sub-workflow state fields are preserved in retry", async () => {
+    test("delay node state fields are preserved in retry", async () => {
       await fc.assert(
         fc.asyncProperty(dlqItemArb, async (dlqItem) => {
           const originalData = dlqItem.data;
           const extractedData = extractNodeJobDataFromDLQ(dlqItem);
 
-          // Property: subWorkflowStep must be preserved (including undefined)
-          expect(extractedData.subWorkflowStep).toBe(originalData.subWorkflowStep);
+          // Property: delayStep must be preserved (including undefined)
+          expect(extractedData.delayStep).toBe(originalData.delayStep);
           
-          // Property: childExecutionId must be preserved (including undefined)
-          expect(extractedData.childExecutionId).toBe(originalData.childExecutionId);
+          // Property: delayStartTime must be preserved (including undefined)
+          expect(extractedData.delayStartTime).toBe(originalData.delayStartTime);
         }),
         { numRuns: 100 }
       );
@@ -167,17 +170,17 @@ describe("DLQ data preservation property tests", () => {
       );
     });
 
-    test("DLQ items with sub-workflow state are correctly extracted", async () => {
-      // Generate DLQ items specifically with sub-workflow state
-      const dlqItemWithSubWorkflowArb = fc.record({
+    test("DLQ items with delay state are correctly extracted", async () => {
+      // Generate DLQ items specifically with delay state
+      const dlqItemWithDelayArb = fc.record({
         jobId: fc.stringMatching(/^job-[a-z0-9]{8,16}$/),
         data: fc.record({
           executionId: executionIdArb,
           workflowId: workflowIdArb,
           nodeId: nodeIdArb,
           inputData: inputDataArb,
-          subWorkflowStep: fc.constantFrom('initial', 'waiting-children', 'complete') as fc.Arbitrary<'initial' | 'waiting-children' | 'complete'>,
-          childExecutionId: executionIdArb,
+          delayStep: fc.constantFrom('initial', 'resumed') as fc.Arbitrary<'initial' | 'resumed'>,
+          delayStartTime: fc.integer({ min: 1000000000000, max: 9999999999999 }),
         }),
         failedReason: fc.string({ minLength: 1, maxLength: 100 }),
         timestamp: fc.integer({ min: 1000000000000, max: 9999999999999 }),
@@ -185,14 +188,14 @@ describe("DLQ data preservation property tests", () => {
       });
 
       await fc.assert(
-        fc.asyncProperty(dlqItemWithSubWorkflowArb, async (dlqItem) => {
+        fc.asyncProperty(dlqItemWithDelayArb, async (dlqItem) => {
           const extractedData = extractNodeJobDataFromDLQ(dlqItem);
 
-          // Property: sub-workflow state must be present and correct
-          expect(extractedData.subWorkflowStep).toBeDefined();
-          expect(extractedData.childExecutionId).toBeDefined();
-          expect(extractedData.subWorkflowStep).toBe(dlqItem.data.subWorkflowStep);
-          expect(extractedData.childExecutionId).toBe(dlqItem.data.childExecutionId);
+          // Property: delay state must be present and correct
+          expect(extractedData.delayStep).toBeDefined();
+          expect(extractedData.delayStartTime).toBeDefined();
+          expect(extractedData.delayStep).toBe(dlqItem.data.delayStep);
+          expect(extractedData.delayStartTime).toBe(dlqItem.data.delayStartTime);
         }),
         { numRuns: 100 }
       );
@@ -228,11 +231,22 @@ describe("DLQ data preservation property tests", () => {
           expect(retryJob.jobData.workflowId).toBe(dlqItem.data.workflowId);
           expect(retryJob.jobData.nodeId).toBe(dlqItem.data.nodeId);
           expect(retryJob.jobData.inputData).toEqual(dlqItem.data.inputData);
-          expect(retryJob.jobData.subWorkflowStep).toBe(dlqItem.data.subWorkflowStep);
-          expect(retryJob.jobData.childExecutionId).toBe(dlqItem.data.childExecutionId);
+          expect(retryJob.jobData.delayStep).toBe(dlqItem.data.delayStep);
+          expect(retryJob.jobData.delayStartTime).toBe(dlqItem.data.delayStartTime);
           
           // Property: job name must be correct
           expect(retryJob.jobName).toBe('process-node');
+        }),
+        { numRuns: 100 }
+      );
+    });
+
+    test("deprecated fields are not present in NodeJobData", async () => {
+      await fc.assert(
+        fc.asyncProperty(nodeJobDataArb, async (nodeJobData) => {
+          // Property: deprecated fields should not exist
+          expect((nodeJobData as any).subWorkflowStep).toBeUndefined();
+          expect((nodeJobData as any).childExecutionId).toBeUndefined();
         }),
         { numRuns: 100 }
       );
