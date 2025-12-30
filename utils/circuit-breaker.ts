@@ -1,3 +1,6 @@
+import CircuitBreakerLib from 'opossum';
+import { logger } from './logger';
+
 export interface CircuitBreakerOptions {
     failureThreshold: number; // Number of failures before opening circuit
     successThreshold: number; // Number of successes to close circuit
@@ -18,124 +21,180 @@ export class CircuitBreakerError extends Error {
     }
 }
 
+/**
+ * Maps our CircuitBreakerOptions to Opossum options.
+ * 
+ * Mapping:
+ * - failureThreshold → volumeThreshold (minimum requests before calculating error rate)
+ * - timeout → resetTimeout (time before attempting half-open)
+ * - monitoringPeriod → rollingCountTimeout (time window for tracking failures)
+ * - successThreshold is handled via custom logic in half-open state
+ */
+export function mapToOpossumOptions(options: CircuitBreakerOptions): CircuitBreakerLib.Options {
+    return {
+        volumeThreshold: options.failureThreshold,
+        resetTimeout: options.timeout,
+        rollingCountTimeout: options.monitoringPeriod,
+        // Set error threshold percentage - when this % of requests fail, circuit opens
+        // With volumeThreshold=N, we want to open after N failures
+        // So we set errorThresholdPercentage to ensure N failures triggers opening
+        errorThresholdPercentage: 1, // Open on any failure once volume threshold is met
+        // Disable timeout for the wrapped function (we don't want Opossum to timeout)
+        timeout: false,
+        // Allow only one request in half-open state
+        allowWarmUp: false,
+    };
+}
+
 export class CircuitBreaker {
-    private state: CircuitState = CircuitState.CLOSED;
-    private failureCount: number = 0;
-    private successCount: number = 0;
-    private nextAttempt: number = Date.now();
-    private failures: number[] = []; // Timestamps of failures
-    private halfOpenInProgress = false; // Mutex for HALF_OPEN state
+    private breaker: CircuitBreakerLib<[() => Promise<any>], any>;
+    private successCountInHalfOpen: number = 0;
+    private readonly successThreshold: number;
+    private readonly breakerName: string;
+    private readonly resetTimeout: number;
+    private fallbackFn?: (...args: any[]) => Promise<any>;
+    private halfOpenInProgress: boolean = false;
 
     constructor(
-        private name: string,
-        private options: CircuitBreakerOptions
-    ) { }
+        name: string,
+        options: CircuitBreakerOptions,
+        fallback?: (...args: any[]) => Promise<any>
+    ) {
+        this.breakerName = name;
+        this.successThreshold = options.successThreshold;
+        this.resetTimeout = options.timeout;
+        this.fallbackFn = fallback;
+        
+        // Create a wrapper function that executes the passed function
+        const executorFn = async (fn: () => Promise<any>) => {
+            return await fn();
+        };
+        
+        const opossumOptions = mapToOpossumOptions(options);
+        this.breaker = new CircuitBreakerLib(executorFn, opossumOptions);
+        
+        this.setupEventHandlers();
+        
+        if (fallback) {
+            this.breaker.fallback(async () => fallback());
+        }
+    }
+
+    private setupEventHandlers(): void {
+        this.breaker.on('open', () => {
+            const nextRetry = new Date(Date.now() + this.resetTimeout).toISOString();
+            logger.error(
+                { breakerName: this.breakerName, nextRetry },
+                `Circuit breaker '${this.breakerName}' opened. Will retry at ${nextRetry}`
+            );
+        });
+
+        this.breaker.on('close', () => {
+            this.successCountInHalfOpen = 0;
+            this.halfOpenInProgress = false;
+            logger.info(
+                { breakerName: this.breakerName },
+                `Circuit breaker '${this.breakerName}' closed after recovery`
+            );
+        });
+
+        this.breaker.on('halfOpen', () => {
+            this.successCountInHalfOpen = 0;
+            this.halfOpenInProgress = false;
+            logger.debug(
+                { breakerName: this.breakerName },
+                `Circuit breaker '${this.breakerName}' half-open, attempting probe`
+            );
+        });
+    }
 
     async execute<T>(fn: () => Promise<T>): Promise<T> {
-        if (this.state === CircuitState.OPEN) {
-            if (Date.now() < this.nextAttempt) {
-                throw new CircuitBreakerError(
-                    `Circuit breaker '${this.name}' is OPEN. Service unavailable.`
-                );
+        // Check if circuit is open and should reject
+        if (this.breaker.opened && !this.breaker.pendingClose) {
+            if (this.fallbackFn) {
+                return this.fallbackFn() as Promise<T>;
             }
-            // Attempt to reset - use mutex to prevent race condition
-            if (this.halfOpenInProgress) {
-                // Another request is already probing, reject this one
-                throw new CircuitBreakerError(
-                    `Circuit breaker '${this.name}' is being probed. Try again later.`
-                );
-            }
-            this.halfOpenInProgress = true;
-            this.state = CircuitState.HALF_OPEN;
-            this.successCount = 0;
-        }
-
-        // If already HALF_OPEN and another request comes in, reject it
-        if (this.state === CircuitState.HALF_OPEN && this.halfOpenInProgress) {
-            // This request didn't set the flag, so another request is probing
             throw new CircuitBreakerError(
-                `Circuit breaker '${this.name}' is being probed. Try again later.`
+                `Circuit breaker '${this.breakerName}' is OPEN. Service unavailable.`
             );
         }
 
+        // Handle half-open state with mutex
+        if (this.breaker.halfOpen || this.breaker.pendingClose) {
+            if (this.halfOpenInProgress) {
+                if (this.fallbackFn) {
+                    return this.fallbackFn() as Promise<T>;
+                }
+                throw new CircuitBreakerError(
+                    `Circuit breaker '${this.breakerName}' is being probed. Try again later.`
+                );
+            }
+            this.halfOpenInProgress = true;
+        }
+
         try {
-            const result = await fn();
-            this.onSuccess();
+            // Fire the actual function through Opossum
+            const result = await this.breaker.fire(fn);
+            
+            // Handle half-open success counting
+            if (this.breaker.halfOpen || this.breaker.pendingClose) {
+                this.successCountInHalfOpen++;
+                if (this.successCountInHalfOpen >= this.successThreshold) {
+                    this.breaker.close();
+                    this.halfOpenInProgress = false;
+                }
+            }
+            
             return result;
         } catch (error) {
-            this.onFailure();
+            this.halfOpenInProgress = false;
+            
+            // If Opossum rejected due to open circuit
+            if (error instanceof Error && error.message.includes('Breaker is open')) {
+                if (this.fallbackFn) {
+                    return this.fallbackFn() as Promise<T>;
+                }
+                throw new CircuitBreakerError(
+                    `Circuit breaker '${this.breakerName}' is OPEN. Service unavailable.`
+                );
+            }
             throw error;
         }
     }
 
-    private onSuccess(): void {
-        this.failureCount = 0;
-
-        if (this.state === CircuitState.HALF_OPEN) {
-            this.successCount++;
-            if (this.successCount >= this.options.successThreshold) {
-                this.state = CircuitState.CLOSED;
-                this.successCount = 0;
-                this.failures = [];
-                this.halfOpenInProgress = false; // Release mutex
-                console.log(`[CircuitBreaker] '${this.name}' closed after recovery`);
-            }
-        }
-    }
-
-    private onFailure(): void {
-        const now = Date.now();
-        this.failures.push(now);
-
-        // Remove old failures outside monitoring period
-        this.failures = this.failures.filter(
-            (timestamp) => now - timestamp < this.options.monitoringPeriod
-        );
-
-        this.failureCount = this.failures.length;
-
-        // CRITICAL: Single failure in HALF_OPEN should immediately re-open
-        if (this.state === CircuitState.HALF_OPEN) {
-            this.state = CircuitState.OPEN;
-            this.nextAttempt = now + this.options.timeout;
-            this.halfOpenInProgress = false; // Release mutex
-            console.error(
-                `[CircuitBreaker] '${this.name}' re-opened after failure during probe. Will retry at ${new Date(this.nextAttempt).toISOString()}`
-            );
-            return;
-        }
-
-        // Normal CLOSED state failure handling
-        if (this.failureCount >= this.options.failureThreshold) {
-            this.state = CircuitState.OPEN;
-            this.nextAttempt = now + this.options.timeout;
-            console.error(
-                `[CircuitBreaker] '${this.name}' opened after ${this.failureCount} failures. Will retry at ${new Date(this.nextAttempt).toISOString()}`
-            );
-        }
-    }
-
     getState(): CircuitState {
-        return this.state;
+        if (this.breaker.halfOpen || this.breaker.pendingClose) {
+            return CircuitState.HALF_OPEN;
+        }
+        if (this.breaker.opened) {
+            return CircuitState.OPEN;
+        }
+        return CircuitState.CLOSED;
     }
 
     getStats() {
+        const stats = this.breaker.stats;
         return {
-            name: this.name,
-            state: this.state,
-            failureCount: this.failureCount,
-            successCount: this.successCount,
-            nextAttempt: this.state === CircuitState.OPEN ? new Date(this.nextAttempt).toISOString() : null,
+            name: this.breakerName,
+            state: this.getState(),
+            failureCount: stats.failures,
+            successCount: stats.successes,
+            nextAttempt: this.breaker.opened && !this.breaker.halfOpen && !this.breaker.pendingClose
+                ? new Date(Date.now() + this.resetTimeout).toISOString()
+                : null,
         };
     }
 
     reset(): void {
-        this.state = CircuitState.CLOSED;
-        this.failureCount = 0;
-        this.successCount = 0;
-        this.failures = [];
+        this.breaker.close();
+        // Opossum doesn't have a stats.reset() method, but closing the circuit
+        // and resetting our internal state is sufficient for the reset behavior
+        this.successCountInHalfOpen = 0;
         this.halfOpenInProgress = false;
-        console.log(`[CircuitBreaker] '${this.name}' manually reset`);
+        logger.info(
+            { breakerName: this.breakerName },
+            `Circuit breaker '${this.breakerName}' manually reset`
+        );
     }
 }
 
@@ -150,18 +209,20 @@ export class CircuitBreakerRegistry {
             successThreshold: 2,
             timeout: 60000, // 1 minute
             monitoringPeriod: 120000, // 2 minutes
-        }
+        },
+        fallback?: (...args: any[]) => Promise<any>
     ): CircuitBreaker {
         const existing = this.breakers.get(name);
         if (existing) {
             // Warn if options are being ignored
-            console.warn(
-                `[CircuitBreakerRegistry] Circuit breaker '${name}' already exists. Ignoring provided options.`
+            logger.warn(
+                { breakerName: name },
+                `Circuit breaker '${name}' already exists. Ignoring provided options.`
             );
             return existing;
         }
 
-        const breaker = new CircuitBreaker(name, options);
+        const breaker = new CircuitBreaker(name, options, fallback);
         this.breakers.set(name, breaker);
         return breaker;
     }
