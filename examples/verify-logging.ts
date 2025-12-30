@@ -1,9 +1,6 @@
 import { Redis } from 'ioredis';
-import { WorkflowEngine } from '../engine/workflow-engine';
-import { NodeRegistry } from '../engine/registry';
-import { InMemoryExecutionStore } from '../db/inmemory-store';
-import { logger } from '../utils/logger';
-import type { WorkflowDefinition } from '../types';
+import { WorkflowEngine, NodeRegistry, InMemoryExecutionStore, logger } from 'spane';
+import type { WorkflowDefinition } from 'spane';
 
 // Setup Redis
 const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {

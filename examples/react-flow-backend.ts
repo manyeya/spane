@@ -1,13 +1,8 @@
 import { Elysia } from 'elysia';
 import { cors } from '@elysiajs/cors';
-import { WorkflowEngine } from '../engine/workflow-engine';
-import { NodeRegistry } from '../engine/registry';
-import type { WorkflowEvent, ErrorEvent, WorkflowStatusEvent } from '../engine/event-types';
+import { WorkflowEngine, NodeRegistry, DrizzleExecutionStateStore, HybridExecutionStateStore, CircuitBreakerRegistry, PayloadManager, applyAutoLayout } from 'spane';
+import type { WorkflowEvent, ErrorEvent, WorkflowStatusEvent, WorkflowDefinition, NodeDefinition, ExecutionContext, ExecutionResult, WorkflowTrigger } from 'spane';
 import IORedis from 'ioredis';
-import type { WorkflowDefinition, NodeDefinition, ExecutionContext, ExecutionResult, WorkflowTrigger } from '../types';
-import { DrizzleExecutionStateStore } from '../db/drizzle-store';
-import { HybridExecutionStateStore } from '../db/hybrid-store';
-import { CircuitBreakerRegistry } from '../utils/circuit-breaker';
 import jsonata from 'jsonata';
 
 // Initialize Redis connection
@@ -303,10 +298,7 @@ console.log('✅ Hybrid state store initialized (Redis-first for active executio
 const circuitBreakerRegistry = new CircuitBreakerRegistry();
 console.log('✅ Circuit breaker registry initialized');
 
-import { applyAutoLayout } from '../utils/layout';
-
 // Initialize PayloadManager for Claim Check Pattern (handling large payloads)
-import { PayloadManager } from '../engine/payload-manager';
 let payloadManager: PayloadManager | undefined;
 if (drizzleStore.database) {
     try {

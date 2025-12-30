@@ -1,0 +1,31 @@
+# Source files
+src/
+tsconfig.json
+drizzle.config.ts
+
+# Development files
+.env.*
+*.test.ts
+*.spec.ts
+test/
+tests/
+
+# Examples
+examples/
+
+# Database files
+drizzle/
+dump.rdb
+
+# Documentation
+critical-missing-parts.md
+.kiro/
+
+# CI/CD
+.vscode/
+.gitignore
+.github/
+
+# Misc
+*.lock
+bun.lock

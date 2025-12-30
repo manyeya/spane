@@ -1,9 +1,6 @@
 import { Redis } from 'ioredis';
-import { NodeRegistry } from '../engine/registry';
-import { WorkflowEngine } from '../engine/workflow-engine';
-import { DrizzleExecutionStateStore } from '../db/drizzle-store';
-import { CircuitBreakerRegistry } from '../utils/circuit-breaker';
-import type { WorkflowDefinition } from '../types';
+import { NodeRegistry, WorkflowEngine, DrizzleExecutionStateStore, CircuitBreakerRegistry } from 'spane';
+import type { WorkflowDefinition } from 'spane';
 
 /**
  * Test to verify workflow control methods (pause, resume, cancel)

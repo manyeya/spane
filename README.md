@@ -6,18 +6,112 @@ A workflow orchestration engine built on BullMQ and Redis. Executes DAG-based wo
 
 > ⚠️ **Experimental** - Not production-tested. Expect breaking changes.
 
+## Installation
+
+```bash
+npm install spane
+```
+
 ## Requirements
 
-- Bun 1.0+
 - Redis 6.0+
+- Node.js 18+ / Bun 1.0+
 - PostgreSQL (optional, for persistence)
 
 ## Quick Start
 
-```bash
-bun install
-redis-server
-bun start
+```typescript
+import { Redis } from 'ioredis';
+import { WorkflowEngine, NodeRegistry, InMemoryExecutionStore } from 'spane';
+import type { WorkflowDefinition, INodeExecutor, ExecutionContext, ExecutionResult } from 'spane';
+
+// 1. Create a node executor
+class HttpExecutor implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    const { url, method = 'GET' } = context.nodeConfig || {};
+    
+    const response = await fetch(url, {
+      method,
+      body: method !== 'GET' ? JSON.stringify(context.inputData) : undefined,
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    const data = await response.json();
+    return { success: true, data };
+  }
+}
+
+class TransformExecutor implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    const transformed = {
+      ...context.inputData,
+      processedAt: new Date().toISOString()
+    };
+    return { success: true, data: transformed };
+  }
+}
+
+// 2. Set up registry and engine
+const redis = new Redis();
+const registry = new NodeRegistry();
+registry.register('http', new HttpExecutor());
+registry.register('transform', new TransformExecutor());
+
+const stateStore = new InMemoryExecutionStore();
+const engine = new WorkflowEngine(registry, stateStore, redis);
+
+// 3. Define workflow
+const workflow: WorkflowDefinition = {
+  id: 'fetch-and-transform',
+  name: 'Fetch and Transform',
+  entryNodeId: 'fetch',
+  nodes: [
+    {
+      id: 'fetch',
+      type: 'http',
+      config: { url: 'https://api.example.com/data' },
+      inputs: [],
+      outputs: ['transform']
+    },
+    {
+      id: 'transform',
+      type: 'transform',
+      config: {},
+      inputs: ['fetch'],
+      outputs: []
+    }
+  ]
+};
+
+// 4. Register and execute
+await engine.registerWorkflow(workflow);
+engine.startWorkers(5);
+
+const executionId = await engine.enqueueWorkflow('fetch-and-transform', { userId: 123 });
+console.log('Started execution:', executionId);
+
+// Check status
+const execution = await stateStore.getExecution(executionId);
+console.log('Status:', execution?.status);
+```
+
+## Building Your Own API
+
+SPANE is a library, not a server. You build your own HTTP API on top. For a complete example, see `examples/react-flow-backend.ts`.
+
+```typescript
+import { Elysia } from 'elysia';
+import { WorkflowEngine } from 'spane';
+
+const app = new Elysia();
+const engine = new WorkflowEngine(registry, stateStore, redis);
+
+app.post('/api/workflows/:id/execute', async ({ params, body }) => {
+  const executionId = await engine.enqueueWorkflow(params.id, body.initialData);
+  return { executionId };
+});
+
+app.listen(3000);
 ```
 
 ## Engine Architecture
@@ -191,38 +285,16 @@ Two implementations:
 
 Set `DATABASE_URL` to enable Drizzle store.
 
-## API
-
-See `api.ts` for REST endpoints:
-- `POST /api/workflows` - Register workflow
-- `GET /api/workflows` - List all workflows
-- `GET /api/workflows/:id` - Get workflow definition
-- `GET /api/workflows/:id/versions` - Get workflow version history
-- `GET /api/workflows/:id/versions/:version` - Get specific workflow version
-- `POST /api/workflows/:id/execute` - Execute workflow
-- `GET /api/executions/:id` - Get execution status
-- `POST /api/executions/:id/pause|resume|cancel` - Control execution
-- `GET /api/executions/:id/events` - SSE event stream
-- `GET /api/schedulers` - List all job schedulers
-- `GET /api/schedulers/:id` - Get specific scheduler
-- `GET /api/workflows/:id/schedules` - Get schedules for a workflow
-- `PUT /api/workflows/:id/schedules` - Create/update schedule for a workflow
-- `DELETE /api/workflows/:id/schedules` - Remove all schedules for a workflow
-- `GET /api/dlq` - List DLQ items
-- `POST /api/dlq/:id/retry` - Retry DLQ item
-- `GET /health` - Health check
-- `GET /metrics` - Prometheus metrics
-
 ## Creating Workflows
 
-### Programmatic (Without API)
+### Programmatic
 
 ```typescript
 import { Redis } from 'ioredis';
-import { WorkflowEngine } from './engine/workflow-engine';
-import { NodeRegistry } from './engine/registry';
-import { InMemoryExecutionStore } from './db/inmemory-store';
-import type { WorkflowDefinition, INodeExecutor, ExecutionContext, ExecutionResult } from './types';
+import { WorkflowEngine } from 'spane/engine/workflow-engine';
+import { NodeRegistry } from 'spane/engine/registry';
+import { InMemoryExecutionStore } from 'spane/db/inmemory-store';
+import type { WorkflowDefinition, INodeExecutor, ExecutionContext, ExecutionResult } from 'spane/types';
 
 // 1. Create a node executor
 class HttpExecutor implements INodeExecutor {
@@ -295,123 +367,6 @@ const execution = await stateStore.getExecution(executionId);
 console.log('Status:', execution?.status);
 ```
 
-### Via REST API
-
-Start the server first:
-```bash
-bun start
-```
-
-#### Register a Workflow
-
-```bash
-curl -X POST http://localhost:3000/api/workflows \
-  -H "Content-Type: application/json" \
-  -d '{
-    "id": "my-workflow",
-    "name": "My Workflow",
-    "entryNodeId": "start",
-    "nodes": [
-      {
-        "id": "start",
-        "type": "transform",
-        "config": {},
-        "inputs": [],
-        "outputs": ["process"]
-      },
-      {
-        "id": "process",
-        "type": "http",
-        "config": { "url": "https://api.example.com" },
-        "inputs": ["start"],
-        "outputs": []
-      }
-    ]
-  }'
-```
-
-Response:
-```json
-{
-  "success": true,
-  "message": "Workflow registered",
-  "workflowId": "my-workflow"
-}
-```
-
-#### Execute a Workflow
-
-```bash
-curl -X POST http://localhost:3000/api/workflows/my-workflow/execute \
-  -H "Content-Type: application/json" \
-  -d '{
-    "initialData": { "userId": 123, "action": "signup" }
-  }'
-```
-
-Response:
-```json
-{
-  "success": true,
-  "executionId": "exec_abc123",
-  "message": "Workflow execution enqueued"
-}
-```
-
-#### Check Execution Status
-
-```bash
-curl http://localhost:3000/api/executions/exec_abc123
-```
-
-Response:
-```json
-{
-  "success": true,
-  "execution": {
-    "executionId": "exec_abc123",
-    "workflowId": "my-workflow",
-    "status": "completed",
-    "nodeResults": {
-      "start": { "success": true, "data": { "userId": 123, "processedAt": "..." } },
-      "process": { "success": true, "data": { "response": "..." } }
-    },
-    "startedAt": "2024-01-01T00:00:00.000Z",
-    "completedAt": "2024-01-01T00:00:01.000Z"
-  }
-}
-```
-
-#### Control Execution
-
-```bash
-# Pause
-curl -X POST http://localhost:3000/api/executions/exec_abc123/pause
-
-# Resume
-curl -X POST http://localhost:3000/api/executions/exec_abc123/resume
-
-# Cancel
-curl -X POST http://localhost:3000/api/executions/exec_abc123/cancel
-```
-
-#### Stream Events (SSE)
-
-```bash
-curl -N http://localhost:3000/api/executions/exec_abc123/stream
-```
-
-Events:
-```
-data: {"type":"execution:state","executionId":"exec_abc123","status":"running",...}
-
-data: {"type":"node:progress","nodeId":"start","status":"running",...}
-
-data: {"type":"node:progress","nodeId":"start","status":"completed",...}
-
-data: {"type":"workflow:status","status":"completed",...}
-```
-
 ### Workflow with Triggers
 
 ```typescript
@@ -432,11 +387,13 @@ const workflow: WorkflowDefinition = {
 };
 ```
 
-Trigger via webhook:
-```bash
-curl -X POST http://localhost:3000/api/webhooks/user-signup \
-  -H "Content-Type: application/json" \
-  -d '{ "email": "user@example.com" }'
+Trigger via webhook (you build this endpoint):
+```typescript
+// In your API layer
+app.post('/api/webhooks/:path', async ({ params, body }) => {
+  const executionIds = await engine.triggerWebhook(params.path, 'POST', body);
+  return { executionIds };
+});
 ```
 
 ### Conditional Branching
@@ -849,124 +806,6 @@ const removedCount = await engine.removeWorkflowSchedulers('my-workflow');
 console.log(`Removed ${removedCount} schedulers`);
 ```
 
-### Schedule Management REST API
-
-The following REST API endpoints are available for managing schedules:
-
-#### List All Schedulers
-
-```bash
-# Get all active schedulers
-curl http://localhost:3000/api/schedulers
-
-# With pagination and sorting
-curl "http://localhost:3000/api/schedulers?start=0&end=10&asc=true"
-```
-
-Response:
-```json
-{
-  "success": true,
-  "schedulers": [
-    {
-      "id": "schedule:daily-report:0 9 * * *",
-      "pattern": "0 9 * * *",
-      "tz": "America/New_York",
-      "next": 1704110400000
-    },
-    {
-      "id": "schedule:hourly-sync:0 * * * *",
-      "pattern": "0 * * * *",
-      "next": 1704067200000
-    }
-  ],
-  "count": 2
-}
-```
-
-#### Get Specific Scheduler
-
-```bash
-# URL-encode the scheduler ID (colons become %3A)
-curl http://localhost:3000/api/schedulers/schedule%3Amy-workflow%3A0%20%2A%20%2A%20%2A%20%2A
-```
-
-Response:
-```json
-{
-  "success": true,
-  "scheduler": {
-    "id": "schedule:my-workflow:0 * * * *",
-    "pattern": "0 * * * *",
-    "next": 1704067200000
-  }
-}
-```
-
-#### Get Schedules for a Workflow
-
-```bash
-curl http://localhost:3000/api/workflows/my-workflow/schedules
-```
-
-Response:
-```json
-{
-  "success": true,
-  "schedulers": [
-    {
-      "id": "schedule:my-workflow:0 * * * *",
-      "pattern": "0 * * * *",
-      "next": 1704067200000
-    },
-    {
-      "id": "schedule:my-workflow:0 9 * * *",
-      "pattern": "0 9 * * *",
-      "tz": "UTC",
-      "next": 1704110400000
-    }
-  ],
-  "count": 2
-}
-```
-
-#### Create or Update a Schedule
-
-```bash
-curl -X PUT http://localhost:3000/api/workflows/my-workflow/schedules \
-  -H "Content-Type: application/json" \
-  -d '{
-    "cron": "0 */6 * * *",
-    "timezone": "Europe/London"
-  }'
-```
-
-Response:
-```json
-{
-  "success": true,
-  "message": "Schedule registered",
-  "schedulerId": "schedule:my-workflow:0 */6 * * *"
-}
-```
-
-This endpoint is idempotent - calling it multiple times with the same parameters will update the existing schedule rather than creating duplicates.
-
-#### Remove All Schedules for a Workflow
-
-```bash
-curl -X DELETE http://localhost:3000/api/workflows/my-workflow/schedules
-```
-
-Response:
-```json
-{
-  "success": true,
-  "message": "Removed 2 scheduler(s)",
-  "removedCount": 2
-}
-```
-
 ### Scheduler ID Format
 
 Scheduler IDs follow the pattern: `schedule:{workflowId}:{cronPattern}`
@@ -1043,8 +882,8 @@ Before enabling sandboxed processors, ensure the TypeScript processor file has b
 
 ```bash
 # Compile the sandbox processor
-bun build engine/processors/node-processor.sandbox.ts \
-  --outdir engine/processors \
+bun build src/engine/processors/node-processor.sandbox.ts \
+  --outdir src/engine/processors \
   --target node
 ```
 
@@ -1151,3 +990,37 @@ See `examples/sandboxed-processor-setup.ts` for comprehensive examples including
 - No built-in UI
 - Limited testing coverage
 - Sub-workflow depth limited to 10 levels
+
+## Publishing
+
+```bash
+# Build package
+bun run build:all
+
+# Dry-run to check what will be published
+npm publish --dry-run
+
+# Publish
+npm publish
+```
+
+## Usage in Other Projects
+
+```typescript
+import { WorkflowEngine, NodeRegistry, InMemoryExecutionStore } from 'spane';
+
+// Your code here
+```
+
+## TypeScript Support
+
+Full TypeScript support out of the box. Import types:
+
+```typescript
+import type { 
+  WorkflowDefinition, 
+  INodeExecutor, 
+  ExecutionContext, 
+  ExecutionResult 
+} from 'spane';
+```

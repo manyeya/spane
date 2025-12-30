@@ -20,11 +20,8 @@
 
 import { Redis } from 'ioredis';
 import * as path from 'path';
-import { NodeRegistry } from '../engine/registry';
-import { WorkflowEngine } from '../engine/workflow-engine';
-import { InMemoryExecutionStore } from '../db/inmemory-store';
-import type { EngineConfig } from '../engine/config';
-import type { WorkflowDefinition, INodeExecutor, ExecutionContext, ExecutionResult } from '../types';
+import { NodeRegistry, WorkflowEngine, InMemoryExecutionStore } from 'spane';
+import type { EngineConfig, WorkflowDefinition, INodeExecutor, ExecutionContext, ExecutionResult } from 'spane';
 
 // ============================================================================
 // ARCHITECTURE OVERVIEW
