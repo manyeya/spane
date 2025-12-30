@@ -1,0 +1,383 @@
+---
+title: Circuit Breakers
+description: Protect external services with automatic circuit breaking
+---
+
+# Circuit Breakers
+
+Circuit breakers prevent cascading failures by automatically stopping calls to failing services after a threshold is reached.
+
+## Overview
+
+When external services (HTTP APIs, databases, etc.) start failing, circuit breakers:
+
+1. **Detect failures** - Track failure rate and response times
+2. **Open circuit** - Stop calling the failing service
+3. **Attempt recovery** - Periodically try the service again
+4. **Close circuit** - Resume normal operation when service recovers
+
+## Circuit Breaker States
+
+```
+    ┌─────────────────────────────────────────────────────┐
+    │                                                   │
+    │         CLOSED (Normal Operation)                    │
+    │   Requests succeed, circuit breaker allows calls      │
+    │         ↓  (failure threshold reached)              │
+    │                                                   │
+    │         OPEN (Fail Fast)                           │
+    │   Requests rejected immediately,                    │
+    │   no calls to failing service                      │
+    │         ↓  (timeout expires)                       │
+    │                                                   │
+    │         HALF-OPEN (Testing)                        │
+    │   Allow limited requests to test service            │
+    │         ↺ (success → CLOSED / fail → OPEN)       │
+    │                                                   │
+    └─────────────────────────────────────────────────────┘
+```
+
+## Using Circuit Breakers
+
+### Register Executor with Circuit Breaker
+
+```typescript
+import { NodeRegistry } from 'spane/engine/registry';
+import { CircuitBreakerRegistry } from 'spane/utils/circuit-breaker';
+
+const circuitBreakerRegistry = new CircuitBreakerRegistry();
+
+// Register executor with circuit breaker options
+registry.register('http-api', new HttpExecutor(), {
+  failureThreshold: 5,    // Open after 5 failures
+  successThreshold: 2,    // Close after 2 successful calls
+  timeout: 60000          // Try again after 60 seconds
+});
+
+// Pass to engine
+const engine = new WorkflowEngine(
+  registry,
+  stateStore,
+  redis,
+  undefined,  // metricsCollector
+  circuitBreakerRegistry
+);
+```
+
+### Circuit Breaker Configuration
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `failureThreshold` | `number` | `5` | Number of failures before opening circuit |
+| `successThreshold` | `number` | `2` | Number of successes before closing circuit |
+| `timeout` | `number` | `60000` | Time in ms before attempting recovery (half-open state) |
+| `rollingCountTimeout` | `number` | `10000` | Time window for rolling statistics (ms) |
+| `rollingCountBuckets` | `number` | `10` | Number of buckets in rolling window |
+| `name` | `string` | Auto-generated | Circuit breaker name (for logging/metrics) |
+
+## Node-Level Circuit Breakers
+
+Configure circuit breakers for individual nodes:
+
+```typescript
+const workflow: WorkflowDefinition = {
+  id: 'api-calls',
+  name: 'API Calls with Circuit Breaker',
+  nodes: [
+    {
+      id: 'call-external-api',
+      type: 'http',
+      config: {
+        url: 'https://external-api.example.com/endpoint',
+        retryPolicy: {
+          maxAttempts: 3,
+          backoff: { type: 'exponential', delay: 1000 }
+        },
+        circuitBreaker: {
+          failureThreshold: 3,
+          successThreshold: 1,
+          timeout: 30000
+        }
+      },
+      inputs: [],
+      outputs: []
+    }
+  ]
+};
+```
+
+## Circuit Breaker Behavior
+
+### CLOSED State
+
+- Normal operation
+- All requests pass through
+- Failures are counted against threshold
+- Circuit opens when failure threshold reached
+
+### OPEN State
+
+- Fail fast immediately
+- No requests to service
+- Fallback function called if provided
+- After timeout, moves to half-open
+
+### HALF-OPEN State
+
+- Allow one request
+- On success: close circuit (reset failure count)
+- On failure: reopen circuit (reset timeout)
+
+## Example: Protected HTTP Executor
+
+```typescript
+export class SafeHttpExecutor implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    const { url, timeout = 30000 } = context.nodeConfig || {};
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+      const response = await fetch(url, {
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        return {
+          success: false,
+          error: `HTTP ${response.status}`
+        };
+      }
+
+      const data = await response.json();
+      return { success: true, data };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }
+}
+```
+
+## Fallback Strategies
+
+### Return Cached Data
+
+```typescript
+class CachedApiExecutor implements INodeExecutor {
+  private cache = new Map();
+
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    const { url } = context.nodeConfig || {};
+
+    // Check if circuit is open
+    if (this.isCircuitOpen()) {
+      // Return cached data
+      const cached = this.cache.get(url);
+      if (cached) {
+        return {
+          success: true,
+          data: cached,
+          metadata: { fromCache: true }
+        };
+      }
+
+      // Circuit open and no cache
+      return {
+        success: false,
+        error: 'Service unavailable (circuit open)'
+      };
+    }
+
+    // Call API
+    const result = await this.callApi(url);
+
+    // Update cache on success
+    if (result.success) {
+      this.cache.set(url, result.data);
+    }
+
+    return result;
+  }
+}
+```
+
+### Return Default Value
+
+```typescript
+class FallbackExecutor implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    try {
+      return await this.callService(context.inputData);
+    } catch (error) {
+      // Return default when circuit is open
+      return {
+        success: true,
+        data: { default: true, timestamp: Date.now() },
+        metadata: { fallback: true }
+      };
+    }
+  }
+}
+```
+
+## Monitoring Circuit Breakers
+
+### Get Circuit Breaker Status
+
+```typescript
+import { CircuitBreakerRegistry } from 'spane/utils/circuit-breaker';
+
+const registry = new CircuitBreakerRegistry();
+
+// Get status for specific circuit
+const status = registry.getStatus('http-api');
+console.log('State:', status.state);  // 'closed', 'open', 'half-open'
+console.log('Failures:', stats.failures);
+console.log('Successes:', stats.successes);
+console.log('Latency:', stats.latencyMean);
+```
+
+### Reset Circuit Breaker
+
+```typescript
+// Manually reset circuit to closed state
+registry.reset('http-api');
+```
+
+## Best Practices
+
+### 1. Set Appropriate Thresholds
+
+```typescript
+// For critical services - open quickly
+{
+  failureThreshold: 3,
+  timeout: 30000
+}
+
+// For non-critical services - allow more failures
+{
+  failureThreshold: 10,
+  timeout: 120000
+}
+```
+
+### 2. Use with Retry Policies
+
+```typescript
+config: {
+  circuitBreaker: {
+    failureThreshold: 5,
+    timeout: 60000
+  },
+  retryPolicy: {
+    maxAttempts: 3,
+    backoff: { type: 'exponential', delay: 1000 }
+  }
+}
+```
+
+### 3. Implement Fallbacks
+
+```typescript
+// Always provide fallback for critical paths
+class RobustExecutor implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    try {
+      return await this.primaryService(context);
+    } catch (error) {
+      return await this.fallbackService(context);
+    }
+  }
+}
+```
+
+### 4. Monitor and Alert
+
+```typescript
+// Set up alerts for opened circuits
+if (status.state === 'open') {
+  alert(`Circuit ${name} is OPEN - service degraded`);
+}
+```
+
+## Complete Example
+
+```typescript
+import { NodeRegistry } from 'spane/engine/registry';
+import { CircuitBreakerRegistry } from 'spane/utils/circuit-breaker';
+
+// Create circuit breaker registry
+const circuitBreakerRegistry = new CircuitBreakerRegistry();
+
+// Create node registry
+const registry = new NodeRegistry();
+
+// Register HTTP executor with circuit breaker
+registry.register('http-api', new HttpExecutor(), {
+  failureThreshold: 5,    // Open after 5 failures
+  successThreshold: 2,    // Close after 2 successes
+  timeout: 60000,         // Wait 60s before retry
+  name: 'external-api-cb'
+});
+
+// Register another service with different settings
+registry.register('database', new DatabaseExecutor(), {
+  failureThreshold: 3,    // More sensitive
+  successThreshold: 1,    // Quick recovery
+  timeout: 30000,         // Faster retry
+  name: 'database-cb'
+});
+
+// Create engine
+const engine = new WorkflowEngine(
+  registry,
+  stateStore,
+  redis,
+  undefined,  // metricsCollector
+  circuitBreakerRegistry
+);
+
+// Workflow with circuit breakers
+const workflow: WorkflowDefinition = {
+  id: 'protected-api-calls',
+  name: 'Protected API Calls',
+  entryNodeId: 'api-1',
+  nodes: [
+    {
+      id: 'api-1',
+      type: 'http-api',
+      config: {
+        url: 'https://api1.example.com/endpoint'
+      },
+      inputs: [],
+      outputs: ['api-2']
+    },
+    {
+      id: 'api-2',
+      type: 'http-api',
+      config: {
+        url: 'https://api2.example.com/endpoint'
+      },
+      inputs: ['api-1'],
+      outputs: []
+    }
+  ]
+};
+
+await engine.registerWorkflow(workflow);
+```
+
+## Next Steps
+
+<Cards>
+  <Card title="Rate Limiting" href="/docs/advanced#rate-limiting" description "Control request rates to external services" />
+  <Card title="Retry Policies" href="/docs/advanced#retries" description "Configure retry behavior with backoff strategies" />
+  <Card title="Error Handling" href="/docs/error-handling" description "DLQ and error management" />
+</Cards>

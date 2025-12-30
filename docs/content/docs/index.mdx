@@ -1,0 +1,145 @@
+---
+title: Introduction
+description: SPANE - Parallel Asynchronous Node Execution workflow orchestration engine
+---
+
+# SPANE
+
+**Parallel Asynchronous Node Execution**
+
+SPANE is a powerful workflow orchestration engine built on [BullMQ](https://bullmq.io/) and [Redis](https://redis.io/). It executes DAG-based (Directed Acyclic Graph) workflows with parallel node processing, automatic retries, state persistence, and real-time event streaming.
+
+> **Note:** SPANE is currently in experimental release. It has not been extensively tested in production environments, and breaking changes may occur between versions.
+
+## Key Features
+
+- **Parallel Execution**: Execute multiple workflow nodes concurrently for maximum throughput
+- **DAG-based Workflows**: Define complex workflows as directed acyclic graphs
+- **State Persistence**: Choose between in-memory or PostgreSQL-backed state storage
+- **Automatic Retries**: Built-in retry policies with configurable backoff strategies
+- **Circuit Breakers**: Protect external services with automatic circuit breaking
+- **Real-time Events**: Subscribe to workflow execution events via Server-Sent Events (SSE)
+- **Sub-workflows**: Compose reusable workflow components up to 10 levels deep
+- **Dead Letter Queue**: Automatically route failed jobs to DLQ for inspection and retry
+- **Rate Limiting**: Per-node-type rate limiting and global worker rate limiting
+- **Sandboxed Execution**: Optional worker thread isolation for CPU-intensive operations
+- **Webhook & Schedule Triggers**: Automatically trigger workflows via webhooks or cron schedules
+- **Job Prioritization**: Set job priorities (1-10) for critical workflow paths
+- **Delayed Execution**: Schedule workflows to execute at specific times
+
+## Architecture
+
+SPANE consists of these core components:
+
+- **WorkflowEngine**: Main orchestrator that manages workflow lifecycle
+- **NodeRegistry**: Stores and retrieves node executors by type
+- **NodeProcessor**: Executes individual nodes with retry logic and error handling
+- **QueueManager**: Manages BullMQ queues for node execution, workflow triggers, and DLQ
+- **WorkerManager**: Runs workers that consume jobs from queues
+- **EventStreamManager**: Provides real-time event streaming via Redis Pub/Sub
+- **PayloadManager**: Implements claim check pattern for large payloads
+- **StateStore**: Handles execution state (InMemory or PostgreSQL)
+
+## Quick Start
+
+### 1. Installation
+
+```bash
+npm install spane
+# or
+bun add spane
+```
+
+### 2. Basic Setup
+
+```typescript
+import { Redis } from 'ioredis';
+import { WorkflowEngine, NodeRegistry, InMemoryExecutionStore } from 'spane';
+import type { WorkflowDefinition, INodeExecutor, ExecutionContext, ExecutionResult } from 'spane';
+
+// 1. Create a node executor
+class HttpExecutor implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    const { url, method = 'GET' } = context.nodeConfig || {};
+
+    const response = await fetch(url, {
+      method,
+      body: method !== 'GET' ? JSON.stringify(context.inputData) : undefined,
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    const data = await response.json();
+    return { success: true, data };
+  }
+}
+
+class TransformExecutor implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    const transformed = {
+      ...context.inputData,
+      processedAt: new Date().toISOString()
+    };
+    return { success: true, data: transformed };
+  }
+}
+
+// 2. Set up registry and engine
+const redis = new Redis();
+const registry = new NodeRegistry();
+registry.register('http', new HttpExecutor());
+registry.register('transform', new TransformExecutor());
+
+const stateStore = new InMemoryExecutionStore();
+const engine = new WorkflowEngine(registry, stateStore, redis);
+
+// 3. Define workflow
+const workflow: WorkflowDefinition = {
+  id: 'fetch-and-transform',
+  name: 'Fetch and Transform',
+  entryNodeId: 'fetch',
+  nodes: [
+    {
+      id: 'fetch',
+      type: 'http',
+      config: { url: 'https://api.example.com/data' },
+      inputs: [],
+      outputs: ['transform']
+    },
+    {
+      id: 'transform',
+      type: 'transform',
+      config: {},
+      inputs: ['fetch'],
+      outputs: []
+    }
+  ]
+};
+
+// 4. Register and execute
+await engine.registerWorkflow(workflow);
+engine.startWorkers(5);
+
+const executionId = await engine.enqueueWorkflow('fetch-and-transform', { userId: 123 });
+console.log('Started execution:', executionId);
+
+// 5. Check status
+const execution = await stateStore.getExecution(executionId);
+console.log('Status:', execution?.status);
+```
+
+## Requirements
+
+- **Redis 6.0+**: Required for BullMQ queue management
+- **Node.js 18+ or Bun 1.0+**: Runtime environment
+- **PostgreSQL** (optional): For persistent state storage
+
+## What's Next?
+
+<Cards>
+  <Card title="Installation & Setup" href="/docs/installation" description="Complete installation guide and environment setup" />
+  <Card title="Workflow Definitions" href="/docs/workflows" description="Learn how to define workflow structures" />
+  <Card title="Node Executors" href="/docs/executors" description="Create custom node executors for your workflows" />
+  <Card title="Engine Configuration" href="/docs/configuration" description="Configure engine behavior and feature flags" />
+  <Card title="API Reference" href="/docs/api" description="Complete API reference for all components" />
+  <Card title="Examples" href="/docs/examples" description="Practical examples and common patterns" />
+</Cards>

@@ -1,0 +1,324 @@
+---
+title: Installation & Setup
+description: Install and configure SPANE with Redis and PostgreSQL
+---
+
+# Installation & Setup
+
+## Requirements
+
+Before installing SPANE, ensure you have:
+
+- **Redis 6.0+**: Required for BullMQ queue management and event streaming
+- **Node.js 18+ or Bun 1.0+**: Runtime environment
+- **PostgreSQL 14+** (optional): For persistent state storage
+- **TypeScript 5+**: For type safety
+
+## Installation
+
+Install SPANE via npm, yarn, pnpm, or bun:
+
+```bash
+npm install spane
+# or
+yarn add spane
+# or
+pnpm add spane
+# or
+bun add spane
+```
+
+### Peer Dependencies
+
+SPANE requires TypeScript 5+ as a peer dependency:
+
+```bash
+npm install -D typescript@^5
+```
+
+## Redis Setup
+
+### Option 1: Docker (Recommended)
+
+```bash
+docker run -d -p 6379:6379 redis:7-alpine
+```
+
+### Option 2: Local Installation
+
+Follow the [official Redis installation guide](https://redis.io/docs/getting-started/installation/) for your operating system.
+
+### Option 3: Managed Redis Service
+
+Use a managed Redis service like:
+- [Redis Cloud](https://redis.com/redis-enterprise-cloud/)
+- [Amazon ElastiCache](https://aws.amazon.com/elasticache/)
+- [Google Cloud Memorystore](https://cloud.google.com/memorystore)
+
+### Redis Configuration
+
+```typescript
+import { Redis } from 'ioredis';
+
+// Local Redis
+const redis = new Redis();
+
+// With connection options
+const redis = new Redis({
+  host: 'localhost',
+  port: 6379,
+  password: 'your-password', // optional
+  db: 0, // Redis database number
+  maxRetriesPerRequest: 3,
+  retryDelayOnFailover: 100,
+  lazyConnect: true,
+});
+
+// Using Redis Cloud URL
+const redis = new Redis('rediss://:password@host:port');
+```
+
+## PostgreSQL Setup (Optional)
+
+PostgreSQL is optional but recommended for production deployments to persist workflow definitions and execution state.
+
+### Option 1: Docker (Recommended)
+
+```bash
+docker run -d \
+  -p 5432:5432 \
+  -e POSTGRES_USER=spane \
+  -e POSTGRES_PASSWORD=spane_password \
+  -e POSTGRES_DB=spane \
+  postgres:15-alpine
+```
+
+### Option 2: Local Installation
+
+Follow the [official PostgreSQL installation guide](https://www.postgresql.org/download/) for your operating system.
+
+### Database Schema
+
+Set the `DATABASE_URL` environment variable:
+
+```bash
+# .env
+DATABASE_URL="postgresql://spane:spane_password@localhost:5432/spane"
+```
+
+Run database migrations:
+
+```bash
+bun run db:push
+```
+
+## Environment Variables
+
+Create a `.env` file in your project root:
+
+```bash
+# Redis connection
+REDIS_URL="redis://localhost:6379"
+# or
+SPANE_REDIS_URL="redis://localhost:6379"
+
+# PostgreSQL connection (optional, for persistent state)
+DATABASE_URL="postgresql://user:password@localhost:5432/spane"
+# or
+SPANE_DATABASE_URL="postgresql://user:password@localhost:5432/spane"
+
+# Node environment
+NODE_ENV="development" # or "production"
+```
+
+## Basic Project Setup
+
+### Step 1: Create Node Executors
+
+Create custom node executors by implementing the `INodeExecutor` interface:
+
+```typescript
+// executors/http-executor.ts
+import type { INodeExecutor, ExecutionContext, ExecutionResult } from 'spane';
+
+export class HttpExecutor implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    const { url, method = 'GET', headers = {} } = context.nodeConfig || {};
+
+    try {
+      const response = await fetch(url, {
+        method,
+        body: method !== 'GET' ? JSON.stringify(context.inputData) : undefined,
+        headers: {
+          'Content-Type': 'application/json',
+          ...headers
+        }
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        return {
+          success: false,
+          error: `HTTP ${response.status}: ${response.statusText}`
+        };
+      }
+
+      return { success: true, data };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }
+}
+```
+
+### Step 2: Initialize the Engine
+
+```typescript
+// index.ts
+import { Redis } from 'ioredis';
+import { WorkflowEngine, NodeRegistry } from 'spane';
+import { InMemoryExecutionStore } from 'spane/db/inmemory-store';
+import { HttpExecutor } from './executors/http-executor';
+
+// Connect to Redis
+const redis = new Redis();
+
+// Create node registry
+const registry = new NodeRegistry();
+registry.register('http', new HttpExecutor());
+
+// Create state store (in-memory for development)
+const stateStore = new InMemoryExecutionStore();
+
+// Create engine
+const engine = new WorkflowEngine(registry, stateStore, redis);
+
+// Register workflow
+await engine.registerWorkflow({
+  id: 'example-workflow',
+  name: 'Example Workflow',
+  entryNodeId: 'fetch',
+  nodes: [
+    {
+      id: 'fetch',
+      type: 'http',
+      config: { url: 'https://api.example.com/data' },
+      inputs: [],
+      outputs: []
+    }
+  ]
+});
+
+// Start workers
+engine.startWorkers(5);
+
+// Enqueue workflow
+const executionId = await engine.enqueueWorkflow('example-workflow', { userId: 123 });
+console.log('Execution started:', executionId);
+```
+
+## TypeScript Configuration
+
+Ensure your `tsconfig.json` includes:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
+```
+
+## Production Considerations
+
+### Graceful Shutdown
+
+Always handle graceful shutdown to prevent data loss:
+
+```typescript
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received, shutting down gracefully...');
+  await engine.close();
+  await redis.quit();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('SIGINT received, shutting down gracefully...');
+  await engine.close();
+  await redis.quit();
+  process.exit(0);
+});
+```
+
+### Error Handling
+
+Wrap your initialization in try-catch:
+
+```typescript
+async function main() {
+  try {
+    const redis = new Redis();
+    const engine = new WorkflowEngine(registry, stateStore, redis);
+
+    await engine.registerWorkflow(workflow);
+    engine.startWorkers(5);
+
+    console.log('Engine started successfully');
+  } catch (error) {
+    console.error('Failed to start engine:', error);
+    process.exit(1);
+  }
+}
+
+main();
+```
+
+### Health Checks
+
+Implement health checks for your HTTP API:
+
+```typescript
+import { Redis } from 'ioredis';
+
+async function healthCheck(): Promise<boolean> {
+  try {
+    // Check Redis connection
+    await redis.ping();
+
+    // Check engine state
+    const stats = await engine.getQueueStats();
+
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+```
+
+## Next Steps
+
+<Cards>
+  <Card title="Workflow Definitions" href="/docs/workflows" description="Learn how to define workflow structures" />
+  <Card title="Node Executors" href="/docs/executors" description="Create custom node executors for your workflows" />
+  <Card title="Engine Configuration" href="/docs/configuration" description="Configure engine behavior and feature flags" />
+</Cards>

@@ -1,0 +1,450 @@
+---
+title: Event Streaming
+description: Real-time workflow event subscriptions via Server-Sent Events
+---
+
+# Event Streaming
+
+SPANE provides real-time event streaming through Redis Pub/Sub and Server-Sent Events (SSE), allowing you to monitor workflow executions as they happen.
+
+## Overview
+
+Event streaming enables:
+
+- **Real-time monitoring**: Watch workflow progress live
+- **Debugging**: Trace execution flow in real time
+- **Dashboards**: Build live workflow monitoring interfaces
+- **Notifications**: React to specific events immediately
+
+## Event Types
+
+### Workflow Status Events
+
+Emitted when workflow status changes:
+
+```typescript
+interface WorkflowStatusEvent {
+  type: 'workflow:status';
+  timestamp: number;
+  executionId: string;
+  workflowId: string;
+  status: 'started' | 'completed' | 'failed' | 'cancelled' | 'paused';
+}
+```
+
+### Node Events
+
+Emitted during node execution:
+
+```typescript
+interface NodeEvent {
+  type: 'node:started' | 'node:completed' | 'node:failed' | 'node:skipped';
+  timestamp: number;
+  executionId: string;
+  workflowId: string;
+  nodeId: string;
+  nodeType: string;
+  result?: ExecutionResult;
+  error?: string;
+}
+```
+
+### Progress Events
+
+Emitted for workflow progress updates:
+
+```typescript
+interface ProgressEvent {
+  type: 'workflow:progress';
+  timestamp: number;
+  executionId: string;
+  workflowId: string;
+  completedNodes: number;
+  totalNodes: number;
+  progress: number;  // 0-100
+}
+```
+
+## Accessing Event Stream
+
+### Get Event Stream Manager
+
+```typescript
+const eventStream = engine.getEventStream();
+```
+
+### Subscribe to All Events
+
+```typescript
+const subscription = await eventStream.subscribe('*', (event) => {
+  console.log('Received event:', event);
+});
+
+// Unsubscribe when done
+await subscription.unsubscribe();
+```
+
+### Subscribe to Workflow Execution
+
+```typescript
+const subscription = await eventStream.subscribeToExecution(
+  executionId,
+  (event) => {
+    console.log('Execution event:', event);
+  }
+);
+```
+
+### Subscribe to Specific Event Types
+
+```typescript
+// Subscribe to workflow status events
+const statusSubscription = await eventStream.subscribe(
+  'workflow:status',
+  (event: WorkflowStatusEvent) => {
+    console.log('Status changed:', event.status);
+  }
+);
+
+// Subscribe to node events
+const nodeSubscription = await eventStream.subscribe(
+  'node:*',
+  (event: NodeEvent) => {
+    console.log('Node event:', event.type);
+  }
+);
+```
+
+## Server-Sent Events (SSE) Endpoint
+
+Create an SSE endpoint for real-time updates:
+
+```typescript
+import { Elysia } from 'elysia';
+import { WorkflowEngine } from 'spane/engine/workflow-engine';
+
+const app = new Elysia();
+const engine = new WorkflowEngine(registry, stateStore, redis);
+
+// SSE endpoint
+app.get('/api/events/subscribe', async ({ request, set }) => {
+  const url = new URL(request.url);
+  const executionId = url.searchParams.get('executionId');
+
+  // Set SSE headers
+  set.headers = {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  };
+
+  const encoder = new TextEncoder();
+
+  // Create readable stream
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (data: any) => {
+        const message = `data: ${JSON.stringify(data)}\n\n`;
+        controller.enqueue(encoder.encode(message));
+      };
+
+      // Send initial connection message
+      send({ type: 'connected', timestamp: Date.now() });
+
+      // Subscribe to events
+      let subscription;
+      if (executionId) {
+        subscription = await engine.getEventStream().subscribeToExecution(
+          executionId,
+          (event) => send(event)
+        );
+      } else {
+        subscription = await engine.getEventStream().subscribe('*', (event) => {
+          send(event);
+        });
+      }
+
+      // Keep connection alive
+      const heartbeat = setInterval(() => {
+        send({ type: 'heartbeat', timestamp: Date.now() });
+      }, 30000);
+
+      // Clean up on disconnect
+      request.signal.addEventListener('abort', async () => {
+        clearInterval(heartbeat);
+        await subscription?.unsubscribe();
+        controller.close();
+      });
+    }
+  });
+
+  return stream;
+});
+```
+
+## Client-Side Event Handling
+
+### Using EventSource API
+
+```typescript
+// Connect to SSE endpoint
+const eventSource = new EventSource('/api/events/subscribe?executionId=exec-123');
+
+eventSource.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+
+  switch (data.type) {
+    case 'workflow:status':
+      console.log('Workflow status:', data.status);
+      break;
+
+    case 'node:started':
+      console.log('Node started:', data.nodeId);
+      break;
+
+    case 'node:completed':
+      console.log('Node completed:', data.nodeId, data.result);
+      break;
+
+    case 'node:failed':
+      console.error('Node failed:', data.nodeId, data.error);
+      break;
+
+    case 'workflow:progress':
+      console.log(`Progress: ${data.progress}% (${data.completedNodes}/${data.totalNodes})`);
+      break;
+  }
+};
+
+// Handle connection errors
+eventSource.onerror = (error) => {
+  console.error('SSE connection error:', error);
+};
+
+// Disconnect when done
+eventSource.close();
+```
+
+### Using fetch with ReadableStream
+
+```typescript
+async function* getEvents(executionId?: string) {
+  const response = await fetch(
+    `/api/events/subscribe${executionId ? `?executionId=${executionId}` : ''}`
+  );
+
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        const data = JSON.parse(line.slice(6));
+        yield data;
+      }
+    }
+  }
+}
+
+// Usage
+for await (const event of getEvents('exec-123')) {
+  console.log('Event:', event);
+}
+```
+
+## Event Filtering
+
+### Filter by Workflow ID
+
+```typescript
+const subscription = await eventStream.subscribe('*', (event) => {
+  if (event.workflowId === 'my-workflow') {
+    console.log('Event from my workflow:', event);
+  }
+});
+```
+
+### Filter by Event Type
+
+```typescript
+const subscription = await eventStream.subscribe(
+  'node:*',
+  (event) => {
+    // Only node events
+    console.log('Node event:', event);
+  }
+);
+```
+
+### Complex Filtering
+
+```typescript
+const subscription = await eventStream.subscribe('*', (event) => {
+  // Filter for failed nodes in specific workflow
+  if (
+    event.type === 'node:failed' &&
+    event.workflowId === 'critical-workflow'
+  ) {
+    alert(`Node ${event.nodeId} failed!`);
+  }
+
+  // Filter for workflow completion
+  if (
+    event.type === 'workflow:status' &&
+    event.status === 'completed'
+  ) {
+    console.log('Workflow completed!');
+  }
+});
+```
+
+## Building a Real-Time Dashboard
+
+```typescript
+import { useState, useEffect } from 'react';
+
+function WorkflowDashboard({ executionId }: { executionId: string }) {
+  const [events, setEvents] = useState<any[]>([]);
+  const [status, setStatus] = useState<string>('running');
+
+  useEffect(() => {
+    const eventSource = new EventSource(
+      `/api/events/subscribe?executionId=${executionId}`
+    );
+
+    eventSource.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+
+      if (data.type === 'workflow:status') {
+        setStatus(data.status);
+      }
+
+      setEvents((prev) => [...prev, data]);
+    };
+
+    return () => eventSource.close();
+  }, [executionId]);
+
+  return (
+    <div>
+      <h2>Workflow Status: {status}</h2>
+      <EventList events={events} />
+    </div>
+  );
+}
+
+function EventList({ events }: { events: any[] }) {
+  return (
+    <ul>
+      {events.map((event, index) => (
+        <li key={index}>
+          {event.type} - {new Date(event.timestamp).toLocaleString()}
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+## Performance Considerations
+
+### Use Specific Subscriptions
+
+```typescript
+// Good: Subscribe to specific execution
+const subscription = await eventStream.subscribeToExecution(
+  executionId,
+  handler
+);
+
+// Avoid: Subscribe to all events unless necessary
+const subscription = await eventStream.subscribe('*', handler);
+```
+
+### Debounce UI Updates
+
+```typescript
+import { useDebouncedCallback } from 'use-debounce';
+
+const debouncedUpdate = useDebouncedCallback(
+  (events) => setEvents(events),
+  300
+);
+
+eventSource.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  debouncedUpdate((prev) => [...prev, data]);
+};
+```
+
+### Limit Event History
+
+```typescript
+const MAX_EVENTS = 1000;
+
+eventSource.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  setEvents((prev) => {
+    const updated = [...prev, data];
+    return updated.slice(-MAX_EVENTS);  // Keep only last 1000 events
+  });
+};
+```
+
+## Simplified Event Stream
+
+Use simplified event streaming for better performance:
+
+```typescript
+const engineConfig: EngineConfig = {
+  useSimplifiedEventStream: true,
+};
+
+const engine = new WorkflowEngine(
+  registry,
+  stateStore,
+  redis,
+  undefined, undefined, undefined, undefined,
+  engineConfig
+);
+```
+
+Benefits:
+- Simpler event handling
+- Lower Redis load
+- Better for high-throughput scenarios
+
+## Cross-Instance Events
+
+Events propagate across all SPANE instances:
+
+```typescript
+// Instance 1
+await engine.enqueueWorkflow('my-workflow', data);
+
+// Instance 2 (different server)
+const subscription = await eventStream.subscribe('*', (event) => {
+  // Will receive events from Instance 1
+  console.log('Cross-instance event:', event);
+});
+```
+
+## Next Steps
+
+<Cards>
+  <Card title="Workflow Definitions" href="/docs/workflows" description "Define workflow structures" />
+  <Card title="State Storage" href="/docs/state-storage" description "Persist execution state" />
+  <Card title="API Reference" href="/docs/api/event-stream" description "Complete EventStream API reference" />
+</Cards>

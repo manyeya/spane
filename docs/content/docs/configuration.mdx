@@ -1,0 +1,409 @@
+---
+title: Engine Configuration
+description: Configure WorkflowEngine behavior and feature flags
+---
+
+# Engine Configuration
+
+The WorkflowEngine supports various configuration options to fine-tune behavior, enable advanced features, and optimize performance.
+
+## Basic Configuration
+
+Pass configuration options when creating the engine:
+
+```typescript
+import { WorkflowEngine } from 'spane/engine/workflow-engine';
+import type { EngineConfig } from 'spane/engine/config';
+
+const engineConfig: EngineConfig = {
+  useFlowProducerForSubWorkflows: true,
+  useNativeRateLimiting: true,
+  workerConcurrency: 10,
+  rateLimiter: {
+    max: 100,
+    duration: 1000,  // 100 jobs per second
+  },
+};
+
+const engine = new WorkflowEngine(
+  registry,
+  stateStore,
+  redis,
+  metricsCollector,
+  circuitBreakerRegistry,
+  cacheOptions,
+  payloadManager,
+  engineConfig
+);
+```
+
+## Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `useFlowProducerForSubWorkflows` | `boolean` | `false` | Use BullMQ FlowProducer for sub-workflow execution with native parent-child job dependencies |
+| `useNativeRateLimiting` | `boolean` | `false` | Use BullMQ's native Worker rate limiting instead of custom Redis INCR/EXPIRE implementation |
+| `useJobSchedulers` | `boolean` | `true` | Use `upsertJobScheduler` for schedule management (always enabled in v2.0) |
+| `useWorkerThreads` | `boolean` | `false` | Run node processing in separate worker threads for CPU isolation (sandboxed execution) |
+| `useSimplifiedEventStream` | `boolean` | `false` | Use `job.updateProgress()` for events instead of QueueEventsProducer |
+| `workerConcurrency` | `number` | `5` | Number of jobs to process in parallel per worker |
+| `rateLimiter` | `object` | `undefined` | Global rate limiter for node execution worker |
+| `processorFile` | `string` | `undefined` | Path to sandboxed processor file (used with `useWorkerThreads`) |
+
+## Feature Flags
+
+All feature flags default to `false` (except `useJobSchedulers`) to maintain backward compatibility. Enable features incrementally as needed:
+
+### Minimal Config (All Defaults)
+
+```typescript
+const engine = new WorkflowEngine(registry, stateStore, redis);
+```
+
+### Enable Specific Features
+
+```typescript
+const engine = new WorkflowEngine(
+  registry,
+  stateStore,redis,
+  undefined, // metricsCollector
+  undefined, // circuitBreakerRegistry
+  undefined, // cacheOptions
+  undefined, // payloadManager
+  {
+    useFlowProducerForSubWorkflows: true,  // Better sub-workflow handling
+    useNativeRateLimiting: true,           // BullMQ native rate limiting
+    workerConcurrency: 10,                  // Higher parallelism
+  }
+);
+```
+
+## Sub-Workflows (FlowProducer)
+
+Enable native BullMQ parent-child job dependencies for sub-workflow execution:
+
+```typescript
+const engineConfig: EngineConfig = {
+  useFlowProducerForSubWorkflows: true,
+};
+
+// Benefits:
+// - Automatic dependency management
+// - Better reliability
+// - Simpler code (no checkpoint/resume pattern)
+// - Native result aggregation
+
+const engine = new WorkflowEngine(
+  registry,
+  stateStore,
+  redis,
+  undefined, undefined, undefined, undefined,
+  engineConfig
+);
+```
+
+**How it works:**
+
+1. Creates BullMQ flow with aggregator as parent and sub-workflow nodes as children
+2. BullMQ automatically manages job dependencies
+3. Aggregator collects results using `getChildrenValues()`
+4. Parent workflow notified when sub-workflow completes
+
+## Rate Limiting
+
+### Per-Node-Type Rate Limiting
+
+Configure rate limits when registering node executors:
+
+```typescript
+registry.register('api-call', new ApiExecutor(), {
+  max: 100,      // 100 requests
+  duration: 60000  // per minute
+});
+```
+
+### Global Worker Rate Limiting
+
+Enable BullMQ's native rate limiting for all node execution:
+
+```typescript
+const engineConfig: EngineConfig = {
+  useNativeRateLimiting: true,
+  rateLimiter: {
+    max: 50,       // Maximum jobs to process
+    duration: 1000, // Within this time window (ms)
+  },
+};
+
+// This limits the worker to processing 50 jobs per second
+// across all node types
+```
+
+**Native vs Custom Rate Limiting:**
+
+- **Native (BullMQ)**: Built into BullMQ, simpler, less Redis operations
+- **Custom (Redis INCR/EXPIRE)**: More control, but higher Redis load
+
+## Worker Concurrency
+
+Control how many jobs a worker processes simultaneously:
+
+```typescript
+const engineConfig: EngineConfig = {
+  workerConcurrency: 10,  // Process 10 jobs in parallel
+};
+
+// Can also be set when starting workers
+engine.startWorkers(20);  // Override config value
+```
+
+**Guidelines:**
+
+- **I/O-bound nodes (HTTP, database)**: Higher concurrency (10-20)
+- **CPU-intensive nodes**: Lower concurrency (1-5) or use worker threads
+- **Mixed workloads**: Moderate concurrency (5-10)
+
+## Sandboxed Processors (Worker Threads)
+
+Run node execution in separate worker threads for CPU isolation:
+
+```typescript
+const engineConfig: EngineConfig = {
+  useWorkerThreads: true,
+  workerConcurrency: 10,
+  processorFile: '/path/to/node-processor.sandbox.js',  // Optional
+};
+```
+
+**Prerequisites:**
+
+1. Compile the sandbox processor to JavaScript:
+```bash
+bun build src/engine/processors/node-processor.sandbox.ts \
+  --outdir src/engine/processors \
+  --target node
+```
+
+2. Set environment variables:
+```bash
+SPANE_REDIS_URL="redis://localhost:6379"
+SPANE_DATABASE_URL="postgresql://..."  # Optional
+NODE_ENV="production"  # Disable serialization warnings
+```
+
+**Benefits:**
+
+- CPU-intensive operations don't block event loop
+- Crash isolation between jobs
+- True parallelism on multi-core systems
+- Safer for untrusted/third-party executors
+
+**When to Use:**
+
+- Processing large data transformations
+- Running cryptographic operations
+- CPU-bound algorithms
+- Untrusted code execution
+
+**When NOT to Use:**
+
+- I/O-bound operations (HTTP, database)
+- Development and debugging
+- Resource-constrained environments
+- Simple, fast operations
+
+## Event Streaming
+
+### Simplified Event Stream
+
+Use `job.updateProgress()` instead of QueueEventsProducer:
+
+```typescript
+const engineConfig: EngineConfig = {
+  useSimplifiedEventStream: true,
+};
+
+// Benefits:
+// - Simpler event handling
+// - Lower Redis load
+// - Better for high-throughput scenarios
+```
+
+### Accessing Event Stream
+
+```typescript
+const eventStream = engine.getEventStream();
+
+// Subscribe to events for a specific execution
+const subscription = await eventStream.subscribeToExecution(executionId, (event) => {
+  console.log('Event:', event);
+});
+
+// Unsubscribe when done
+await subscription.unsubscribe();
+```
+
+## Cache Options
+
+Configure workflow caching behavior:
+
+```typescript
+interface WorkflowCacheOptions {
+  maxSize?: number;   // Max workflows to cache (default: 500)
+  ttlMs?: number;    // Time-to-live in milliseconds (default: 1 hour)
+}
+
+const cacheOptions: WorkflowCacheOptions = {
+  maxSize: 1000,
+  ttlMs: 7200000,  // 2 hours
+};
+
+const engine = new WorkflowEngine(
+  registry,
+  stateStore,
+  redis,
+  metricsCollector,
+  circuitBreakerRegistry,
+  cacheOptions
+);
+```
+
+### Cache Statistics
+
+Monitor cache performance:
+
+```typescript
+const stats = engine.getCacheStats();
+console.log('Cache size:', stats.size);
+console.log('Max size:', stats.maxSize);
+console.log('Hit rate:', stats.hitRate);
+```
+
+## Environment Variables
+
+Control behavior via environment variables:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SPANE_REDIS_URL` or `REDIS_URL` | Yes | Redis connection URL |
+| `SPANE_DATABASE_URL` or `DATABASE_URL` | No | Database URL (uses InMemoryStore if not set) |
+| `SPANE_ENGINE_CONFIG` | No | JSON string of EngineConfig options |
+| `NODE_ENV` | No | Set to "production" to disable sandbox warnings |
+
+### Example .env
+
+```bash
+REDIS_URL="redis://localhost:6379"
+DATABASE_URL="postgresql://spane:password@localhost:5432/spane"
+NODE_ENV="production"
+
+# Optional: JSON config for engine
+SPANE_ENGINE_CONFIG='{"useFlowProducerForSubWorkflows":true,"workerConcurrency":10}'
+```
+
+## Accessing Configuration
+
+Retrieve current engine configuration at runtime:
+
+```typescript
+const config = engine.getConfig();
+
+console.log('Worker concurrency:', config.workerConcurrency);
+console.log('Using FlowProducer:', config.useFlowProducerForSubWorkflows);
+console.log('Native rate limiting:', config.useNativeRateLimiting);
+console.log('Sandboxed execution:', config.useWorkerThreads);
+```
+
+## Complete Example
+
+```typescript
+import { Redis } from 'ioredis';
+import { WorkflowEngine, NodeRegistry } from 'spane';
+import { InMemoryExecutionStore } from 'spane/db/inmemory-store';
+import { CircuitBreakerRegistry } from 'spane/utils/circuit-breaker';
+import { MetricsCollector } from 'spane/utils/metrics';
+import type { EngineConfig, WorkflowCacheOptions } from 'spane/engine/config';
+
+// Configuration
+const engineConfig: EngineConfig = {
+  useFlowProducerForSubWorkflows: true,
+  useNativeRateLimiting: true,
+  useSimplifiedEventStream: true,
+  workerConcurrency: 10,
+  rateLimiter: {
+    max: 100,
+    duration: 1000,
+  },
+};
+
+const cacheOptions: WorkflowCacheOptions = {
+  maxSize: 1000,
+  ttlMs: 7200000,
+};
+
+// Initialize components
+const redis = new Redis();
+const registry = new NodeRegistry();
+const stateStore = new InMemoryExecutionStore();
+const metricsCollector = new MetricsCollector();
+const circuitBreakerRegistry = new CircuitBreakerRegistry();
+
+// Create engine
+const engine = new WorkflowEngine(
+  registry,
+  stateStore,
+  redis,
+  metricsCollector,
+  circuitBreakerRegistry,
+  cacheOptions,
+  undefined,  // payloadManager
+  engineConfig
+);
+
+// Register workflow and start
+await engine.registerWorkflow(workflow);
+engine.startWorkers();
+
+console.log('Engine config:', engine.getConfig());
+```
+
+## Performance Tuning
+
+### High Throughput
+
+```typescript
+const engineConfig: EngineConfig = {
+  workerConcurrency: 20,
+  useNativeRateLimiting: true,
+  useSimplifiedEventStream: true,
+};
+```
+
+### Low Latency
+
+```typescript
+const engineConfig: EngineConfig = {
+  workerConcurrency: 5,
+  useFlowProducerForSubWorkflows: true,  // Faster sub-workflow execution
+};
+```
+
+### Resource Constrained
+
+```typescript
+const engineConfig: EngineConfig = {
+  workerConcurrency: 2,
+  cacheOptions: {
+    maxSize: 100,
+    ttlMs: 3600000,  // 1 hour
+  },
+};
+```
+
+## Next Steps
+
+<Cards>
+  <Card title="Triggers" href="/docs/triggers" description="Configure webhook and schedule triggers" />
+  <Card title="State Storage" href="/docs/state-storage" description="Choose between in-memory and PostgreSQL storage" />
+  <Card title="Event Streaming" href="/docs/event-streaming" description "Real-time workflow event subscriptions" />
+</Cards>

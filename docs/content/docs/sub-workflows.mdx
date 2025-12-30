@@ -1,0 +1,542 @@
+---
+title: Sub-Workflows
+description: Compose reusable workflow components up to 10 levels deep
+---
+
+# Sub-Workflows
+
+Sub-workflows allow you to call other workflows as reusable components, enabling workflow composition, code reuse, and better organization.
+
+## Basic Sub-Workflow
+
+### Child Workflow
+
+First, define the child workflow:
+
+```typescript
+const emailWorkflow: WorkflowDefinition = {
+  id: 'send-email',
+  name: 'Send Email',
+  entryNodeId: 'prepare',
+  nodes: [
+    {
+      id: 'prepare',
+      type: 'transform',
+      config: {},
+      inputs: [],
+      outputs: ['send']
+    },
+    {
+      id: 'send',
+      type: 'email',
+      config: { from: 'noreply@example.com' },
+      inputs: ['prepare'],
+      outputs: []
+    }
+  ]
+};
+```
+
+### Parent Workflow
+
+Call the child workflow from a parent:
+
+```typescript
+const parentWorkflow: WorkflowDefinition = {
+  id: 'onboarding',
+  name: 'User Onboarding',
+  entryNodeId: 'validate',
+  nodes: [
+    {
+      id: 'validate',
+      type: 'transform',
+      config: {},
+      inputs: [],
+      outputs: ['call-email']
+    },
+    {
+      id: 'call-email',
+      type: 'sub-workflow',
+      config: {
+        workflowId: 'send-email'
+      },
+      inputs: ['validate'],
+      outputs: ['complete']
+    },
+    {
+      id: 'complete',
+      type: 'transform',
+      config: {},
+      inputs: ['call-email'],
+      outputs: []
+    }
+  ]
+};
+```
+
+## Sub-Workflow Configuration
+
+### Basic Configuration
+
+```typescript
+{
+  id: 'call-subworkflow',
+  type: 'sub-workflow',
+  config: {
+    workflowId: 'email-sender'  // ID of child workflow
+  },
+  inputs: ['parent-node'],
+  outputs: ['next-node']
+}
+```
+
+### Input/Output Mapping
+
+Transform data between parent and child workflows:
+
+```typescript
+{
+  id: 'call-subworkflow',
+  type: 'sub-workflow',
+  config: {
+    workflowId: 'payment-processor',
+
+    // Map parent data to sub-workflow input
+    inputMapping: {
+      'amount': 'orderTotal',       // Child receives 'amount' from parent's 'orderTotal'
+      'currency': 'orderCurrency',
+      'customerId': 'userId'
+    },
+
+    // Map sub-workflow output back to parent
+    outputMapping: {
+      'transactionId': 'paymentId',  // Parent receives 'transactionId' from child's 'paymentId'
+      'status': 'paymentStatus',
+      'timestamp': 'processedAt'
+    },
+
+    // Continue parent workflow even if sub-workflow fails
+    continueOnFail: false
+  },
+  inputs: ['process-order'],
+  outputs: ['send-confirmation']
+}
+```
+
+### Data Flow Example
+
+```typescript
+// Parent node output
+const parentOutput = {
+  orderTotal: 99.99,
+  orderCurrency: 'USD',
+  userId: 123,
+  orderId: 'order-456'
+};
+
+// inputMapping configuration
+inputMapping: {
+  'amount': 'orderTotal',
+  'currency': 'orderCurrency'
+}
+
+// Child workflow receives
+context.inputData = {
+  amount: 99.99,
+  currency: 'USD'
+};
+
+// Child workflow output
+const childOutput = {
+  paymentId: 'pay-123',
+  paymentStatus: 'completed',
+  processedAt: '2024-01-15T10:30:00Z',
+  gateway: 'stripe'
+};
+
+// outputMapping configuration
+outputMapping: {
+  'transactionId': 'paymentId',
+  'status': 'paymentStatus',
+  'timestamp': 'processedAt'
+}
+
+// Parent workflow receives from child
+context.previousResults['call-subworkflow'] = {
+  transactionId: 'pay-123',
+  status: 'completed',
+  timestamp: '2024-01-15T10:30:00Z'
+};
+```
+
+## Error Handling with continueOnFail
+
+### Default Behavior (continueOnFail: false)
+
+If any sub-workflow node fails, the entire sub-workflow fails and the parent workflow node also fails:
+
+```typescript
+{
+  id: 'mandatory-payment',
+  type: 'sub-workflow',
+  config: {
+    workflowId: 'payment-processor',
+    continueOnFail: false  // Default
+  },
+  inputs: ['order'],
+  outputs: ['shipping']
+}
+
+// If payment fails, workflow stops
+// Shipping will never execute
+```
+
+### Continue on Fail (continueOnFail: true)
+
+Parent workflow continues even if sub-workflow fails:
+
+```typescript
+{
+  id: 'optional-enrichment',
+  type: 'sub-workflow',
+  config: {
+    workflowId: 'data-enrichment',
+    continueOnFail: true  // Don't stop parent on failure
+  },
+  inputs: ['data'],
+  outputs: ['save']
+}
+
+// If enrichment fails, workflow continues with partial results
+```
+
+## Nested Sub-Workflows
+
+Sub-workflows can call other sub-workflows up to 10 levels deep:
+
+```typescript
+// Level 0: Main workflow
+const mainWorkflow = {
+  id: 'order-fulfillment',
+  name: 'Order Fulfillment',
+  entryNodeId: 'start',
+  nodes: [
+    {
+      id: 'start',
+      type: 'transform',
+      config: {},
+      inputs: [],
+      outputs: ['call-level1']
+    },
+    {
+      id: 'call-level1',
+      type: 'sub-workflow',
+      config: { workflowId: 'level1-inventory' },
+      inputs: ['start'],
+      outputs: ['complete']
+    }
+  ]
+};
+
+// Level 1: First sub-workflow
+const level1Workflow = {
+  id: 'level1-inventory',
+  name: 'Inventory Management',
+  entryNodeId: 'check-stock',
+  nodes: [
+    {
+      id: 'check-stock',
+      type: 'transform',
+      config: {},
+      inputs: [],
+      outputs: ['call-level2']
+    },
+    {
+      id: 'call-level2',
+      type: 'sub-workflow',
+      config: { workflowId: 'level2-supplier' },
+      inputs: ['check-stock'],
+      outputs: ['reserve']
+    }
+  ]
+};
+
+// Level 2: Nested sub-workflow
+const level2Workflow = {
+  id: 'level2-supplier',
+  name: 'Supplier Communication',
+  entryNodeId: 'notify',
+  nodes: [
+    {
+      id: 'notify',
+      type: 'http',
+      config: { url: 'https://supplier.example.com/api/notify' },
+      inputs: [],
+      outputs: []
+    }
+  ]
+};
+```
+
+### Execution Tracking
+
+Each nesting level creates its own execution record:
+
+```typescript
+// Query main workflow execution
+const mainExecution = await stateStore.getExecution(mainExecutionId);
+// {
+//   executionId: 'exec-main-123',
+//   workflowId: 'order-fulfillment',
+//   depth: 0,
+//   status: 'completed'
+// }
+
+// Query child execution
+const childExecutions = await stateStore.getChildExecutions(mainExecutionId);
+// [
+//   {
+//     executionId: 'exec-level1-456',
+//     workflowId: 'level1-inventory',
+//     parentExecutionId: 'exec-main-123',
+//     depth: 1
+//   },
+//   {
+//     executionId: 'exec-level2-789',
+//     workflowId: 'level2-supplier',
+//     parentExecutionId: 'exec-level1-456',
+//     depth: 2
+//   }
+// ]
+
+// Query parent execution
+const parentExecution = await stateStore.getParentExecution('exec-level2-789');
+// {
+//   executionId: 'exec-level1-456',
+//   workflowId: 'level1-inventory'
+// }
+```
+
+## FlowProducer Integration
+
+When `useFlowProducerForSubWorkflows: true` is enabled, SPANE uses BullMQ's FlowProducer for sub-workflow execution.
+
+### Benefits
+
+- **Native Parent-Child Dependencies**: BullMQ automatically manages job dependencies
+- **Better Reliability**: Simpler, more robust execution flow
+- **Result Aggregation**: Automatic collection of child job results
+- **No Checkpoint/Resume**: Eliminates complex state management
+
+### How It Works
+
+```typescript
+const engineConfig: EngineConfig = {
+  useFlowProducerForSubWorkflows: true,
+};
+
+const engine = new WorkflowEngine(
+  registry,
+  stateStore,
+  redis,
+  undefined, undefined, undefined, undefined,
+  engineConfig
+);
+```
+
+When a sub-workflow node executes:
+
+1. **Flow Creation**: Creates BullMQ flow with aggregator as parent
+2. **Dependency Management**: BullMQ manages job dependencies automatically
+3. **Result Aggregation**: Aggregator collects results using `getChildrenValues()`
+4. **Parent Notification**: Parent workflow continues when aggregator completes
+
+### Flow Structure
+
+```
+┌──────────────────────────────────────────────────────────┐
+│              FlowProducer Flow Structure                 │
+├──────────────────────────────────────────────────────────┤
+│                                                          │
+│                    ┌──────────────────────┐            │
+│                    │  Aggregator Job      │            │
+│                    │  (waits for children)│            │
+│                    └──────────┬───────────┘            │
+│                               │                        │
+│              ┌────────────────┼────────────────┐         │
+│              │                │                │         │
+│              ▼                ▼                ▼         │
+│     ┌────────────┐   ┌────────────┐   ┌────────────┐  │
+│     │ Final Node │   │ Final Node │   │ Final Node │  │
+│     │     A      │   │     B      │   │     C      │  │
+│     └─────┬──────┘   └─────┬──────┘   └────────────┘  │
+│           │                │                           │
+│           ▼                ▼                           │
+│     ┌────────────┐   ┌────────────┐                   │
+│     │ Entry Node │   │ Entry Node │                   │
+│     │     1      │   │     2      │                   │
+│     └────────────┘   └────────────┘                   │
+│                                                          │
+│  Note: In BullMQ flows, children execute BEFORE parent  │
+└──────────────────────────────────────────────────────────┘
+```
+
+## Aggregator Node
+
+The aggregator (`__aggregator__`) is a virtual node that:
+
+1. Waits for all sub-workflow nodes to complete (handled by BullMQ)
+2. Collects results using `job.getChildrenValues()`
+3. Applies output mapping to transform results
+4. Marks sub-workflow execution as completed
+5. Notifies parent workflow to continue
+
+### Multiple Final Nodes
+
+For workflows with multiple final nodes, results are merged:
+
+```typescript
+const multiOutputWorkflow = {
+  id: 'parallel-enrichment',
+  nodes: [
+    { id: 'start', type: 'transform', inputs: [], outputs: ['enrich-a', 'enrich-b'] },
+    { id: 'enrich-a', type: 'http', inputs: ['start'], outputs: [] },  // Final node
+    { id: 'enrich-b', type: 'http', inputs: ['start'], outputs: [] }   // Final node
+  ]
+};
+
+// Aggregated result structure:
+// {
+//   'enrich-a': { ... result from enrich-a ... },
+//   'enrich-b': { ... result from enrich-b ... }
+// }
+```
+
+## Use Cases
+
+### 1. Email Templates
+
+```typescript
+const welcomeEmailWorkflow = {
+  id: 'welcome-email',
+  name: 'Welcome Email',
+  nodes: [...]
+};
+
+const resetPasswordEmailWorkflow = {
+  id: 'reset-password-email',
+  name: 'Reset Password Email',
+  nodes: [...]
+};
+
+const mainWorkflow = {
+  id: 'user-management',
+  nodes: [
+    // Call email workflow based on action
+    {
+      id: 'send-welcome',
+      type: 'sub-workflow',
+      config: { workflowId: 'welcome-email' },
+      inputs: ['register'],
+      outputs: []
+    }
+  ]
+};
+```
+
+### 2. Payment Processing
+
+```typescript
+const stripePaymentWorkflow = {
+  id: 'stripe-payment',
+  name: 'Stripe Payment',
+  nodes: [...]
+};
+
+const paypalPaymentWorkflow = {
+  id: 'paypal-payment',
+  name: 'PayPal Payment',
+  nodes: [...]
+};
+
+const orderWorkflow = {
+  id: 'order-processing',
+  nodes: [
+    {
+      id: 'router',
+      type: 'router',
+      config: {},
+      inputs: [],
+      outputs: ['stripe', 'paypal']  // Controlled by nextNodes
+    },
+    {
+      id: 'stripe',
+      type: 'sub-workflow',
+      config: { workflowId: 'stripe-payment' },
+      inputs: ['router'],
+      outputs: ['complete']
+    },
+    {
+      id: 'paypal',
+      type: 'sub-workflow',
+      config: { workflowId: 'paypal-payment' },
+      inputs: ['router'],
+      outputs: ['complete']
+    }
+  ]
+};
+```
+
+### 3. Data Enrichment
+
+```typescript
+const enrichUserData = {
+  id: 'enrich-user',
+  name: 'Enrich User Data',
+  nodes: [
+    { id: 'fetch-profile', type: 'http', inputs: [], outputs: ['fetch-orders'] },
+    { id: 'fetch-orders', type: 'http', inputs: ['fetch-profile'], outputs: [] }
+  ]
+};
+
+const mainWorkflow = {
+  id: 'user-report',
+  nodes: [
+    {
+      id: 'enrich',
+      type: 'sub-workflow',
+      config: {
+        workflowId: 'enrich-user',
+        continueOnFail: true  // Optional enrichment
+      },
+      inputs: ['get-user'],
+      outputs: ['generate-report']
+    }
+  ]
+};
+```
+
+## Limitations
+
+- **Maximum Nesting Depth**: 10 levels
+- **Workflow Registration**: Child workflow must be registered before parent executes
+- **Input/Output Mapping**: Only works with object data (not primitives)
+- **Shared continueOnFail**: All sub-workflow nodes share same `continueOnFail` setting
+
+## Best Practices
+
+1. **Single Responsibility**: Each sub-workflow should do one thing well
+2. **Clear Interfaces**: Define clear input/output contracts
+3. **Reusable Components**: Create library of reusable workflow components
+4. **Error Handling**: Use `continueOnFail` appropriately
+5. **Versioning**: Use workflow versioning to manage changes
+6. **Testing**: Test sub-workflows independently before using them
+7. **Documentation**: Document sub-workflow interfaces clearly
+
+## Next Steps
+
+<Cards>
+  <Card title="Workflow Definitions" href="/docs/workflows" description "Learn how to define workflow structures" />
+  <Card title="Node Executors" href="/docs/executors" description "Create custom node executors" />
+  <Card title="Engine Configuration" href="/docs/configuration" description "Configure FlowProducer for sub-workflows" />
+</Cards>

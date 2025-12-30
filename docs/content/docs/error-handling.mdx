@@ -1,0 +1,506 @@
+---
+title: Error Handling & DLQ
+description: Handle failures, retry jobs, and manage Dead Letter Queue
+---
+
+# Error Handling & DLQ
+
+SPANE provides comprehensive error handling through retry policies, Dead Letter Queue (DLQ), and workflow control operations.
+
+## Retry Policies
+
+Configure retry behavior at the node level:
+
+### Retry Configuration
+
+```typescript
+{
+  id: 'unstable-api',
+  type: 'http',
+  config: {
+    url: 'https://unstable-api.example.com',
+    retryPolicy: {
+      maxAttempts: 5,           // Total attempts (initial + retries)
+      backoff: {
+        type: 'exponential',     // or 'fixed'
+        delay: 1000            // Initial delay in ms
+      },
+      continueOnFail: false      // Stop workflow if all retries fail
+    }
+  },
+  inputs: [],
+  outputs: []
+}
+```
+
+### Retry Policy Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `maxAttempts` | `number` | `3` | Total number of attempts |
+| `backoff.type` | `'fixed' \| 'exponential'` | `'exponential'` | Backoff strategy |
+| `backoff.delay` | `number` | `1000` | Initial delay in milliseconds |
+| `continueOnFail` | `boolean` | `false` | Continue workflow if all retries fail |
+
+### Fixed Backoff
+
+Constant delay between retries:
+
+```typescript
+{
+  retryPolicy: {
+    maxAttempts: 5,
+    backoff: {
+      type: 'fixed',
+      delay: 2000  // 2 second delay between each attempt
+    }
+  }
+}
+
+// Retry schedule:
+// Attempt 1: 0ms (immediate)
+// Attempt 2: 2000ms
+// Attempt 3: 2000ms
+// Attempt 4: 2000ms
+// Attempt 5: 2000ms
+```
+
+### Exponential Backoff
+
+Delay increases exponentially:
+
+```typescript
+{
+  retryPolicy: {
+    maxAttempts: 5,
+    backoff: {
+      type: 'exponential',
+      delay: 1000  // 1 second base delay
+    }
+  }
+}
+
+// Retry schedule:
+// Attempt 1: 0ms (immediate)
+// Attempt 2: 1000ms
+// Attempt 3: 2000ms
+// Attempt 4: 4000ms
+// Attempt 5: 8000ms
+```
+
+### Continue on Fail
+
+Allow workflow to continue even after all retries fail:
+
+```typescript
+{
+  id: 'optional-enrichment',
+  type: 'http',
+  config: {
+    url: 'https://enrichment-api.example.com',
+    retryPolicy: {
+      maxAttempts: 3,
+      continueOnFail: true  // Don't stop workflow
+    }
+  },
+  inputs: ['data'],
+  outputs: ['save']
+}
+```
+
+In the next node, check if enrichment failed:
+
+```typescript
+class SaveExecutor implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    const { data, enrichment } = context.previousResults;
+
+    if (enrichment.success === false) {
+      // Handle failed enrichment
+      console.warn('Enrichment failed, proceeding with base data:', data.data);
+      return { success: true, data: data.data };
+    }
+
+    // Use enriched data
+    return { success: true, data: { ...data.data, ...enrichment.data } };
+  }
+}
+```
+
+## Dead Letter Queue (DLQ)
+
+The DLQ stores jobs that have exhausted all retry attempts.
+
+### What Goes to DLQ?
+
+Jobs are sent to DLQ when:
+- All retry attempts are exhausted
+- Job fails with `continueOnFail: false`
+- Job crashes repeatedly
+
+### Accessing DLQ
+
+```typescript
+// Get DLQ items
+const items = await engine.getDLQItems(0, 10);  // start, end
+
+for (const item of items) {
+  console.log('Job ID:', item.jobId);
+  console.log('Execution ID:', item.executionId);
+  console.log('Workflow ID:', item.workflowId);
+  console.log('Node ID:', item.nodeId);
+  console.log('Attempts:', item.attemptsMade);
+  console.log('Failed At:', item.failedAt);
+  console.log('Error:', item.stacktrace);
+}
+```
+
+### DLQ Item Structure
+
+```typescript
+interface DLQItem {
+  jobId: string;
+  executionId: string;
+  workflowId: string;
+  nodeId: string;
+  nodeType: string;
+  inputData: any;
+  error: string;
+  stacktrace: string;
+  attemptsMade: number;
+  failedAt: Date;
+}
+```
+
+### Retry from DLQ
+
+```typescript
+// Retry a specific DLQ item
+const success = await engine.retryDLQItem(dlqJobId);
+
+if (success) {
+  console.log('Job successfully retried');
+} else {
+  console.log('Failed to retry job');
+}
+```
+
+### Retry Multiple Items
+
+```typescript
+// Retry all DLQ items
+const items = await engine.getDLQItems(0, -1);  // Get all
+let successCount = 0;
+
+for (const item of items) {
+  const success = await engine.retryDLQItem(item.jobId);
+  if (success) successCount++;
+}
+
+console.log(`Retried ${successCount}/${items.length} jobs`);
+```
+
+### Clear DLQ
+
+```typescript
+// Manually clear DLQ items
+const dlqManager = new DLQManager(queueManager);
+const items = await dlqManager.getDLQItems(0, -1);
+
+for (const item of items) {
+  await dlqManager.removeDLQItem(item.jobId);
+}
+```
+
+## Workflow Control
+
+### Pause Workflow
+
+Pause a running workflow:
+
+```typescript
+await engine.pauseWorkflow(executionId);
+```
+
+What happens when paused:
+- Workflow status changes to 'paused'
+- Waiting jobs moved to delayed state (24 hours)
+- Active jobs continue to completion
+- No new jobs are enqueued
+
+### Resume Workflow
+
+Resume a paused workflow:
+
+```typescript
+await engine.resumeWorkflow(executionId);
+```
+
+What happens when resumed:
+- Workflow status changes to 'running'
+- Delayed jobs promoted back to waiting
+- Execution continues from where it left off
+
+### Cancel Workflow
+
+Cancel a workflow completely:
+
+```typescript
+await engine.cancelWorkflow(executionId);
+```
+
+What happens when cancelled:
+- Workflow status changes to 'cancelled'
+- All pending jobs removed from queue
+- Active jobs continue to completion
+- No new jobs are enqueued
+
+## Error Handling Patterns
+
+### Graceful Degradation
+
+```typescript
+class GracefulExecutor implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    try {
+      // Try primary service
+      return await this.callPrimaryService(context);
+    } catch (primaryError) {
+      console.warn('Primary service failed:', primaryError);
+
+      try {
+        // Try fallback service
+        return await this.callFallbackService(context);
+      } catch (fallbackError) {
+        // Return cached data or default
+        return {
+          success: true,
+          data: this.getCachedData(context),
+          metadata: { fallback: true }
+        };
+      }
+    }
+  }
+}
+```
+
+### Circuit Breaker + Retry
+
+Combine circuit breaker with retries:
+
+```typescript
+{
+  id: 'protected-api',
+  type: 'http',
+  config: {
+    url: 'https://api.example.com/endpoint',
+    retryPolicy: {
+      maxAttempts: 5,
+      backoff: { type: 'exponential', delay: 1000 }
+    },
+    circuitBreaker: {
+      failureThreshold: 10,
+      successThreshold: 2,
+      timeout: 60000
+    }
+  }
+}
+```
+
+### Conditional Retry
+
+```typescript
+class SmartRetryExecutor implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    let lastError: Error | null = null;
+    const maxAttempts = 3;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const result = await this.callService(context);
+
+        // Success - return result
+        return { success: true, data: result };
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error('Unknown error');
+
+        // Don't retry certain errors
+        if (this.isNonRetryable(error)) {
+          throw error;
+        }
+
+        // Log retry attempt
+        console.warn(`Attempt ${attempt} failed:`, lastError.message);
+
+        // Wait before retry (exponential backoff)
+        if (attempt < maxAttempts) {
+          await this.delay(Math.pow(2, attempt - 1) * 1000);
+        }
+      }
+    }
+
+    // All retries failed
+    return {
+      success: false,
+      error: lastError?.message || 'Max retries exceeded'
+    };
+  }
+
+  private isNonRetryable(error: any): boolean {
+    // Non-retryable errors
+    const nonRetryableCodes = [400, 401, 403, 404];
+    return nonRetryableCodes.includes(error?.statusCode);
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+```
+
+## Error Monitoring
+
+### Track Failed Executions
+
+```typescript
+const execution = await stateStore.getExecution(executionId);
+
+if (execution.status === 'failed') {
+  console.error('Workflow failed:', execution);
+
+  // Find failed nodes
+  for (const [nodeId, result] of Object.entries(execution.nodeResults)) {
+    if (result.success === false) {
+      console.error(`Node ${nodeId} failed:`, result.error);
+    }
+  }
+}
+```
+
+### Get Execution Logs
+
+```typescript
+const logs = await stateStore.getLogs(executionId);
+
+const errorLogs = logs.filter(log => log.level === 'error');
+
+for (const log of errorLogs) {
+  console.error(`[${log.timestamp}] ${log.nodeId}: ${log.message}`);
+}
+```
+
+### Track Execution Span
+
+```typescript
+const trace = await stateStore.getTrace(executionId);
+
+for (const span of trace.spans) {
+  if (span.status === 'failed') {
+    console.error(`Span ${span.name} failed:`, span.error);
+    console.error('Duration:', span.endTime - span.startTime, 'ms');
+  }
+}
+```
+
+## Complete Error Handling Example
+
+```typescript
+import { WorkflowEngine } from 'spane/engine/workflow-engine';
+import type { EngineConfig } from 'spane/engine/config';
+
+// Configure engine
+const engineConfig: EngineConfig = {
+  useFlowProducerForSubWorkflows: true,
+  workerConcurrency: 10
+};
+
+const engine = new WorkflowEngine(
+  registry,
+  stateStore,
+  redis,
+  undefined, undefined, undefined, undefined,
+  engineConfig
+);
+
+// Register workflow with error handling
+const workflow: WorkflowDefinition = {
+  id: 'robust-workflow',
+  name: 'Robust Workflow with Error Handling',
+  entryNodeId: 'step1',
+  nodes: [
+    {
+      id: 'step1',
+      type: 'http',
+      config: {
+        url: 'https://api1.example.com',
+        retryPolicy: {
+          maxAttempts: 5,
+          backoff: { type: 'exponential', delay: 1000 }
+        }
+      },
+      inputs: [],
+      outputs: ['step2']
+    },
+    {
+      id: 'step2',
+      type: 'http',
+      config: {
+        url: 'https://api2.example.com',
+        retryPolicy: {
+          maxAttempts: 3,
+          continueOnFail: true  // Optional step
+        }
+      },
+      inputs: ['step1'],
+      outputs: ['step3']
+    },
+    {
+      id: 'step3',
+      type: 'transform',
+      config: {},
+      inputs: ['step1', 'step2'],  // Wait for both
+      outputs: []
+    }
+  ]
+};
+
+await engine.registerWorkflow(workflow);
+
+// Execute and monitor
+const executionId = await engine.enqueueWorkflow('robust-workflow', data);
+
+// Subscribe to events
+const subscription = await engine.getEventStream().subscribeToExecution(
+  executionId,
+  (event) => {
+    if (event.type === 'node:failed') {
+      console.error(`Node ${event.nodeId} failed:`, event.error);
+
+      // Check if it's critical
+      if (event.nodeId === 'step1') {
+        // Cancel workflow if critical node fails
+        engine.cancelWorkflow(event.executionId);
+      }
+    }
+  }
+);
+```
+
+## Best Practices
+
+1. **Set Appropriate Retry Limits**: 3-5 retries for most cases
+2. **Use Exponential Backoff**: Avoid retry storms
+3. **Implement Fallbacks**: Have alternative data sources
+4. **Monitor DLQ**: Regularly review and retry failed jobs
+5. **Use Circuit Breakers**: Protect external dependencies
+6. **Log Context**: Include execution and node IDs in logs
+7. **Handle Transient Errors**: Differentiate retryable vs non-retryable errors
+8. **Set Timeouts**: Prevent indefinite hanging
+
+## Next Steps
+
+<Cards>
+  <Card title="Circuit Breakers" href="/docs/circuit-breakers" description "Protect external services with circuit breaking" />
+  <Card title="Advanced Features" href="/docs/advanced" description "Rate limiting and delays" />
+  <Card title="Event Streaming" href="/docs/event-streaming" description "Monitor executions in real time" />
+</Cards>

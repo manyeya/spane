@@ -1,0 +1,380 @@
+---
+title: State Storage
+description: Choose between in-memory and PostgreSQL-backed state storage
+---
+
+# State Storage
+
+SPANE provides two implementations for storing workflow execution state:
+
+- **InMemoryExecutionStore**: In-memory storage for development
+- **DrizzleStore**: PostgreSQL-backed storage for production
+
+## In-Memory Execution Store
+
+### Overview
+
+The in-memory store keeps all execution data in memory. It's simple and fast but loses data on restart.
+
+### Usage
+
+```typescript
+import { InMemoryExecutionStore } from 'spane/db/inmemory-store';
+
+const stateStore = new InMemoryExecutionStore();
+
+const engine = new WorkflowEngine(
+  registry,
+  stateStore,
+  redis
+);
+```
+
+### Features
+
+- ✅ Fast and simple
+- ✅ No database required
+- ✅ Perfect for development and testing
+- ❌ Data lost on restart
+- ❌ Not suitable for production
+- ❌ No persistent workflow storage
+
+### API
+
+```typescript
+// Create execution
+const executionId = await stateStore.createExecution(
+  'workflow-id',
+  undefined,  // parentExecutionId
+  0,          // depth
+  { userId: 123 }  // initialData
+);
+
+// Get execution
+const execution = await stateStore.getExecution(executionId);
+
+// Update node result
+await stateStore.updateNodeResult(
+  executionId,
+  'node-id',
+  { success: true, data: {} }
+);
+
+// Update execution status
+await stateStore.setExecutionStatus(executionId, 'completed');
+
+// Get node results
+const results = await stateStore.getNodeResults(executionId, ['node-a', 'node-b']);
+
+// Add logs
+await stateStore.addLog({
+  id: 'log-123',
+  executionId,
+  nodeId: 'node-a',
+  level: 'info',
+  message: 'Processing complete',
+  timestamp: new Date()
+});
+
+// Get logs
+const logs = await stateStore.getLogs(executionId);
+
+// Add/Update spans
+await stateStore.addSpan(executionId, {
+  id: 'span-123',
+  nodeId: 'node-a',
+  name: 'Processing',
+  startTime: Date.now(),
+  status: 'running'
+});
+
+await stateStore.updateSpan(executionId, 'span-123', {
+  endTime: Date.now(),
+  status: 'completed'
+});
+
+// Get execution trace
+const trace = await stateStore.getTrace(executionId);
+```
+
+## PostgreSQL Store (DrizzleStore)
+
+### Overview
+
+The DrizzleStore uses PostgreSQL for persistent storage with full workflow and execution tracking.
+
+### Setup
+
+1. **Set DATABASE_URL environment variable**:
+
+```bash
+# .env
+DATABASE_URL="postgresql://spane:password@localhost:5432/spane"
+```
+
+2. **Run database migrations**:
+
+```bash
+bun run db:push
+```
+
+### Usage
+
+```typescript
+import { DrizzleStore } from 'spane/db/drizzle-store';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
+
+const client = postgres(process.env.DATABASE_URL!);
+const db = drizzle(client);
+
+const stateStore = new DrizzleStore(db);
+
+const engine = new WorkflowEngine(
+  registry,
+  stateStore,
+  redis
+);
+```
+
+### Features
+
+- ✅ Persistent storage
+- ✅ Workflow versioning
+- ✅ Execution history
+- ✅ Query support
+- ✅ Production ready
+- ❌ Requires PostgreSQL
+- ❌ Slightly slower than in-memory
+
+### Database Schema
+
+The store uses these tables:
+
+- `workflows`: Workflow definitions with versioning
+- `workflow_versions`: Version history
+- `executions`: Execution state
+- `node_results`: Node execution results
+- `execution_logs`: Execution logs
+- `execution_spans`: Distributed tracing spans
+- `execution_metadata`: Custom metadata
+
+### Workflow Persistence
+
+```typescript
+// Save workflow with versioning
+await engine.registerWorkflow(workflow, 'Added email notification');
+
+// Get current version
+const versionId = await stateStore.getWorkflowVersion('my-workflow');
+
+// Get specific version
+const workflowV1 = await stateStore.getWorkflow('my-workflow', 1);
+const workflowV2 = await stateStore.getWorkflow('my-workflow', 2);
+
+// List workflows
+const workflows = await stateStore.listWorkflows(true, 100, 0);
+
+// Deactivate workflow
+await stateStore.deactivateWorkflow('old-workflow');
+```
+
+### Execution Querying
+
+```typescript
+// Get execution
+const execution = await stateStore.getExecution(executionId);
+
+// List executions
+const executions = await stateStore.listExecutions(
+  'my-workflow',  // optional workflowId filter
+  100,            // limit
+  0               // offset
+);
+
+// Get execution counts
+const count = await stateStore.getExecutionCount('my-workflow');
+```
+
+### Logging and Tracing
+
+```typescript
+// Add log
+await stateStore.addLog({
+  id: 'log-123',
+  executionId,
+  nodeId: 'node-a',
+  level: 'info',
+  message: 'Processing complete',
+  timestamp: new Date(),
+  metadata: { duration: 1234 }
+});
+
+// Get logs
+const logs = await stateStore.getLogs(executionId);
+
+// Add span
+await stateStore.addSpan(executionId, {
+  id: 'span-123',
+  nodeId: 'node-a',
+  name: 'HTTP Request',
+  startTime: Date.now(),
+  status: 'running',
+  metadata: { url: 'https://api.example.com' }
+});
+
+// Update span
+await stateStore.updateSpan(executionId, 'span-123', {
+  endTime: Date.now(),
+  status: 'completed',
+  metadata: { statusCode: 200 }
+});
+
+// Get trace
+const trace = await stateStore.getTrace(executionId);
+```
+
+### Sub-Workflow Support
+
+```typescript
+// Get child executions
+const children = await stateStore.getChildExecutions(executionId);
+
+// Get parent execution
+const parent = await stateStore.getParentExecution(executionId);
+```
+
+## Choosing the Right Store
+
+### Use InMemoryExecutionStore when:
+
+- Developing and testing
+- Running demos or prototypes
+- Data persistence is not required
+- Quick setup needed
+
+### Use DrizzleStore when:
+
+- Production deployments
+- Need workflow persistence across restarts
+- Require execution history and auditing
+- Need to query past executions
+- Multiple instances sharing state
+- Need observability and monitoring
+
+## Best Practices
+
+### In-Memory Store
+
+- Use only for development
+- Monitor memory usage
+- Clear old executions periodically
+- Avoid storing large payloads
+
+### PostgreSQL Store
+
+- Set up proper indexing
+- Use connection pooling
+- Archive old executions
+- Monitor query performance
+- Set up backups
+- Use read replicas for queries
+
+## Performance Tuning
+
+### Connection Pooling
+
+```typescript
+import postgres from 'postgres';
+
+const client = postgres(process.env.DATABASE_URL!, {
+  max: 20,              // Max connections
+  idle_timeout: 20,      // Idle timeout (seconds)
+  connect_timeout: 10     // Connection timeout (seconds)
+});
+```
+
+### Query Optimization
+
+```typescript
+// Use pagination
+const executions = await stateStore.listExecutions(
+  undefined,  // all workflows
+  100,        // limit
+  0           // offset
+);
+
+// Filter by workflow ID
+const specificExecutions = await stateStore.listExecutions('my-workflow', 100, 0);
+
+// Get counts before querying
+const totalCount = await stateStore.getExecutionCount('my-workflow');
+```
+
+### Caching
+
+Workflow caching is built into the engine:
+
+```typescript
+const cacheOptions: WorkflowCacheOptions = {
+  maxSize: 1000,      // Cache up to 1000 workflows
+  ttlMs: 7200000      // 2 hour TTL
+};
+
+const engine = new WorkflowEngine(
+  registry,
+  stateStore,
+  redis,
+  undefined,  // metricsCollector
+  undefined,  // circuitBreakerRegistry
+  cacheOptions
+);
+```
+
+## Migration Guide
+
+### From InMemory to PostgreSQL
+
+1. Set up PostgreSQL:
+
+```bash
+# Docker
+docker run -d \
+  -p 5432:5432 \
+  -e POSTGRES_USER=spane \
+  -e POSTGRES_PASSWORD=spane_password \
+  -e POSTGRES_DB=spane \
+  postgres:15-alpine
+```
+
+2. Set environment variable:
+
+```bash
+DATABASE_URL="postgresql://spane:spane_password@localhost:5432/spane"
+```
+
+3. Run migrations:
+
+```bash
+bun run db:push
+```
+
+4. Update code:
+
+```typescript
+// Before
+import { InMemoryExecutionStore } from 'spane/db/inmemory-store';
+const stateStore = new InMemoryExecutionStore();
+
+// After
+import { DrizzleStore } from 'spane/db/drizzle-store';
+const stateStore = new DrizzleStore(db);
+```
+
+## Next Steps
+
+<Cards>
+  <Card title="Circuit Breakers" href="/docs/circuit-breakers" description "Protect external services with circuit breaking" />
+  <Card title="Event Streaming" href="/docs/event-streaming" description "Real-time workflow event subscriptions" />
+  <Card title="API Reference" href="/docs/api/state-store" description "Complete state store API reference" />
+</Cards>

@@ -1,0 +1,449 @@
+---
+title: Triggers
+description: Automatically trigger workflows via webhooks and cron schedules
+---
+
+# Triggers
+
+SPANE supports two types of triggers to automatically start workflow executions:
+
+- **Webhooks**: Trigger workflows via HTTP requests
+- **Schedules**: Trigger workflows on a cron-based schedule
+
+## Webhook Triggers
+
+Webhook triggers allow external systems to start workflows via HTTP requests.
+
+### Defining Webhook Triggers
+
+Add webhook triggers to your workflow definition:
+
+```typescript
+const workflow: WorkflowDefinition = {
+  id: 'user-signup',
+  name: 'User Signup Flow',
+  entryNodeId: 'send-welcome',
+  nodes: [
+    {
+      id: 'send-welcome',
+      type: 'email',
+      config: { to: 'user@example.com' },
+      inputs: [],
+      outputs: []
+    }
+  ],
+  triggers: [
+    {
+      type: 'webhook',
+      config: {
+        path: 'user-signup',
+        method: 'POST'  // Optional, defaults to POST
+      }
+    }
+  ]
+};
+```
+
+### Webhook Configuration
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `path` | `string` | Required | URL path segment (e.g., "user-signup") |
+| `method` | `'GET' \| 'POST' \| 'PUT' \| 'DELETE'` | `'POST'` | HTTP method allowed |
+
+### Creating Webhook Endpoints
+
+SPANE is a library, not a server. You need to build your own HTTP API:
+
+```typescript
+import { Elysia } from 'elysia';
+import { WorkflowEngine } from 'spane/engine/workflow-engine';
+
+const app = new Elysia();
+const engine = new WorkflowEngine(registry, stateStore, redis);
+
+// Register workflow with webhook trigger
+await engine.registerWorkflow(workflow);
+
+// Create webhook endpoint
+app.post('/api/webhooks/:path', async ({ params, body }) => {
+  const executionIds = await engine.triggerWebhook(
+    params.path,
+    'POST',
+    body
+  );
+
+  return {
+    success: true,
+    executionIds,
+    message: `Started ${executionIds.length} workflow execution(s)`
+  };
+});
+
+app.listen(3000);
+```
+
+### Webhook URL Format
+
+Webhooks are accessible at:
+
+```
+https://your-domain.com/api/webhooks/{path}
+```
+
+Examples:
+
+- `/api/webhooks/user-signup` - Triggers workflows with `path: 'user-signup'`
+- `/api/webhooks/order-created` - Triggers workflows with `path: 'order-created'`
+
+### Webhook Request Body
+
+The request body is passed as initial data to the workflow:
+
+```typescript
+// POST /api/webhooks/user-signup
+{
+  "userId": 123,
+  "email": "user@example.com",
+  "name": "John Doe"
+}
+
+// Entry node receives:
+context.inputData = {
+  userId: 123,
+  email: 'user@example.com',
+  name: 'John Doe'
+}
+```
+
+### Multiple Workflows per Webhook
+
+Multiple workflows can share the same webhook path:
+
+```typescript
+const workflowA: WorkflowDefinition = {
+  id: 'send-email-a',
+  triggers: [{ type: 'webhook', config: { path: 'notify' } }],
+  nodes: [...]
+};
+
+const workflowB: WorkflowDefinition = {
+  id: 'send-email-b',
+  triggers: [{ type: 'webhook', config: { path: 'notify' } }],
+  nodes: [...]
+};
+
+// Both workflows trigger when /api/webhooks/notify is called
+const executionIds = await engine.triggerWebhook('notify', 'POST', data);
+// executionIds = ['exec-id-1', 'exec-id-2']
+```
+
+### Securing Webhooks
+
+Implement security for your webhook endpoints:
+
+```typescript
+app.post('/api/webhooks/:path', async ({ params, body, headers }) => {
+  // Verify webhook signature
+  const signature = headers.get('x-webhook-signature');
+  if (!verifySignature(body, signature, secret)) {
+    throw new Error('Invalid signature');
+  }
+
+  // Trigger workflow
+  const executionIds = await engine.triggerWebhook(
+    params.path,
+    'POST',
+    body
+  );
+
+  return { success: true, executionIds };
+});
+
+function verifySignature(payload: any, signature: string | null, secret: string): boolean {
+  if (!signature) return false;
+
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(JSON.stringify(payload))
+    .digest('hex');
+
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expected)
+  );
+}
+```
+
+## Schedule Triggers
+
+Schedule triggers automatically start workflows on a cron-based schedule.
+
+### Defining Schedule Triggers
+
+Add schedule triggers to your workflow definition:
+
+```typescript
+const workflow: WorkflowDefinition = {
+  id: 'daily-report',
+  name: 'Daily Report',
+  entryNodeId: 'generate',
+  nodes: [
+    {
+      id: 'generate',
+      type: 'http',
+      config: { url: 'https://api.example.com/reports' },
+      inputs: [],
+      outputs: []
+    }
+  ],
+  triggers: [
+    {
+      type: 'schedule',
+      config: {
+        cron: '0 9 * * *',      // Every day at 9 AM
+        timezone: 'America/New_York'  // Optional
+      }
+    }
+  ]
+};
+```
+
+### Schedule Configuration
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `cron` | `string` | Required | Standard cron expression |
+| `timezone` | `string` | Server timezone | IANA timezone identifier |
+
+### Cron Expression Syntax
+
+```
+┌───────────── minute (0-59)
+│ ┌───────────── hour (0-23)
+│ │ ┌───────────── day of month (1-31)
+│ │ │ ┌───────────── month (1-12)
+│ │ │ │ ┌───────────── day of week (0-6, Sunday=0)
+│ │ │ │ │
+* * * * *
+```
+
+### Common Cron Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| `0 * * * *` | Every hour at minute 0 |
+| `*/15 * * * *` | Every 15 minutes |
+| `0 * * * *` | Every hour |
+| `0 0 * * *` | Every day at midnight |
+| `0 9 * * *` | Every day at 9:00 AM |
+| `0 9 * * 1-5` | Weekdays at 9:00 AM |
+| `0 0 1 * *` | First day of every month at midnight |
+| `0 */6 * * *` | Every 6 hours |
+| `0 0 * * 0` | Every Sunday at midnight |
+| `0 0,12 * * *` | Twice a day at midnight and noon |
+| `0 9,17 * * 1-5` | Weekdays at 9 AM and 5 PM |
+
+### Timezone Support
+
+Use IANA timezone identifiers:
+
+```typescript
+triggers: [
+  {
+    type: 'schedule',
+    config: {
+      cron: '0 9 * * *',
+      timezone: 'America/New_York'  // Runs at 9 AM Eastern Time
+    }
+  }
+]
+```
+
+Common timezones:
+
+- `America/New_York`
+- `America/Los_Angeles`
+- `America/Chicago`
+- `Europe/London`
+- `Europe/Paris`
+- `Asia/Tokyo`
+- `Asia/Shanghai`
+- `Australia/Sydney`
+- `UTC`
+
+### Managing Schedules Programmatically
+
+#### Register a Schedule Directly
+
+```typescript
+await engine.registerScheduleWithUpsert(
+  'my-workflow',
+  '0 */6 * * *',        // Every 6 hours
+  'Europe/London'       // Optional timezone
+);
+```
+
+#### List All Schedulers
+
+```typescript
+const schedulers = await engine.getJobSchedulers();
+
+for (const scheduler of schedulers) {
+  console.log(`${scheduler.id}: ${scheduler.pattern}`);
+  console.log(`Next run: ${new Date(scheduler.next!)}`);
+}
+```
+
+#### Get a Specific Scheduler
+
+```typescript
+const scheduler = await engine.getJobScheduler(
+  'schedule:daily-report:0 9 * * *'
+);
+
+if (scheduler) {
+  console.log('Pattern:', scheduler.pattern);
+  console.log('Timezone:', scheduler.tz);
+  console.log('Next:', new Date(scheduler.next!));
+}
+```
+
+#### Remove Schedulers
+
+```typescript
+// Remove all schedulers for a workflow
+const removedCount = await engine.removeWorkflowSchedulers('my-workflow');
+console.log(`Removed ${removedCount} schedulers`);
+
+// Remove a specific scheduler
+await queueManager.workflowQueue.removeJobScheduler(
+  'schedule:daily-report:0 9 * * *'
+);
+```
+
+### Scheduler ID Format
+
+Scheduler IDs follow this pattern:
+
+```
+schedule:{workflowId}:{cronPattern}
+```
+
+Examples:
+
+- `schedule:daily-report:0 9 * * *` - Daily report at 9 AM
+- `schedule:hourly-sync:0 * * * *` - Hourly sync at the top of each hour
+- `schedule:weekly-cleanup:0 0 * * 0` - Weekly cleanup on Sundays at midnight
+
+### Schedule Examples
+
+#### Daily Report
+
+```typescript
+const dailyReportWorkflow: WorkflowDefinition = {
+  id: 'daily-report',
+  name: 'Daily Report',
+  entryNodeId: 'generate',
+  triggers: [
+    {
+      type: 'schedule',
+      config: {
+        cron: '0 9 * * *',
+        timezone: 'America/New_York'
+      }
+    }
+  ],
+  nodes: [
+    {
+      id: 'generate',
+      type: 'http',
+      config: { url: 'https://api.example.com/reports' },
+      inputs: [],
+      outputs: ['email']
+    },
+    {
+      id: 'email',
+      type: 'email',
+      config: { to: 'admin@example.com' },
+      inputs: ['generate'],
+      outputs: []
+    }
+  ]
+};
+```
+
+#### Hourly Data Sync
+
+```typescript
+const hourlySyncWorkflow: WorkflowDefinition = {
+  id: 'hourly-sync',
+  name: 'Hourly Data Sync',
+  entryNodeId: 'fetch',
+  triggers: [
+    {
+      type: 'schedule',
+      config: {
+        cron: '0 * * * *',  // Every hour
+        timezone: 'UTC'
+      }
+    }
+  ],
+  nodes: [...]
+};
+```
+
+#### Weekly Cleanup
+
+```typescript
+const weeklyCleanupWorkflow: WorkflowDefinition = {
+  id: 'weekly-cleanup',
+  name: 'Weekly Cleanup',
+  entryNodeId: 'cleanup',
+  triggers: [
+    {
+      type: 'schedule',
+      config: {
+        cron: '0 2 * * 0',  // Sundays at 2 AM
+        timezone: 'America/Los_Angeles'
+      }
+    }
+  ],
+  nodes: [...]
+};
+```
+
+## Multiple Triggers
+
+Workflows can have both webhook and schedule triggers:
+
+```typescript
+const workflow: WorkflowDefinition = {
+  id: 'notification-sender',
+  name: 'Notification Sender',
+  entryNodeId: 'send',
+  triggers: [
+    // Manual trigger via webhook
+    {
+      type: 'webhook',
+      config: { path: 'send-notification' }
+    },
+    // Automatic trigger every 30 minutes
+    {
+      type: 'schedule',
+      config: {
+        cron: '*/30 * * * *'
+      }
+    }
+  ],
+  nodes: [...]
+};
+```
+
+## Next Steps
+
+<Cards>
+  <Card title="Workflow Definitions" href="/docs/workflows" description "Learn how to define workflow structures" />
+  <Card title="API Reference" href="/docs/api/workflow-engine" description "Complete WorkflowEngine API reference" />
+  <Card title="Examples" href="/docs/examples" description "Practical trigger examples" />
+</Cards>
