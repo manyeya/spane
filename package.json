@@ -1,5 +1,5 @@
 {
-  "name": "spane",
+  "name": "@manyeya/spane",
   "version": "0.1.1",
   "description": "Parallel Asynchronous Node Execution - Workflow orchestration engine built on BullMQ and Redis",
   "type": "module",

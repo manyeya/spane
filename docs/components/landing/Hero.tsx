@@ -62,7 +62,7 @@ export function Hero() {
                     className="mt-12 flex items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-950/50 p-1 pl-4 pr-2 backdrop-blur-sm"
                 >
                     <code className="text-sm font-mono text-zinc-400">
-                        <span className="text-blue-400">npm</span> install spane
+                        <span className="text-blue-400">npm</span> install @manyeya/spane
                     </code>
                     <button
                         onClick={() => navigator.clipboard.writeText('npm install spane')}

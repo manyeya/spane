@@ -9,7 +9,7 @@ A workflow orchestration engine built on BullMQ and Redis. Executes DAG-based wo
 ## Installation
 
 ```bash
-npm install spane
+npm install @manyeya/spane
 ```
 
 ## Requirements
