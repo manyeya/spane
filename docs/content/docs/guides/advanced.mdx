@@ -255,7 +255,7 @@ const executionId = await engine.scheduleWorkflow(
 ```typescript
 const scheduleTime = new Date('2024-01-01T00:00:00Z');
 
-// Check if time is in the future
+// Check if time is in future
 if (scheduleTime.getTime() <= Date.now()) {
   throw new Error('Cannot schedule workflow in the past');
 }
@@ -507,7 +507,7 @@ function QueueDashboard() {
 
 ## Replay Executions
 
-Re-run a workflow with the same initial data:
+Re-run a workflow with same initial data:
 
 ```typescript
 const newExecutionId = await engine.replayWorkflow(originalExecutionId);
@@ -613,7 +613,7 @@ const executionId = await engine.enqueueWorkflow(
 ## Next Steps
 
 <Cards>
-  <Card title="Workflow Definitions" href="/docs/workflows" description "Define workflow structures" />
-  <Card title="Node Executors" href="/docs/executors" description "Create custom node executors" />
-  <Card title="API Reference" href="/docs/api" description "Complete API reference" />
+  <Card title="Workflow Definitions" href="/docs/workflows" description="Define workflow structures" />
+  <Card title="Node Executors" href="/docs/executors" description="Create custom node executors" />
+  <Card title="API Reference" href="/docs/api" description="Complete API reference" />
 </Cards>

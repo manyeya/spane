@@ -1,16 +1,21 @@
-import Link from 'next/link';
+import { Hero } from '@/components/landing/Hero';
+import { Features } from '@/components/landing/Features';
+import { WorkflowVisual } from '@/components/landing/WorkflowVisual';
+import { BentoFeatures } from '@/components/landing/BentoFeatures';
+import { CodePreview } from '@/components/landing/CodePreview';
+import { FinalCTA } from '@/components/landing/FinalCTA';
+import { Footer } from '@/components/landing/Footer';
 
 export default function HomePage() {
   return (
-    <div className="flex flex-col justify-center text-center flex-1">
-      <h1 className="text-2xl font-bold mb-4">Hello World</h1>
-      <p>
-        You can open{' '}
-        <Link href="/docs" className="font-medium underline">
-          /docs
-        </Link>{' '}
-        and see the documentation.
-      </p>
-    </div>
+    <main className="flex min-h-screen flex-col bg-black text-white antialiased selection:bg-blue-500/30">
+      <Hero />
+      <WorkflowVisual />
+      <BentoFeatures />
+      <Features />
+      <CodePreview />
+      <FinalCTA />
+      <Footer />
+    </main>
   );
 }

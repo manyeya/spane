@@ -1,0 +1,11 @@
+{
+    "title": "Guides",
+    "pages": [
+        "error-handling",
+        "circuit-breakers",
+        "sub-workflows",
+        "state-storage",
+        "event-streaming",
+        "advanced"
+    ]
+}

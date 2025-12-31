@@ -1,6 +1,6 @@
 {
   "name": "spane",
-  "version": "2.0.0",
+  "version": "0.1.1",
   "description": "Parallel Asynchronous Node Execution - Workflow orchestration engine built on BullMQ and Redis",
   "type": "module",
   "main": "./dist/index.js",
