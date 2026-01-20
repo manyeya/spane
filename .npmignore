@@ -20,6 +20,7 @@ dump.rdb
 # Documentation
 critical-missing-parts.md
 .kiro/
+.opencode/
 
 # CI/CD
 .vscode/

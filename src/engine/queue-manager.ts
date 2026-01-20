@@ -14,7 +14,7 @@ export class QueueManager {
     public flowProducer!: FlowProducer;
 
     constructor(
-        private redisConnection: Redis,
+        redisConnection: Redis,
         private stateStore: IExecutionStateStore,
         private metricsCollector?: MetricsCollector
     ) {
@@ -92,7 +92,7 @@ export class QueueManager {
                     // The returnvalue is the ExecutionResult, already in the correct format.
                     // BullMQ might return it as string if it's from Redis
                     const result = typeof returnvalue === 'string' ? JSON.parse(returnvalue) : returnvalue;
-                    
+
                     // Skip caching for delay node initial step results.
                     // When a delay node first processes, it returns { success: true, data: { delayed: true, ... } }
                     // and enqueues a resumed job. We should NOT cache this intermediate result because:
@@ -103,7 +103,7 @@ export class QueueManager {
                         logger.debug({ jobId, executionId, nodeId }, `Skipping cache for delay node initial step`);
                         return;
                     }
-                    
+
                     await this.stateStore.cacheNodeResult(executionId, nodeId, result);
                 }
             } catch (error) {
