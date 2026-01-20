@@ -3,6 +3,7 @@ import type { JobType } from 'bullmq';
 import { LRUCache } from 'lru-cache';
 import { NodeRegistry } from './registry';
 import type { IExecutionStateStore, WorkflowDefinition } from '../types';
+import { validateWorkflow, type ValidationError } from './graph-validation';
 import { MetricsCollector } from '../utils/metrics';
 import { CircuitBreakerRegistry } from '../utils/circuit-breaker';
 import { QueueManager } from './queue-manager';
@@ -121,6 +122,31 @@ export class WorkflowEngine {
 
     // Register a workflow definition (saves to database with versioning)
     async registerWorkflow(workflow: WorkflowDefinition, changeNotes?: string): Promise<void> {
+        // Validate workflow graph before saving
+        const validationResult = validateWorkflow(workflow);
+
+        // Log warnings (unreachable nodes, etc.)
+        const warnings = validationResult.errors.filter((e) => e.severity === 'warning');
+        if (warnings.length > 0) {
+            for (const warning of warnings) {
+                logger.warn(
+                    { workflowId: workflow.id, warning },
+                    `⚠️ Workflow validation warning: ${warning.message}`
+                );
+            }
+        }
+
+        // Throw error for critical validation failures (cycles, missing refs, etc.)
+        const errors = validationResult.errors.filter((e) => e.severity === 'error');
+        if (errors.length > 0) {
+            const errorMessages = errors.map((e) => e.message).join('; ');
+            logger.error(
+                { workflowId: workflow.id, errors },
+                `❌ Workflow validation failed: ${errorMessages}`
+            );
+            throw new Error(`Workflow validation failed: ${errorMessages}`);
+        }
+
         try {
             // Save to database (with versioning)
             const versionId = await this.stateStore.saveWorkflow(workflow, changeNotes);

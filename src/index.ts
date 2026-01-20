@@ -11,6 +11,16 @@ export { WorkflowEngine } from './engine/workflow-engine';
 export type { EngineConfig, RateLimiterConfig } from './engine/config';
 export type { WorkflowCacheOptions } from './engine/workflow-engine';
 export { DEFAULT_ENGINE_CONFIG, mergeEngineConfig } from './engine/config';
+export type { ValidationError, ValidationErrorType, ValidationResult } from './engine/graph-validation';
+export {
+  detectCycle,
+  findUnreachableNodes,
+  findMissingReferences,
+  findDuplicateNodeIds,
+  validateEntryNode,
+  validateWorkflow,
+  isValidWorkflow
+} from './engine/graph-validation';
 
 // ----------------------------------------------------------------------------
 // Node Registry
