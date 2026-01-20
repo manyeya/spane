@@ -1,6 +1,7 @@
 import { Elysia } from 'elysia';
 import { cors } from '@elysiajs/cors';
-import { WorkflowEngine, NodeRegistry, DrizzleExecutionStateStore, HybridExecutionStateStore, CircuitBreakerRegistry, PayloadManager, applyAutoLayout } from 'spane';
+import { WorkflowEngine, NodeRegistry, DrizzleExecutionStateStore, HybridExecutionStateStore, CircuitBreakerRegistry, PayloadManager } from 'spane';
+import { applyAutoLayout } from '../src/utils/layout';
 import type { WorkflowEvent, ErrorEvent, WorkflowStatusEvent, WorkflowDefinition, NodeDefinition, ExecutionContext, ExecutionResult, WorkflowTrigger } from 'spane';
 import IORedis from 'ioredis';
 import jsonata from 'jsonata';
@@ -1225,7 +1226,7 @@ const app = new Elysia()
                     // Stream events - this loop runs indefinitely until client disconnects
                     for await (const event of subscription) {
                         if (isClosed || !isControllerOpen()) break;
-                        
+
                         if (!sendEvent(event)) {
                             break;
                         }

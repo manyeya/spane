@@ -19,7 +19,7 @@ export interface SystemHealth {
  * Health monitoring for workflow engine components
  * Detects and reports on system health issues
  */
-export class HealthMonitor {
+export class SystemHealthMonitor {
     private intervalId?: NodeJS.Timeout;
     private readonly checkInterval: number;
     private isRunning = false;
@@ -149,7 +149,7 @@ export class HealthMonitor {
             if ('healthCheck' in this.stateStore &&
                 typeof (this.stateStore as any).healthCheck === 'function') {
                 const healthResult = await (this.stateStore as any).healthCheck();
-                
+
                 // Handle HybridExecutionStateStore health check result
                 // which returns { status, redis, database }
                 if (healthResult && typeof healthResult === 'object' && 'status' in healthResult) {
@@ -158,7 +158,7 @@ export class HealthMonitor {
                         redis: { healthy: boolean; message?: string };
                         database: { healthy: boolean; message?: string };
                     };
-                    
+
                     if (hybridHealth.status === 'unhealthy') {
                         return {
                             healthy: false,
@@ -167,7 +167,7 @@ export class HealthMonitor {
                             timestamp: new Date(),
                         };
                     }
-                    
+
                     if (hybridHealth.status === 'degraded') {
                         // Return degraded status with details
                         const issues: string[] = [];
@@ -177,7 +177,7 @@ export class HealthMonitor {
                         if (!hybridHealth.database.healthy) {
                             issues.push(`Database: ${hybridHealth.database.message || 'unhealthy'}`);
                         }
-                        
+
                         return {
                             healthy: false, // Mark as unhealthy to trigger degraded overall status
                             component: 'database',
@@ -185,7 +185,7 @@ export class HealthMonitor {
                             timestamp: new Date(),
                         };
                     }
-                    
+
                     // Healthy
                     return {
                         healthy: true,

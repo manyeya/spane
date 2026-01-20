@@ -12,7 +12,7 @@ import { NodeProcessor } from './node-processor';
 import { WorkerManager } from './worker-manager';
 import type { DLQItem } from './types';
 import { TimeoutMonitor } from '../utils/timeout-monitor';
-import { HealthMonitor } from '../utils/health-monitor';
+import { SystemHealthMonitor } from '../utils/health-monitor';
 import type { WorkflowStatusEvent } from './event-types';
 import { EventStreamManager } from './event-stream';
 import { logger } from '../utils/logger';
@@ -30,7 +30,7 @@ export class WorkflowEngine {
     private nodeProcessor: NodeProcessor;
     private workerManager: WorkerManager;
     private timeoutMonitor?: TimeoutMonitor;
-    private healthMonitor?: HealthMonitor;
+    private healthMonitor?: SystemHealthMonitor;
     private eventStreamManager: EventStreamManager;
     private workflowCache: LRUCache<string, WorkflowDefinition>;
     private config: EngineConfig;
@@ -90,7 +90,7 @@ export class WorkflowEngine {
         // Initialize monitors (optional, only if using DrizzleStore)
         if ('findTimedOutExecutions' in stateStore) {
             this.timeoutMonitor = new TimeoutMonitor(stateStore, redisConnection, 60000);
-            this.healthMonitor = new HealthMonitor(stateStore, redisConnection, this.queueManager, 30000);
+            this.healthMonitor = new SystemHealthMonitor(stateStore, redisConnection, this.queueManager, 30000);
         }
 
         // Note: Workflows are now loaded lazily on-demand from database

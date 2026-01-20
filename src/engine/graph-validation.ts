@@ -273,20 +273,6 @@ export function validateEntryNode(workflow: WorkflowDefinition): ValidationError
   return null;
 }
 
-  const entryNodeExists = workflow.nodes.some((n) => n.id === workflow.entryNodeId);
-
-  if (!entryNodeExists) {
-    return {
-      type: 'no-entry-node',
-      severity: 'error',
-      message: `Entry node '${workflow.entryNodeId}' not found in workflow nodes`,
-      nodeIds: [workflow.entryNodeId],
-    };
-  }
-
-  return null;
-}
-
 /**
  * Performs comprehensive validation of a workflow graph.
  *

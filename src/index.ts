@@ -44,7 +44,7 @@ export type { IExecutionStateStore, ExecutionState, ExecutionLog, ExecutionTrace
 
 export { WorkflowEventEmitter } from './engine/event-emitter';
 export { EventStreamManager } from './engine/event-stream';
-export type { 
+export type {
   BaseEvent,
   NodeProgressEvent,
   WorkflowStatusEvent,
@@ -78,8 +78,6 @@ export { logger } from './utils/logger';
 // ----------------------------------------------------------------------------
 // Utilities
 // ----------------------------------------------------------------------------
-
-export { applyAutoLayout } from './utils/layout';
 
 // ----------------------------------------------------------------------------
 // BullMQ Exports (for sub-workflows)
