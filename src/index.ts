@@ -35,7 +35,6 @@ export type { INodeExecutor } from './types';
 
 export { InMemoryExecutionStore } from './db/inmemory-store';
 export { DrizzleExecutionStateStore } from './db/drizzle-store';
-export { HybridExecutionStateStore } from './db/hybrid-store';
 export type { IExecutionStateStore, ExecutionState, ExecutionLog, ExecutionTrace, ExecutionSpan } from './types';
 
 // ----------------------------------------------------------------------------
@@ -43,36 +42,14 @@ export type { IExecutionStateStore, ExecutionState, ExecutionLog, ExecutionTrace
 // ----------------------------------------------------------------------------
 
 export { WorkflowEventEmitter } from './engine/event-emitter';
-export { EventStreamManager } from './engine/event-stream';
-export type {
-  BaseEvent,
-  NodeProgressEvent,
-  WorkflowStatusEvent,
-  ExecutionStateEvent,
-  ErrorEvent,
-  WorkflowEvent,
-  NodeStatus,
-  WorkflowStatus,
-  ProgressPayload
-} from './engine/event-types';
 
-export {
-  isValidWorkflowEvent,
-  isNodeProgressEvent,
-  isWorkflowStatusEvent,
-  isExecutionStateEvent,
-  isErrorEvent
-} from './engine/event-types';
 
 // ----------------------------------------------------------------------------
 // Production Operations
 // ----------------------------------------------------------------------------
 
 export { MetricsCollector } from './utils/metrics';
-export { CircuitBreakerRegistry } from './utils/circuit-breaker';
-export { HealthMonitor } from './utils/health';
 export { GracefulShutdown } from './utils/graceful-shutdown';
-export { TimeoutMonitor } from './utils/timeout-monitor';
 export { logger } from './utils/logger';
 
 // ----------------------------------------------------------------------------
@@ -107,26 +84,13 @@ export type {
 } from './types';
 
 // ----------------------------------------------------------------------------
-// Payload Management
-// ----------------------------------------------------------------------------
 
-export { PayloadManager } from './engine/payload-manager';
 
-// ----------------------------------------------------------------------------
-// Worker Management
-// ----------------------------------------------------------------------------
 
-export { WorkerManager } from './engine/worker-manager';
 
 // ----------------------------------------------------------------------------
-// Queue Management
-// ----------------------------------------------------------------------------
-
-export { QueueManager } from './engine/queue-manager';
-
 // ----------------------------------------------------------------------------
 // DLQ Management
 // ----------------------------------------------------------------------------
 
-export { DLQManager } from './engine/dlq-manager';
 export type { DLQItem } from './engine/types';

@@ -1,22 +1,14 @@
 /**
- * Stateless Processing Utilities for Sandboxed Node Execution
+ * Node Execution Utilities
  * 
- * This module contains pure, stateless functions that can safely run in
- * BullMQ worker threads (sandboxed mode). These functions have no external
- * dependencies on Redis, state stores, or other services.
- * 
- * Key characteristics:
- * - Pure functions with no side effects
- * - No external service dependencies
- * - Serializable inputs and outputs
- * - Can be safely imported in worker threads
- * 
- * @see engine/node-processor.ts for the main processor that uses these utilities
- * @see engine/processors/node-processor.sandbox.ts for sandboxed execution
+ * This module contains pure, stateless functions used by the NodeProcessor
+ * for task execution logic such as delay resolution, input/output mapping,
+ * and result aggregation.
  */
 
-import type { ExecutionResult, DelayNodeConfig } from '../../types';
-import type { CircuitBreakerOptions } from '../../utils/circuit-breaker';
+import type { ExecutionResult, DelayNodeConfig } from '../types';
+
+
 
 // ============================================================================
 // DURATION RESOLUTION
@@ -73,46 +65,7 @@ export function validateDuration(duration: number | null): { valid: boolean; err
     return { valid: true };
 }
 
-// ============================================================================
-// CIRCUIT BREAKER OPTIONS
-// ============================================================================
 
-/**
- * Default circuit breaker options used when node config doesn't specify custom values.
- */
-export const DEFAULT_CIRCUIT_BREAKER_OPTIONS: CircuitBreakerOptions = {
-    failureThreshold: 5,
-    successThreshold: 2,
-    timeout: 60000,        // 1 minute
-    monitoringPeriod: 120000  // 2 minutes
-};
-
-/**
- * Get circuit breaker options from node configuration or use defaults.
- * Node config can optionally include a `circuitBreaker` object with custom options.
- * 
- * @param nodeConfig - The node configuration object
- * @returns CircuitBreakerOptions with values from config or defaults
- */
-export function getCircuitBreakerOptions(nodeConfig: any): CircuitBreakerOptions {
-    const config = nodeConfig || {};
-    const cbConfig = config.circuitBreaker || {};
-
-    return {
-        failureThreshold: typeof cbConfig.failureThreshold === 'number'
-            ? cbConfig.failureThreshold
-            : DEFAULT_CIRCUIT_BREAKER_OPTIONS.failureThreshold,
-        successThreshold: typeof cbConfig.successThreshold === 'number'
-            ? cbConfig.successThreshold
-            : DEFAULT_CIRCUIT_BREAKER_OPTIONS.successThreshold,
-        timeout: typeof cbConfig.timeout === 'number'
-            ? cbConfig.timeout
-            : DEFAULT_CIRCUIT_BREAKER_OPTIONS.timeout,
-        monitoringPeriod: typeof cbConfig.monitoringPeriod === 'number'
-            ? cbConfig.monitoringPeriod
-            : DEFAULT_CIRCUIT_BREAKER_OPTIONS.monitoringPeriod,
-    };
-}
 
 // ============================================================================
 // INPUT DATA PROCESSING
@@ -247,7 +200,7 @@ export function aggregateChildResults(
 
     // Multiple final nodes: merge results by extracting data from each
     const aggregatedResult: Record<string, any> = {};
-    
+
     for (const [key, value] of Object.entries(childrenValues)) {
         const result = value as ExecutionResult | undefined;
         if (result?.success && result.data !== undefined) {
@@ -255,8 +208,8 @@ export function aggregateChildResults(
             const jobId = key.split(':')[1] || key;
             // Remove the executionId prefix and the separator dash to get the node ID
             const prefix = `${executionId}-`;
-            const nodeId = jobId.startsWith(prefix) 
-                ? jobId.slice(prefix.length) 
+            const nodeId = jobId.startsWith(prefix)
+                ? jobId.slice(prefix.length)
                 : jobId;
             aggregatedResult[nodeId] = result.data;
         }

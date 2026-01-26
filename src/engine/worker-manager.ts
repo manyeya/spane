@@ -1,7 +1,6 @@
 import { Worker, Job, DelayedError, RateLimitError } from 'bullmq';
 import { Redis } from 'ioredis';
-import * as path from 'path';
-import * as fs from 'fs';
+
 import { MetricsCollector } from '../utils/metrics';
 import type { NodeJobData, WorkflowJobData } from './types';
 import { NodeProcessor, type EnqueueWorkflowFn } from './node-processor';
@@ -9,7 +8,6 @@ import { DLQManager } from './dlq-manager';
 import type { IExecutionStateStore } from '../types';
 import { logger } from '../utils/logger';
 import type { EngineConfig } from './config';
-import { serializeJobData, deserializeExecutionResult } from './processors/serialization';
 
 // Re-export RateLimitError for external use (e.g., in node executors)
 export { RateLimitError };
@@ -65,43 +63,20 @@ export class WorkerManager {
             );
         }
 
-        // Determine processor: file path for sandboxed execution or inline function
-        let processorPath: string | undefined;
-        if (this.config?.useWorkerThreads) {
-            // Use processor file path for sandboxed worker threads
-            // Default to the compiled sandbox processor if no custom path provided
-            processorPath = this.config.processorFile 
-                ?? path.join(__dirname, 'processors', 'node-processor.sandbox.js');
-            
-            // Validate that the processor file exists before starting workers
-            // This prevents cryptic errors when the sandbox processor hasn't been compiled
-            if (!fs.existsSync(processorPath)) {
-                const errorMsg = `Sandboxed processor file not found: ${processorPath}. ` +
-                    'Ensure the TypeScript processor has been compiled to JavaScript.';
-                logger.error({ processorPath }, errorMsg);
-                throw new Error(errorMsg);
-            }
-            
-            nodeWorkerOptions.useWorkerThreads = true;
-            
-            logger.info(
-                { processorPath },
-                '🧵 Worker threads enabled with sandboxed processor'
-            );
-        }
+
 
         // Worker for individual node execution
         // When processorPath is provided, BullMQ runs the processor in a separate worker thread
         // Otherwise, use inline processor function
         this.nodeWorker = new Worker<NodeJobData>(
             'node-execution',
-            processorPath ?? (async (job: Job<NodeJobData>) => {
+            async (job: Job<NodeJobData>) => {
                 await job.updateProgress(0);
                 logger.info({ jobId: job.id, jobName: job.name }, `🚀 Processing node job ${job.id} of type ${job.name}`);
                 const result = await this.nodeProcessor.processNodeJob(job.data, job);
                 await job.updateProgress(100);
                 return result;
-            }),
+            },
             nodeWorkerOptions
         );
 
@@ -196,36 +171,10 @@ export class WorkerManager {
         // Handle worker-level errors (including sandbox/worker thread crashes)
         // This is CRITICAL - without this handler, errors can cause the worker to stop processing
         this.nodeWorker.on('error', (err) => {
-            // Determine if this is a sandbox-related error
-            const isSandboxError = this.config?.useWorkerThreads && (
-                err.message?.includes('worker_threads') ||
-                err.message?.includes('Worker terminated') ||
-                err.message?.includes('sandbox') ||
-                err.message?.includes('child process') ||
-                err.name === 'WorkerTerminatedError'
+            logger.error(
+                { error: err.message, stack: err.stack },
+                '⚠️ Node worker error occurred'
             );
-
-            if (isSandboxError) {
-                logger.error(
-                    { 
-                        error: err.message, 
-                        stack: err.stack,
-                        useWorkerThreads: this.config?.useWorkerThreads,
-                        processorFile: this.config?.processorFile
-                    },
-                    '💥 Sandbox processor crashed - worker thread error detected'
-                );
-
-                // Track sandbox-specific metrics if available
-                if (this.metricsCollector) {
-                    this.metricsCollector.incrementNodesFailed();
-                }
-            } else {
-                logger.error(
-                    { error: err.message, stack: err.stack },
-                    '⚠️ Node worker error occurred'
-                );
-            }
 
             // Note: BullMQ will automatically recover from most errors
             // The worker continues to process jobs after emitting the error event
@@ -238,28 +187,12 @@ export class WorkerManager {
         // before completing the job, and the lock expires
         this.nodeWorker.on('stalled', async (jobId, prev) => {
             logger.warn(
-                { 
-                    jobId, 
-                    previousState: prev,
-                    useWorkerThreads: this.config?.useWorkerThreads
+                {
+                    jobId,
+                    previousState: prev
                 },
-                `⚠️ Job ${jobId} stalled (previous state: ${prev}) - may indicate sandbox crash`
+                `⚠️ Job ${jobId} stalled (previous state: ${prev})`
             );
-
-            // Track stalled jobs in metrics
-            if (this.metricsCollector) {
-                // Stalled jobs are moved back to wait, so they'll be retried
-                // We don't increment failed count here since the job will be retried
-            }
-
-            // If using worker threads, a stalled job likely indicates a sandbox crash
-            // Log additional context for debugging
-            if (this.config?.useWorkerThreads) {
-                logger.info(
-                    { jobId },
-                    '🔄 Stalled job will be automatically retried by BullMQ'
-                );
-            }
         });
 
         this.workflowWorker.on('completed', (job) => {

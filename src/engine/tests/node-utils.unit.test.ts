@@ -1,10 +1,9 @@
 /**
- * Unit tests for stateless processing utilities
+ * Unit tests for node execution utilities
  * 
- * These tests verify the pure functions in stateless-utils.ts that can
- * safely run in both the main thread and BullMQ worker threads.
+ * These tests verify the pure functions in node-utils.ts.
  * 
- * @see engine/processors/stateless-utils.ts
+ * @see engine/node-utils.ts
  */
 
 import { describe, test, expect } from "bun:test";
@@ -19,10 +18,8 @@ import {
     isNodeAlreadyProcessed,
     generateNodeJobId,
     extractRetryConfig,
-    getCircuitBreakerOptions,
-    DEFAULT_CIRCUIT_BREAKER_OPTIONS,
     DEFAULT_RETRY_CONFIG,
-} from "../processors/stateless-utils";
+} from "../node-utils";
 
 describe("Stateless utilities", () => {
     describe("resolveDuration", () => {
@@ -232,22 +229,4 @@ describe("Stateless utilities", () => {
         });
     });
 
-    describe("getCircuitBreakerOptions", () => {
-        test("returns defaults for empty config", () => {
-            const result = getCircuitBreakerOptions({});
-            expect(result).toEqual(DEFAULT_CIRCUIT_BREAKER_OPTIONS);
-        });
-
-        test("extracts custom options from config", () => {
-            const result = getCircuitBreakerOptions({
-                circuitBreaker: {
-                    failureThreshold: 10,
-                    timeout: 30000
-                }
-            });
-            expect(result.failureThreshold).toBe(10);
-            expect(result.timeout).toBe(30000);
-            expect(result.successThreshold).toBe(DEFAULT_CIRCUIT_BREAKER_OPTIONS.successThreshold);
-        });
-    });
 });

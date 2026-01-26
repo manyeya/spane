@@ -108,8 +108,6 @@ describe("Native Rate Limiting", () => {
                 mockQueueManager as any,
                 mockWorkflows,
                 mockEnqueueWorkflow,
-                undefined, // circuitBreakerRegistry
-                undefined, // payloadManager
                 engineConfig
             );
 
@@ -166,8 +164,6 @@ describe("Native Rate Limiting", () => {
                 mockQueueManager as any,
                 mockWorkflows,
                 mockEnqueueWorkflow,
-                undefined,
-                undefined,
                 engineConfig
             );
 
@@ -255,8 +251,6 @@ describe("Native Rate Limiting", () => {
                 mockQueueManager as any,
                 mockWorkflows,
                 mockEnqueueWorkflow,
-                undefined,
-                undefined,
                 engineConfig
             );
 
@@ -322,8 +316,6 @@ describe("Native Rate Limiting", () => {
                 mockQueueManager as any,
                 mockWorkflows,
                 mockEnqueueWorkflow,
-                undefined,
-                undefined,
                 engineConfig
             );
 
@@ -365,72 +357,7 @@ describe("Native Rate Limiting", () => {
             expect(isRateLimitError(error)).toBe(true);
         });
 
-        test("does not provide rateLimit function to non-external nodes", async () => {
-            const workflowId = "wf-internal";
-            const nodeId = "node-transform";
-            const executionId = "exec-internal";
 
-            let capturedContext: any = null;
-
-            const mockRegistry = {
-                get: () => ({
-                    execute: async (ctx: any) => {
-                        capturedContext = ctx;
-                        return { success: true, data: {} };
-                    }
-                }),
-                getRateLimit: () => null,
-                getCircuitBreakerKey: () => null,
-                isExternalNode: () => false, // Not an external node
-            };
-
-            const engineConfig: EngineConfig = {
-                useNativeRateLimiting: true,
-            };
-
-            processor = new NodeProcessor(
-                mockRegistry as any,
-                mockStateStore as any,
-                mockRedis as any,
-                mockQueueManager as any,
-                mockWorkflows,
-                mockEnqueueWorkflow,
-                undefined,
-                undefined,
-                engineConfig
-            );
-
-            const workflow = {
-                id: workflowId,
-                nodes: [{
-                    id: nodeId,
-                    type: "transform",
-                    config: {},
-                    inputs: [],
-                    outputs: []
-                }],
-                entryNodeId: nodeId
-            };
-            mockWorkflows.set(workflowId, workflow);
-
-            const job = {
-                id: "job-internal",
-                data: {},
-                attemptsMade: 1,
-                opts: { attempts: 3 },
-                token: "token",
-                updateProgress: mock(() => Promise.resolve()),
-                log: mock(() => Promise.resolve()),
-            };
-
-            const data = { executionId, workflowId, nodeId, inputData: {} };
-
-            await processor.processNodeJob(data as any, job as any);
-
-            // Verify rateLimit function was NOT provided
-            expect(capturedContext).not.toBeNull();
-            expect(capturedContext.rateLimit).toBeUndefined();
-        });
     });
 
     describe("WorkerManager rate limit configuration", () => {

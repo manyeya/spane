@@ -5,18 +5,12 @@ import { NodeRegistry } from './registry';
 import type { IExecutionStateStore, WorkflowDefinition } from '../types';
 import { validateWorkflow, type ValidationError } from './graph-validation';
 import { MetricsCollector } from '../utils/metrics';
-import { CircuitBreakerRegistry } from '../utils/circuit-breaker';
 import { QueueManager } from './queue-manager';
 import { DLQManager } from './dlq-manager';
 import { NodeProcessor } from './node-processor';
 import { WorkerManager } from './worker-manager';
 import type { DLQItem } from './types';
-import { TimeoutMonitor } from '../utils/timeout-monitor';
-import { SystemHealthMonitor } from '../utils/health-monitor';
-import type { WorkflowStatusEvent } from './event-types';
-import { EventStreamManager } from './event-stream';
 import { logger } from '../utils/logger';
-import type { PayloadManager } from './payload-manager';
 import { type EngineConfig, mergeEngineConfig } from './config';
 
 export interface WorkflowCacheOptions {
@@ -29,9 +23,6 @@ export class WorkflowEngine {
     private dlqManager: DLQManager;
     private nodeProcessor: NodeProcessor;
     private workerManager: WorkerManager;
-    private timeoutMonitor?: TimeoutMonitor;
-    private healthMonitor?: SystemHealthMonitor;
-    private eventStreamManager: EventStreamManager;
     private workflowCache: LRUCache<string, WorkflowDefinition>;
     private config: EngineConfig;
 
@@ -40,9 +31,7 @@ export class WorkflowEngine {
         private stateStore: IExecutionStateStore,
         redisConnection: Redis,
         private metricsCollector?: MetricsCollector,
-        _circuitBreakerRegistry?: CircuitBreakerRegistry,
         cacheOptions?: WorkflowCacheOptions,
-        private payloadManager?: PayloadManager,
         engineConfig?: Partial<EngineConfig>
     ) {
         // Merge user config with defaults
@@ -56,12 +45,9 @@ export class WorkflowEngine {
             updateAgeOnGet: true, // Reset TTL on access
         });
 
-        // Initialize components
+        // Initialize Components
         this.queueManager = new QueueManager(redisConnection, stateStore, metricsCollector);
         this.dlqManager = new DLQManager(this.queueManager);
-
-        // Initialize EventStreamManager for real-time event streaming
-        this.eventStreamManager = new EventStreamManager(redisConnection, stateStore);
 
         // Initialize NodeProcessor with bound enqueueWorkflow
         this.nodeProcessor = new NodeProcessor(
@@ -71,9 +57,7 @@ export class WorkflowEngine {
             this.queueManager,
             this.workflowCache, // Pass LRU cache reference to NodeProcessor
             this.enqueueWorkflow.bind(this),
-            _circuitBreakerRegistry, // Pass circuit breaker registry for external node protection
-            payloadManager,
-            this.config // Pass engine config for feature flags
+            this.config // Pass engine config
         );
 
         // Initialize WorkerManager
@@ -88,10 +72,7 @@ export class WorkflowEngine {
         );
 
         // Initialize monitors (optional, only if using DrizzleStore)
-        if ('findTimedOutExecutions' in stateStore) {
-            this.timeoutMonitor = new TimeoutMonitor(stateStore, redisConnection, 60000);
-            this.healthMonitor = new SystemHealthMonitor(stateStore, redisConnection, this.queueManager, 30000);
-        }
+
 
         // Note: Workflows are now loaded lazily on-demand from database
         // This improves startup time and memory usage
@@ -373,13 +354,7 @@ export class WorkflowEngine {
         return this.config;
     }
 
-    /**
-     * Get the EventStreamManager for real-time event streaming.
-     * Used by API endpoints to subscribe to workflow events via SSE.
-     */
-    getEventStream(): EventStreamManager {
-        return this.eventStreamManager;
-    }
+
 
     /**
      * Get all workflows from database (ensures persistence across restarts)
@@ -425,17 +400,7 @@ export class WorkflowEngine {
 
         const executionId = await this.stateStore.createExecution(workflowId, parentExecutionId, depth, initialData);
 
-        // Offload initial data if large (Claim Check Pattern)
-        // We do this AFTER createExecution so DB has full data, but BEFORE enqueueNode so Redis gets reference
-        let safeInitialData = initialData;
-        if (this.payloadManager && initialData) {
-            try {
-                safeInitialData = await this.payloadManager.offloadIfNeeded(executionId, 'initialData', initialData);
-            } catch (error) {
-                logger.error({ executionId, workflowId, error }, 'Failed to offload initial payload');
-                // Proceed with inline data as fallback
-            }
-        }
+
 
         // Track metrics
         if (this.metricsCollector) {
@@ -464,18 +429,10 @@ export class WorkflowEngine {
         // Enqueue all entry nodes, passing parent job reference if this is a sub-workflow
         // Also pass priority and delay options to each node
         for (const node of entryNodes) {
-            await this.enqueueNode(executionId, workflowId, node.id, safeInitialData, parentJobId, options);
+            await this.enqueueNode(executionId, workflowId, node.id, initialData, parentJobId, options);
         }
 
-        // Emit 'started' workflow event directly via EventStreamManager
-        const startedEvent: WorkflowStatusEvent = {
-            type: 'workflow:status',
-            timestamp: Date.now(),
-            executionId,
-            workflowId,
-            status: 'started',
-        };
-        this.eventStreamManager.emitLocal(startedEvent);
+
 
         await this.log(executionId, undefined, 'info', `Workflow ${workflowId} started (Execution ID: ${executionId})`);
         return executionId;
@@ -586,19 +543,6 @@ export class WorkflowEngine {
     startWorkers(concurrency?: number): void {
         // Use provided concurrency, or fall back to config value
         this.workerManager.startWorkers(concurrency ?? this.config.workerConcurrency);
-
-        // Start event stream for real-time updates
-        this.eventStreamManager.start().catch((error) => {
-            logger.error({ error }, '[WorkflowEngine] Failed to start event stream');
-        });
-
-        // Start monitors
-        if (this.timeoutMonitor) {
-            this.timeoutMonitor.start();
-        }
-        if (this.healthMonitor) {
-            this.healthMonitor.start();
-        }
     }
 
     // Get items from DLQ
@@ -634,14 +578,7 @@ export class WorkflowEngine {
         }
 
         // Emit 'cancelled' workflow event directly via EventStreamManager
-        const cancelledEvent: WorkflowStatusEvent = {
-            type: 'workflow:status',
-            timestamp: Date.now(),
-            executionId,
-            workflowId,
-            status: 'cancelled',
-        };
-        this.eventStreamManager.emitLocal(cancelledEvent);
+
 
         logger.info({ executionId, removedCount }, `🚫 Workflow ${executionId} cancelled (removed ${removedCount} pending jobs)`);
     }
@@ -689,14 +626,7 @@ export class WorkflowEngine {
         }
 
         // Emit 'paused' workflow event directly via EventStreamManager
-        const pausedEvent: WorkflowStatusEvent = {
-            type: 'workflow:status',
-            timestamp: Date.now(),
-            executionId,
-            workflowId,
-            status: 'paused',
-        };
-        this.eventStreamManager.emitLocal(pausedEvent);
+
 
         console.log(`⏸️ Workflow ${executionId} paused (delayed ${pausedCount} jobs)`);
     }
@@ -813,17 +743,6 @@ export class WorkflowEngine {
     // Graceful shutdown
     async close(): Promise<void> {
         logger.info('🛑 Shutting down workflow engine...');
-
-        // Stop monitors
-        if (this.timeoutMonitor) {
-            this.timeoutMonitor.stop();
-        }
-        if (this.healthMonitor) {
-            this.healthMonitor.stop();
-        }
-
-        // Close event stream manager
-        await this.eventStreamManager.close();
 
         await this.workerManager.close();
         await this.queueManager.close();

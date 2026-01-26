@@ -43,12 +43,7 @@ export interface EngineConfig {
      */
     useJobSchedulers?: boolean;
 
-    /**
-     * Use sandboxed worker threads for node execution.
-     * When enabled, node processing runs in separate worker threads for CPU isolation.
-     * @default false
-     */
-    useWorkerThreads?: boolean;
+
 
     /**
      * Use simplified event streaming via job.updateProgress() instead of QueueEventsProducer.
@@ -69,11 +64,7 @@ export interface EngineConfig {
      */
     workerConcurrency?: number;
 
-    /**
-     * Path to the sandboxed processor file.
-     * Only used when useWorkerThreads is enabled.
-     */
-    processorFile?: string;
+
 }
 
 /**
@@ -85,7 +76,7 @@ export const DEFAULT_ENGINE_CONFIG: EngineConfig = {
     useFlowProducerForSubWorkflows: false,
     useNativeRateLimiting: false,
     useJobSchedulers: true, // Always true - legacy repeatable jobs code removed
-    useWorkerThreads: false,
+
     useSimplifiedEventStream: false,
     workerConcurrency: 5,
 };
