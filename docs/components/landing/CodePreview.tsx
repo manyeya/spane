@@ -1,12 +1,60 @@
 'use client';
 
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState } from 'react';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { useGSAP } from '@gsap/react';
 import { Terminal, Copy, Check, ArrowRight } from 'lucide-react';
 
 gsap.registerPlugin(ScrollTrigger);
+
+// Split code into logical blocks for animation
+const codeBlocks = [
+  `import { WorkflowEngine, NodeRegistry, DrizzleStore } from 'spane';`,
+
+  `// 1. Define your business logic executors
+const registry = new NodeRegistry();`,
+
+  `registry.register('inventory', new InventoryExecutor({
+  action: 'reserve'
+}));
+
+registry.register('payment', new StripeExecutor({
+  apiKey: process.env.STRIPE_KEY
+}));`,
+
+  `// 2. Orchestrate complex parallel flows
+const workflow = {
+  id: 'order-automation',
+  entryNodeId: 'reserve-stock',
+  nodes: [`,
+
+  `  {
+    id: 'reserve-stock',
+    type: 'inventory',
+    outputs: ['process-payment', 'log-metrics']
+  },`,
+
+  `  {
+    id: 'process-payment',
+    type: 'payment',
+    inputs: ['reserve-stock'],
+    retryPolicy: { maxAttempts: 3, backoff: 'exponential' }
+  },`,
+
+  `  {
+    id: 'log-metrics',
+    type: 'transform',
+    inputs: ['reserve-stock']
+  }`,
+
+  `  ]
+};`,
+
+  `// 3. Execute at scale with BullMQ and Redis
+const engine = new WorkflowEngine(registry, new DrizzleStore(db), redis);
+await engine.enqueueWorkflow('order-automation', { orderId: 'ord_123' });`
+];
 
 const code = `import { WorkflowEngine, NodeRegistry, DrizzleStore } from 'spane';
 
