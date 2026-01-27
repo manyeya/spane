@@ -2,10 +2,26 @@
 // TYPE DEFINITIONS
 // ============================================================================
 
+/**
+ * Node configuration - can be any JSON-serializable value
+ * Use `unknown` instead of `any` for type safety
+ */
+export type NodeConfig = Record<string, unknown>;
+
+/**
+ * Input data type for nodes - can be any JSON-serializable value
+ */
+export type InputData = unknown;
+
+/**
+ * Output data type from successful node execution
+ */
+export type OutputData = unknown;
+
 export interface NodeDefinition {
   id: string;
   type: string;
-  config: Record<string, any>;
+  config: NodeConfig;
   inputs: string[]; // IDs of nodes that feed into this node
   outputs: string[]; // IDs of nodes this feeds into
 }
@@ -92,32 +108,83 @@ export interface ScheduleTrigger {
  * Parent outputs when a node has multiple parents (merge scenario)
  * Keys are parent node IDs, values are their execution results
  */
-export type ParentOutputs = Record<string, any>;
+export type ParentOutputs = Record<string, OutputData>;
+
+/**
+ * Base execution result interface
+ * Use this for type assertions when constructing results dynamically
+ */
+export interface BaseExecutionResult {
+  success: boolean;
+  data?: OutputData;
+  error?: string;
+  nextNodes?: string[];
+  skipped?: boolean;
+}
+
+/**
+ * Execution result - allows dynamic construction while maintaining type safety
+ * This is more lenient than a strict discriminated union to allow existing code patterns
+ */
+export type ExecutionResult = BaseExecutionResult;
+
+/**
+ * Create a successful execution result
+ */
+export function successResult(data: OutputData, options?: { nextNodes?: string[] }): ExecutionResult {
+  return {
+    success: true,
+    data,
+    nextNodes: options?.nextNodes,
+    skipped: false,
+  };
+}
+
+/**
+ * Create a failed execution result
+ */
+export function errorResult(error: string): ExecutionResult {
+  return {
+    success: false,
+    error,
+  };
+}
+
+/**
+ * Create a skipped execution result
+ */
+export function skippedResult(data?: OutputData): ExecutionResult {
+  return {
+    success: true,
+    data,
+    skipped: true,
+  };
+}
 
 /**
  * Execution context provided to node executors
- * 
+ *
  * Data Passing Behavior:
  * - Entry nodes: `inputData` contains the initial workflow data
  * - Single parent nodes: `inputData` contains the parent's output data directly
  * - Multiple parent nodes: `inputData` contains an object with parent node IDs as keys
  * - All nodes: `previousResults` contains all completed node results for complex scenarios
  */
-export interface ExecutionContext {
+export interface ExecutionContext<TInput extends InputData = InputData, TConfig extends NodeConfig = NodeConfig> {
   workflowId: string;
   executionId: string;
   nodeId: string;
-  /** 
+  /**
    * Input data for this node:
    * - For entry nodes: initial workflow data
    * - For single parent: parent's output.data
    * - For multiple parents: { 'parent-id': output.data, ... }
    */
-  inputData: any;
+  inputData: TInput;
   /** The node's own configuration (from workflow definition) */
-  nodeConfig?: Record<string, any>;
+  nodeConfig?: TConfig;
   /** All completed node results, keyed by node ID (direct parents) */
-  previousResults: Record<string, ExecutionResult>; // Results from upstream nodes
+  previousResults: Record<string, ExecutionResult>;
   /** All node results in the current execution (keyed by node ID), allowing access to any ancestor */
   allNodeResults?: Record<string, ExecutionResult>;
   /** ID of parent execution if this is a sub-workflow (undefined for root workflows) */
@@ -126,14 +193,14 @@ export interface ExecutionContext {
   depth: number;
   /**
    * Trigger manual rate limiting for external API calls.
-   * 
+   *
    * Call this when an external API returns a rate limit response (e.g., HTTP 429).
    * After calling this function, the executor MUST throw the returned error
    * to properly move the job back to the waiting queue.
-   * 
+   *
    * @param duration - Duration in milliseconds to rate limit (e.g., from Retry-After header)
    * @returns An error that MUST be thrown by the executor
-   * 
+   *
    * @example
    * ```typescript
    * // In an HTTP node executor:
@@ -147,18 +214,8 @@ export interface ExecutionContext {
   rateLimit?: (duration: number) => Promise<Error>;
 }
 
-export interface ExecutionResult {
-  success: boolean;
-  data?: any;
-  error?: string;
-  /** IDs of nodes to execute next. If undefined, all outputs are executed. */
-  nextNodes?: string[];
-  /** Indicates if the node was skipped (not executed) */
-  skipped?: boolean;
-}
-
 export interface IExecutionStateStore {
-  createExecution(workflowId: string, parentExecutionId?: string, depth?: number, initialData?: any): Promise<string>;
+  createExecution(workflowId: string, parentExecutionId?: string, depth?: number, initialData?: InputData): Promise<string>;
   getExecution(executionId: string): Promise<ExecutionState | null>;
   getNodeResults(executionId: string, nodeIds: string[]): Promise<Record<string, ExecutionResult>>;
   getPendingNodeCount(executionId: string, totalNodes: number): Promise<number>;
@@ -209,13 +266,17 @@ export interface ExecutionState {
   /** Nesting depth (0 for root, increments for sub-workflows) */
   depth: number;
   /** Initial data passed to the workflow execution */
-  initialData?: any;
-  metadata?: {
-    parentNodeId?: string;
-    parentWorkflowId?: string;
-    [key: string]: any;
-  };
+  initialData?: InputData;
+  metadata?: Metadata;
 }
+
+/**
+ * Metadata type for execution state
+ */
+export type Metadata = Record<string, unknown> & {
+  parentNodeId?: string;
+  parentWorkflowId?: string;
+};
 
 export interface ExecutionLog {
   id: string;
@@ -224,7 +285,7 @@ export interface ExecutionLog {
   level: 'info' | 'warn' | 'error' | 'debug';
   message: string;
   timestamp: Date;
-  metadata?: any;
+  metadata?: unknown;
 }
 
 export interface ExecutionTrace {
@@ -241,7 +302,7 @@ export interface ExecutionSpan {
   endTime?: number;
   status: 'running' | 'completed' | 'failed' | 'skipped';
   error?: string;
-  metadata?: any;
+  metadata?: unknown;
 }
 
 /**
@@ -249,12 +310,16 @@ export interface ExecutionSpan {
  */
 export interface BulkWorkflowEnqueue {
   workflowId: string;
-  initialData?: any;
+  initialData?: InputData;
   priority?: number; // Job priority (1-10, higher = more important)
   delay?: number; // Delay in milliseconds before execution
   jobId?: string; // Custom job ID for deduplication
 }
 
+/**
+ * Generic node executor interface with typed input/output
+ * Use the base ExecutionContext for untyped executors
+ */
 export interface INodeExecutor {
   execute(context: ExecutionContext): Promise<ExecutionResult>;
 }

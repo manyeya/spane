@@ -7,7 +7,7 @@ description: SPANE - Parallel Asynchronous Node Execution workflow orchestration
 
 **Parallel Asynchronous Node Execution**
 
-SPANE is a powerful workflow orchestration engine built on [BullMQ](https://bullmq.io/) and [Redis](https://redis.io/). It executes DAG-based (Directed Acyclic Graph) workflows with parallel node processing, automatic retries, state persistence, and real-time event streaming.
+SPANE is a powerful workflow orchestration engine built on [BullMQ](https://bullmq.io/) and [Redis](https://redis.io/). It executes DAG-based (Directed Acyclic Graph) workflows with parallel node processing, automatic retries, state persistence, and comprehensive error handling.
 
 > **Note:** SPANE is currently in experimental release. It has not been extensively tested in production environments, and breaking changes may occur between versions.
 
@@ -18,14 +18,13 @@ SPANE is a powerful workflow orchestration engine built on [BullMQ](https://bull
 - **State Persistence**: Choose between in-memory or PostgreSQL-backed state storage
 - **Automatic Retries**: Built-in retry policies with configurable backoff strategies
 - **Circuit Breakers**: Protect external services with automatic circuit breaking
-- **Real-time Events**: Subscribe to workflow execution events via Server-Sent Events (SSE)
 - **Sub-workflows**: Compose reusable workflow components up to 10 levels deep
 - **Dead Letter Queue**: Automatically route failed jobs to DLQ for inspection and retry
 - **Rate Limiting**: Per-node-type rate limiting and global worker rate limiting
-- **Sandboxed Execution**: Optional worker thread isolation for CPU-intensive operations
 - **Webhook & Schedule Triggers**: Automatically trigger workflows via webhooks or cron schedules
 - **Job Prioritization**: Set job priorities (1-10) for critical workflow paths
-- **Delayed Execution**: Schedule workflows to execute at specific times
+- **Error Handling**: Standardized error classes with comprehensive error codes
+- **Validation**: Runtime validation with Zod schemas
 
 ## Architecture
 
@@ -33,12 +32,17 @@ SPANE consists of these core components:
 
 - **WorkflowEngine**: Main orchestrator that manages workflow lifecycle
 - **NodeRegistry**: Stores and retrieves node executors by type
-- **NodeProcessor**: Executes individual nodes with retry logic and error handling
+- **NodeProcessor**: Thin orchestrator that delegates to specialized handlers
+- **Handlers**: Modular execution logic for different node types
+  - `execution-handler` — Regular node execution
+  - `delay-handler` — Delay node processing
+  - `subworkflow-handler` — Sub-workflow execution
+  - `child-enqueue-handler` — Child node enqueueing
 - **QueueManager**: Manages BullMQ queues for node execution, workflow triggers, and DLQ
 - **WorkerManager**: Runs workers that consume jobs from queues
-- **EventStreamManager**: Provides real-time event streaming via Redis Pub/Sub
-- **PayloadManager**: Implements claim check pattern for large payloads
 - **StateStore**: Handles execution state (InMemory or PostgreSQL)
+- **Error System**: Standardized error handling with error codes and utility functions
+- **Validation**: Zod-based runtime validation for workflows and node configs
 
 ## Quick Start
 
@@ -54,15 +58,15 @@ bun add @manyeya/spane
 
 ```typescript
 import { Redis } from 'ioredis';
-import { WorkflowEngine, NodeRegistry, InMemoryExecutionStore } from 'spane';
-import type { WorkflowDefinition, INodeExecutor, ExecutionContext, ExecutionResult } from 'spane';
+import { WorkflowEngine, NodeRegistry, InMemoryExecutionStore } from '@manyeya/spane';
+import type { WorkflowDefinition, INodeExecutor, ExecutionContext, ExecutionResult } from '@manyeya/spane';
 
 // 1. Create a node executor
 class HttpExecutor implements INodeExecutor {
   async execute(context: ExecutionContext): Promise<ExecutionResult> {
     const { url, method = 'GET' } = context.nodeConfig || {};
 
-    const response = await fetch(url, {
+    const response = await fetch(url as string, {
       method,
       body: method !== 'GET' ? JSON.stringify(context.inputData) : undefined,
       headers: { 'Content-Type': 'application/json' }
@@ -139,7 +143,7 @@ console.log('Status:', execution?.status);
   <Card title="Installation & Setup" href="/docs/getting-started/installation" description="Complete installation guide and environment setup" />
   <Card title="Workflow Definitions" href="/docs/core-concepts/workflows" description="Learn how to define workflow structures" />
   <Card title="Node Executors" href="/docs/core-concepts/executors" description="Create custom node executors for your workflows" />
-  <Card title="Engine Configuration" href="/docs/core-concepts/configuration" description="Configure engine behavior and feature flags" />
+  <Card title="Error Handling" href="/docs/guides/error-handling" description="Comprehensive error handling system" />
+  <Card title="Validation" href="/docs/guides/validation" description="Runtime validation with Zod schemas" />
   <Card title="API Reference" href="/docs/reference/api" description="Complete API reference for all components" />
-  <Card title="Examples" href="/docs/reference/examples" description="Practical examples and common patterns" />
 </Cards>

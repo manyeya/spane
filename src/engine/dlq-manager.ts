@@ -1,6 +1,7 @@
 import { Job } from 'bullmq';
 import { QueueManager } from './queue-manager';
 import type { DLQItem, NodeJobData } from './types';
+import { DEFAULT_DLQ_FETCH_SIZE, DEFAULT_RETRY_DELAY_MS } from './constants';
 
 export class DLQManager {
     constructor(private queueManager: QueueManager) { }
@@ -18,7 +19,7 @@ export class DLQManager {
     }
 
     // Get items from DLQ
-    async getDLQItems(start: number = 0, end: number = 10): Promise<DLQItem[]> {
+    async getDLQItems(start: number = 0, end: number = DEFAULT_DLQ_FETCH_SIZE): Promise<DLQItem[]> {
         // BullMQ doesn't store job data in the queue directly in a way that we can list easily without fetching jobs
         // But since we are adding 'dlq-item' jobs to dlqQueue, we can fetch them.
         const jobs = await this.queueManager.dlqQueue.getJobs(['waiting', 'active', 'delayed', 'paused'], start, end);
@@ -41,7 +42,7 @@ export class DLQManager {
             attempts: 3,
             backoff: {
                 type: 'exponential',
-                delay: 1000,
+                delay: DEFAULT_RETRY_DELAY_MS,
             },
         });
 

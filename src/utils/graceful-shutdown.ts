@@ -1,5 +1,6 @@
 import type { Worker, Queue } from 'bullmq';
 import type { Redis } from 'ioredis';
+import { logger } from './logger';
 
 export interface ShutdownOptions {
     timeout: number; // Max time to wait for graceful shutdown in ms
@@ -43,18 +44,18 @@ export class GracefulShutdown {
 
         // Handle SIGTERM (e.g., from Kubernetes, Docker)
         process.once('SIGTERM', () => {
-            console.log('Received SIGTERM signal, starting graceful shutdown...');
+            logger.info('Received SIGTERM signal, starting graceful shutdown');
             this.shutdown().catch((error) => {
-                console.error('Fatal error during shutdown:', error);
+                console.error('Fatal error during shutdown:', error); // Keep console for fatal errors
                 process.exit(1);
             });
         });
 
         // Handle SIGINT (e.g., Ctrl+C)
         process.once('SIGINT', () => {
-            console.log('Received SIGINT signal, starting graceful shutdown...');
+            logger.info('Received SIGINT signal, starting graceful shutdown');
             this.shutdown().catch((error) => {
-                console.error('Fatal error during shutdown:', error);
+                console.error('Fatal error during shutdown:', error); // Keep console for fatal errors
                 process.exit(1);
             });
         });
@@ -78,12 +79,12 @@ export class GracefulShutdown {
 
     async shutdown(exitCode: number = 0): Promise<void> {
         if (this.isShuttingDown) {
-            console.log('Shutdown already in progress...');
+            logger.warn('Shutdown already in progress');
             return;
         }
 
         this.isShuttingDown = true;
-        console.log('Starting graceful shutdown...');
+        logger.info('Starting graceful shutdown');
 
         // Use AbortController to properly cancel timeout
         const abortController = new AbortController();
@@ -94,7 +95,7 @@ export class GracefulShutdown {
 
         const timeoutPromise = new Promise<void>((resolve) => {
             const timeoutId = setTimeout(() => {
-                console.warn(`Shutdown timeout (${this.options.timeout}ms) reached`);
+                logger.warn(`Shutdown timeout (${this.options.timeout}ms) reached`);
                 resolve();
             }, this.options.timeout);
 
@@ -106,9 +107,9 @@ export class GracefulShutdown {
 
         try {
             await Promise.race([shutdownPromise, timeoutPromise]);
-            console.log('Graceful shutdown completed');
+            logger.info('Graceful shutdown completed');
         } catch (error) {
-            console.error('Error during shutdown:', error);
+            logger.error({ error }, 'Error during shutdown');
             exitCode = 1;
         }
 
@@ -127,7 +128,7 @@ export class GracefulShutdown {
                 fn: async () => {
                     await Promise.allSettled(
                         this.workers.map(async (worker) => {
-                            console.log(`Closing worker: ${worker.name}`);
+                            logger.debug(`Closing worker: ${worker.name}`);
                             await worker.close();
                         })
                     );
@@ -147,7 +148,7 @@ export class GracefulShutdown {
                     // Log any failures but continue
                     results.forEach((result, index) => {
                         if (result.status === 'rejected') {
-                            console.error(`Cleanup handler ${index + 1} failed:`, result.reason);
+                            logger.error({ reason: result.reason }, `Cleanup handler ${index + 1} failed`);
                         }
                     });
                 },
@@ -161,7 +162,7 @@ export class GracefulShutdown {
                 fn: async () => {
                     await Promise.allSettled(
                         this.queues.map(async (queue) => {
-                            console.log(`Closing queue: ${queue.name}`);
+                            logger.debug(`Closing queue: ${queue.name}`);
                             await queue.close();
                         })
                     );
@@ -176,7 +177,7 @@ export class GracefulShutdown {
                 fn: async () => {
                     await Promise.allSettled(
                         this.redisConnections.map(async (redis) => {
-                            console.log('Closing Redis connection');
+                            logger.debug('Closing Redis connection');
                             await redis.quit();
                         })
                     );
@@ -187,11 +188,11 @@ export class GracefulShutdown {
         // Execute all steps sequentially
         for (const step of steps) {
             try {
-                console.log(`[Shutdown] ${step.name}...`);
+                logger.info(`[Shutdown] ${step.name}...`);
                 await step.fn();
-                console.log(`[Shutdown] ${step.name} completed`);
+                logger.info(`[Shutdown] ${step.name} completed`);
             } catch (error) {
-                console.error(`[Shutdown] Error in ${step.name}:`, error);
+                logger.error({ error, step: step.name }, `[Shutdown] Error in ${step.name}`);
                 // Continue with other steps even if one fails
             }
         }

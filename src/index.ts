@@ -22,12 +22,49 @@ export {
   isValidWorkflow
 } from './engine/graph-validation';
 
+// Error handling
+export {
+  WorkflowError,
+  WorkflowNotFoundError,
+  WorkflowValidationError,
+  NodeExecutionError,
+  NodeNotRegisteredError,
+  ExecutionTimeoutError,
+  MaxDepthExceededError,
+  RateLimitError as WorkflowRateLimitError,
+  CircuitBreakerOpenError,
+  StatePersistenceError,
+  WorkflowErrorCode,
+  isWorkflowError,
+  isRetryableError,
+  shouldMoveToDLQ,
+  getUserMessage,
+} from './engine/errors';
+
+// Runtime validation
+export {
+  validateWorkflowDefinition,
+  validateWorkflowDefinitionSafe,
+  validateNodeConfig,
+  createValidatedExecutor,
+  CommonNodeSchemas,
+  ValidationError as RuntimeValidationError,
+  DelayNodeConfigSchema,
+  RetryPolicySchema,
+  SubWorkflowConfigSchema,
+  CircuitBreakerConfigSchema,
+  WebhookTriggerConfigSchema,
+  ScheduleTriggerConfigSchema,
+  WorkflowTriggerSchema,
+  NodeDefinitionSchema,
+  WorkflowDefinitionSchema,
+} from './engine/validation';
+
 // ----------------------------------------------------------------------------
 // Node Registry
 // ----------------------------------------------------------------------------
 
 export { NodeRegistry } from './engine/registry';
-export type { INodeExecutor } from './types';
 
 // ----------------------------------------------------------------------------
 // State Stores
@@ -61,7 +98,7 @@ export { logger } from './utils/logger';
 // ----------------------------------------------------------------------------
 
 export { FlowProducer } from 'bullmq';
-export type { FlowJob, FlowChildJob, FlowOpts, FlowProducerListener, RateLimitError } from 'bullmq';
+export type { FlowJob, FlowChildJob, FlowOpts, FlowProducerListener } from 'bullmq';
 export { RateLimitError as WorkerRateLimitError, isRateLimitError } from './engine/worker-manager';
 
 // ----------------------------------------------------------------------------
@@ -80,8 +117,15 @@ export type {
   ExecutionContext,
   ExecutionResult,
   ParentOutputs,
-  BulkWorkflowEnqueue
+  BulkWorkflowEnqueue,
+  NodeConfig,
+  InputData,
+  OutputData,
+  BaseExecutionResult,
+  Metadata,
 } from './types';
+
+export { INodeExecutor, successResult, errorResult, skippedResult } from './types';
 
 // ----------------------------------------------------------------------------
 

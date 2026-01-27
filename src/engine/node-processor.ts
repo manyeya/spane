@@ -16,6 +16,7 @@ import { DistributedLock } from '../utils/distributed-lock';
 import { WorkflowEventEmitter } from './event-emitter';
 import { logger } from '../utils/logger';
 import type { EngineConfig } from './config';
+import { DEFAULT_DELAY_DURATION_MS } from './constants';
 
 // Import handlers
 import { processDelayNode } from './handlers/delay-handler';
@@ -62,7 +63,7 @@ export class NodeProcessor {
     constructor(
         private registry: NodeRegistry,
         private stateStore: IExecutionStateStore,
-        private redisConnection: Redis,
+        redisConnection: Redis,
         private queueManager: QueueManager,
         private workflows: WorkflowCache,
         private enqueueWorkflow: EnqueueWorkflowFn,
@@ -160,7 +161,7 @@ export class NodeProcessor {
 
         if (executionState?.status === 'paused') {
             logger.info({ executionId, nodeId }, `⏸️ Execution ${executionId} is paused. Moving to delayed queue.`);
-            await job.moveToDelayed(Date.now() + 5000, job.token);
+            await job.moveToDelayed(Date.now() + DEFAULT_DELAY_DURATION_MS, job.token);
             throw new DelayedError();
         }
 
@@ -202,7 +203,7 @@ export class NodeProcessor {
     ): Promise<ExecutionResult> {
         const { executionId, workflowId, nodeId, inputData } = data;
         const previousResults = executionState?.nodeResults || {};
-        const config = node.config as SubWorkflowConfig;
+        const config = node.config as unknown as SubWorkflowConfig;
 
         if (!config.workflowId) {
             return {

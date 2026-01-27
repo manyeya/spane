@@ -8,6 +8,7 @@ import { DLQManager } from './dlq-manager';
 import type { IExecutionStateStore } from '../types';
 import { logger } from '../utils/logger';
 import type { EngineConfig } from './config';
+import { DEFAULT_WORKER_CONCURRENCY, PROGRESS_START, PROGRESS_COMPLETE } from './constants';
 
 // Re-export RateLimitError for external use (e.g., in node executors)
 export { RateLimitError };
@@ -42,7 +43,7 @@ export class WorkerManager {
     // Start worker processes
     startWorkers(concurrency?: number): void {
         // Use config values with fallbacks
-        const workerConcurrency = concurrency ?? this.config?.workerConcurrency ?? 5;
+        const workerConcurrency = concurrency ?? this.config?.workerConcurrency ?? DEFAULT_WORKER_CONCURRENCY;
 
         // Build worker options
         const nodeWorkerOptions: any = {
@@ -71,10 +72,10 @@ export class WorkerManager {
         this.nodeWorker = new Worker<NodeJobData>(
             'node-execution',
             async (job: Job<NodeJobData>) => {
-                await job.updateProgress(0);
+                await job.updateProgress(PROGRESS_START);
                 logger.info({ jobId: job.id, jobName: job.name }, `🚀 Processing node job ${job.id} of type ${job.name}`);
                 const result = await this.nodeProcessor.processNodeJob(job.data, job);
-                await job.updateProgress(100);
+                await job.updateProgress(PROGRESS_COMPLETE);
                 return result;
             },
             nodeWorkerOptions

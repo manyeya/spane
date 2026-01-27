@@ -4,6 +4,14 @@ import { MetricsCollector } from '../utils/metrics';
 import type { NodeJobData, WorkflowJobData, DLQItem } from './types';
 import type { IExecutionStateStore } from '../types';
 import { logger } from '../utils/logger';
+import {
+    DEFAULT_REMOVE_ON_COMPLETE_COUNT,
+    DEFAULT_REMOVE_ON_FAIL_COUNT,
+    DEFAULT_WORKFLOW_QUEUE_RETENTION_AGE_SEC,
+    DEFAULT_WORKFLOW_QUEUE_REMOVE_ON_COMPLETE,
+    ONE_DAY_MS,
+    DEFAULT_RETRY_DELAY_MS,
+} from './constants';
 
 export class QueueManager {
     public nodeQueue: Queue<NodeJobData>;
@@ -23,8 +31,8 @@ export class QueueManager {
             connection: redisConnection,
             prefix: 'spane',
             defaultJobOptions: {
-                removeOnComplete: { count: 100 }, // Keep last 100 completed jobs
-                removeOnFail: { count: 500 },     // Keep last 500 failed jobs for debugging
+                removeOnComplete: { count: DEFAULT_REMOVE_ON_COMPLETE_COUNT },
+                removeOnFail: { count: DEFAULT_REMOVE_ON_FAIL_COUNT },
             },
         });
 
@@ -32,8 +40,8 @@ export class QueueManager {
             connection: redisConnection,
             prefix: 'spane',
             defaultJobOptions: {
-                removeOnComplete: { age: 3600, count: 50 }, // Keep 1 hour or 50 jobs
-                removeOnFail: { age: 86400 * 7 },           // Keep failed for 1 week
+                removeOnComplete: { age: DEFAULT_WORKFLOW_QUEUE_RETENTION_AGE_SEC, count: DEFAULT_WORKFLOW_QUEUE_REMOVE_ON_COMPLETE },
+                removeOnFail: { age: ONE_DAY_MS * 7 }, // Keep failed for 1 week
             },
         });
 

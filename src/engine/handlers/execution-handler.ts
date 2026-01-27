@@ -177,7 +177,7 @@ async function handleExecutionError(
     const currentAttempt = job.attemptsMade;
 
     // Check if continueOnFail is enabled and we've exhausted retries
-    if (node.config.retryPolicy?.continueOnFail && currentAttempt >= maxAttempts) {
+    if ((node.config as any).retryPolicy?.continueOnFail && currentAttempt >= maxAttempts) {
         logger.warn({ ...logContext, error: errorMessage }, `⚠️ Node ${nodeId} failed but 'continueOnFail' is enabled. Marking as success.`);
 
         const safeResult = createContinueOnFailResult(errorMessage);

@@ -1,4 +1,5 @@
 import type { ExecutionResult, ExecutionState, IExecutionStateStore, ExecutionLog, ExecutionTrace, ExecutionSpan } from "../types";
+import { logger } from "../utils/logger";
 
 export class InMemoryExecutionStore implements IExecutionStateStore {
   private executions: Map<string, ExecutionState> = new Map();
@@ -137,7 +138,7 @@ export class InMemoryExecutionStore implements IExecutionStateStore {
   // Workflow Persistence - Not supported in memory store
   async saveWorkflow(workflow: any, changeNotes?: string, createdBy?: string): Promise<number> {
     // Log warning but don't throw - allow in-memory operation
-    console.warn('InMemoryExecutionStore: Workflow not persisted (use DrizzleStore for persistence)');
+    logger.warn('InMemoryExecutionStore: Workflow not persisted (use DrizzleStore for persistence)');
     return 0; // Return dummy version ID
   }
 

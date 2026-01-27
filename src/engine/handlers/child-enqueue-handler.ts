@@ -1,6 +1,6 @@
 /**
  * Child Enqueue Handler
- * 
+ *
  * Handles child node enqueueing, skip propagation, and workflow completion:
  * - Check and enqueue ready children after parent completes
  * - Skip nodes not selected by conditional branching
@@ -16,6 +16,7 @@ import { DistributedLock } from '../../utils/distributed-lock';
 import { WorkflowEventEmitter } from '../event-emitter';
 import { logger } from '../../utils/logger';
 import { generateNodeJobId, extractRetryConfig } from '../node-utils';
+import { DEFAULT_LOCK_TIMEOUT_MS } from '../constants';
 
 export interface ChildEnqueueHandlerDeps {
     stateStore: IExecutionStateStore;
@@ -136,7 +137,7 @@ export async function enqueueNode(
     const node = workflow?.nodes.find(n => n.id === nodeId);
 
     // Extract retry configuration
-    const retryConfig = extractRetryConfig(node?.config?.retryPolicy);
+    const retryConfig = extractRetryConfig(node?.config?.retryPolicy as any);
 
     await deps.queueManager.nodeQueue.add('process-node', jobData, {
         jobId,
@@ -167,7 +168,7 @@ export async function checkWorkflowCompletion(
 
     // Use distributed lock to prevent race condition
     const lockKey = `completion:${executionId}`;
-    const lockToken = await deps.distributedLock.acquire(lockKey, 5000);
+    const lockToken = await deps.distributedLock.acquire(lockKey, DEFAULT_LOCK_TIMEOUT_MS);
 
     if (!lockToken) {
         logger.info({ executionId, workflowId }, `⏳ Skipping completion check for ${executionId} - another process is handling it`);

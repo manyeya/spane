@@ -11,6 +11,8 @@ import type {
   ExecutionSpan
 } from '../types';
 import * as schema from './schema';
+import { logger } from '../utils/logger';
+import { DEFAULT_REDIS_CACHE_TTL_SEC, DEFAULT_PAGE_SIZE } from '../engine/constants';
 
 export class DrizzleExecutionStateStore implements IExecutionStateStore {
   private db: ReturnType<typeof drizzle>;
@@ -22,7 +24,7 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
   constructor(
     connectionString: string,
     redisCache?: Redis,
-    cacheTTL: number = 3600,
+    cacheTTL: number = DEFAULT_REDIS_CACHE_TTL_SEC,
     enableCache: boolean = true
   ) {
     this.client = postgres(connectionString);
@@ -33,7 +35,7 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
     this.cacheEnabled = enableCache && !!redisCache;
 
     if (!this.cacheEnabled) {
-      console.log('💡 Redis cache disabled - using database only');
+      logger.info('💡 Redis cache disabled - using database only');
     }
   }
 
@@ -149,7 +151,7 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
         await this.redisCache.expire(cacheKey, this.cacheTTL);
       } catch (cacheError) {
         // Cache failure should not fail the operation
-        console.warn(`Cache update failed for ${executionId}:${nodeId}:`, cacheError);
+        logger.warn({ executionId, nodeId, cacheError }, `Cache update failed for ${executionId}:${nodeId}`);
       }
     }
   }
@@ -177,7 +179,7 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
           }
         }
       } catch (cacheError) {
-        console.warn(`Cache read failed for ${executionId}, falling back to database:`, cacheError);
+        logger.warn({ executionId, cacheError }, `Cache read failed for ${executionId}, falling back to database`);
         cacheMissNodeIds = nodeIds; // Fetch all from database on cache error
       }
     }
@@ -213,7 +215,7 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
           pipeline.expire(cacheKey, this.cacheTTL);
           await pipeline.exec();
         } catch (cacheError) {
-          console.warn(`Cache population failed for ${executionId}:`, cacheError);
+          logger.warn({ executionId, cacheError }, `Cache population failed for ${executionId}`);
           // Continue - we have the data from database
         }
       } else {
@@ -293,7 +295,7 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
         const cacheKey = `results:${executionId}`;
         await this.redisCache.hdel(cacheKey, nodeId);
       } catch (cacheError) {
-        console.warn(`Cache invalidation failed for ${executionId}:${nodeId}:`, cacheError);
+        logger.warn({ executionId, nodeId, cacheError }, `Cache invalidation failed for ${executionId}:${nodeId}`);
         // Continue - database is updated
       }
     }
@@ -600,7 +602,7 @@ export class DrizzleExecutionStateStore implements IExecutionStateStore {
     return workflowRecord?.currentVersionId || null;
   }
 
-  async listWorkflows(activeOnly: boolean = true, limit: number = 100, offset: number = 0): Promise<any[]> {
+  async listWorkflows(activeOnly: boolean = true, limit: number = DEFAULT_PAGE_SIZE, offset: number = 0): Promise<any[]> {
     const conditions = activeOnly
       ? eq(schema.workflows.isActive, true)
       : undefined;

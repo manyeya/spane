@@ -1,0 +1,410 @@
+---
+title: Validation
+description: Runtime validation with Zod schemas for workflows and node configurations
+---
+
+# Validation
+
+SPANE provides comprehensive runtime validation using [Zod](https://zod.dev/) schemas. Validate workflow definitions, node configurations, and create type-safe executors.
+
+## Importing Validation Utilities
+
+```typescript
+import {
+  validateWorkflowDefinition,
+  validateWorkflowDefinitionSafe,
+  validateNodeConfig,
+  createValidatedExecutor,
+  CommonNodeSchemas,
+  ValidationError as RuntimeValidationError
+} from '@manyeya/spane';
+```
+
+## Workflow Validation
+
+### Throwing Validation
+
+Use `validateWorkflowDefinition` to throw an error if validation fails:
+
+```typescript
+import { validateWorkflowDefinition } from '@manyeya/spane';
+
+const workflowDefinition = {
+  id: 'my-workflow',
+  name: 'My Workflow',
+  nodes: [...]
+};
+
+try {
+  const validated = validateWorkflowDefinition(workflowDefinition);
+  await engine.registerWorkflow(validated);
+} catch (error) {
+  if (error instanceof RuntimeValidationError) {
+    console.error('Validation failed:', error.getFormattedErrors());
+  }
+}
+```
+
+### Safe Validation
+
+Use `validateWorkflowDefinitionSafe` to get a result object instead of throwing:
+
+```typescript
+import { validateWorkflowDefinitionSafe } from '@manyeya/spane';
+
+const result = validateWorkflowDefinitionSafe(workflowDefinition);
+
+if (!result.success) {
+  console.error('Validation errors:', result.errors);
+  return;
+}
+
+// Use validated data
+await engine.registerWorkflow(result.data);
+```
+
+## Workflow Schema Rules
+
+The built-in workflow schema enforces these rules:
+
+| Property | Rules |
+|----------|-------|
+| `id` | 1-100 characters, lowercase letters, numbers, hyphens only |
+| `name` | 1-200 characters required |
+| `nodes` | At least 1 node required |
+| `entryNodeId` | Optional, must match a node ID |
+| `maxConcurrency` | Positive integer |
+| `priority` | 1-10 |
+| `delay` | Non-negative integer |
+
+## Node Configuration Validation
+
+### Basic Validation
+
+```typescript
+import { z } from 'zod';
+import { validateNodeConfig } from '@manyeya/spane';
+
+// Define your schema
+const HttpNodeSchema = z.object({
+  url: z.string().url(),
+  method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']).default('GET'),
+  headers: z.record(z.string(), z.string()).optional(),
+  timeout: z.number().positive().optional(),
+});
+
+// Use in your executor
+class HttpExecutor implements INodeExecutor {
+  async execute(context: ExecutionContext): Promise<ExecutionResult> {
+    // Validate config
+    const config = validateNodeConfig(HttpNodeSchema, context.nodeConfig);
+
+    // Config is now typed and validated
+    const response = await fetch(config.url, {
+      method: config.method,
+      headers: config.headers,
+    });
+
+    return { success: true, data: await response.json() };
+  }
+}
+```
+
+### With Custom Error Messages
+
+```typescript
+const HttpNodeSchema = z.object({
+  url: z.string().url({ message: 'Invalid URL provided' }),
+  timeout: z.number().positive().optional(),
+});
+
+try {
+  const config = validateNodeConfig(HttpNodeSchema, context.nodeConfig);
+} catch (error) {
+  if (error instanceof RuntimeValidationError) {
+    console.error('Config validation failed:', error.getFormattedErrors());
+  }
+}
+```
+
+## Creating Validated Executors
+
+Use `createValidatedExecutor` to automatically validate node configurations:
+
+```typescript
+import { createValidatedExecutor, CommonNodeSchemas } from '@manyeya/spane';
+import type { INodeExecutor } from '@manyeya/spane';
+
+// Create a validated executor
+const httpExecutor = createValidatedExecutor(
+  'http',  // Node type
+  CommonNodeSchemas.httpRequest,  // Zod schema
+  async (context) => {
+    // context.nodeConfig is now validated and typed
+    const { url, method = 'GET' } = context.nodeConfig;
+
+    const response = await fetch(url, { method });
+    const data = await response.json();
+
+    return { success: true, data };
+  }
+);
+
+// Register the validated executor
+registry.register('http', httpExecutor);
+```
+
+## Common Node Schemas
+
+SPANE includes pre-built Zod schemas for common node types:
+
+### HTTP Request Schema
+
+```typescript
+import { CommonNodeSchemas } from '@manyeya/spane';
+
+const httpExecutor = createValidatedExecutor(
+  'http',
+  CommonNodeSchemas.httpRequest,
+  async (context) => {
+    const { url, method, headers, body, timeout } = context.nodeConfig;
+    // url: string (validated as URL)
+    // method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
+    // headers: Record<string, string> | undefined
+    // body: unknown | undefined
+    // timeout: number | undefined
+    ...
+  }
+);
+```
+
+### Transform Schema
+
+```typescript
+const transformExecutor = createValidatedExecutor(
+  'transform',
+  CommonNodeSchemas.transform,
+  async (context) => {
+    const { expression, mappings } = context.nodeConfig;
+    // expression: string | undefined
+    // mappings: Record<string, string> | undefined
+    ...
+  }
+);
+```
+
+### Filter Schema
+
+```typescript
+const filterExecutor = createValidatedExecutor(
+  'filter',
+  CommonNodeSchemas.filter,
+  async (context) => {
+    const { condition, nextOnTrue, nextOnFalse } = context.nodeConfig;
+    // condition: string
+    // nextOnTrue: string | undefined
+    // nextOnFalse: string | undefined
+    ...
+  }
+);
+```
+
+### Email Schema
+
+```typescript
+const emailExecutor = createValidatedExecutor(
+  'email',
+  CommonNodeSchemas.email,
+  async (context) => {
+    const { to, subject, body, from } = context.nodeConfig;
+    // to: string | string[]
+    // subject: string
+    // body: string
+    // from: string | undefined
+    ...
+  }
+);
+```
+
+### Database Schema
+
+```typescript
+const dbExecutor = createValidatedExecutor(
+  'database',
+  CommonNodeSchemas.database,
+  async (context) => {
+    const { query, params } = context.nodeConfig;
+    // query: string
+    // params: unknown[] | undefined
+    ...
+  }
+);
+```
+
+## Custom Schema Creation
+
+### Define Your Own Schema
+
+```typescript
+import { z } from 'zod';
+import { createValidatedExecutor } from '@manyeya/spane';
+
+const SendMessageSchema = z.object({
+  phoneNumber: z.string().regex(/^\+?\d{10,15}$/, 'Invalid phone number'),
+  message: z.string().min(1).max(1000),
+  templateId: z.string().optional(),
+});
+
+const smsExecutor = createValidatedExecutor(
+  'sms',
+  SendMessageSchema,
+  async (context) => {
+    const { phoneNumber, message, templateId } = context.nodeConfig;
+
+    // Send SMS
+    await smsClient.send({
+      to: phoneNumber,
+      message,
+      template: templateId,
+    });
+
+    return { success: true, data: { messageId: '...' } };
+  }
+);
+```
+
+### Nested Configuration
+
+```typescript
+const ApiConfigSchema = z.object({
+  baseUrl: z.string().url(),
+  auth: z.object({
+    type: z.enum(['bearer', 'api-key', 'basic']),
+    token: z.string().optional(),
+    username: z.string().optional(),
+    password: z.string().optional(),
+  }),
+  retry: z.object({
+    maxAttempts: z.number().min(1).max(10).default(3),
+    backoff: z.enum(['fixed', 'exponential']).default('exponential'),
+  }).optional(),
+});
+
+const apiExecutor = createValidatedExecutor(
+  'api-call',
+  ApiConfigSchema,
+  async (context) => {
+    const { baseUrl, auth, retry } = context.nodeConfig;
+    // Fully typed and validated
+    ...
+  }
+);
+```
+
+## Error Handling
+
+### ValidationError Class
+
+```typescript
+import { ValidationError as RuntimeValidationError } from '@manyeya/spane';
+
+try {
+  validateWorkflowDefinition(invalidWorkflow);
+} catch (error) {
+  if (error instanceof RuntimeValidationError) {
+    console.error('Issues:', error.issues);
+
+    // Get formatted error messages
+    console.error(error.getFormattedErrors());
+    // Output:
+    // - nodes.0.id: ID must be lowercase
+    // - nodes.0.config.url: Invalid URL format
+  }
+}
+```
+
+### User-Friendly Messages
+
+```typescript
+import { getUserMessage } from '@manyeya/spane';
+
+try {
+  await engine.enqueueWorkflow('my-workflow', data);
+} catch (error) {
+  if (error instanceof WorkflowError) {
+    // Get user-friendly message
+    const message = getUserMessage(error);
+    console.error('Error:', message);
+    // Output: "The workflow definition is invalid."
+  }
+}
+```
+
+## Best Practices
+
+1. **Always validate external input**: Validate data from APIs, webhooks, user input
+2. **Use `createValidatedExecutor`**: Reduces boilerplate and ensures type safety
+3. **Provide clear error messages**: Use Zod's `.message()` for custom messages
+4. **Validate at boundaries**: Validate when data enters your system
+5. **Use common schemas**: Leverage `CommonNodeSchemas` when applicable
+
+## Complete Example
+
+```typescript
+import { createValidatedExecutor, CommonNodeSchemas } from '@manyeya/spane';
+import { z } from 'zod';
+
+// Define custom schema
+const UserProfileSchema = z.object({
+  userId: z.string().uuid(),
+  includeProfile: z.boolean().default(true),
+  fields: z.array(z.string()).optional(),
+});
+
+// Create validated executor
+const getUserProfileExecutor = createValidatedExecutor(
+  'get-user-profile',
+  UserProfileSchema,
+  async (context) => {
+    const { userId, includeProfile, fields } = context.nodeConfig;
+
+    // Fetch from database
+    const user = await db.users.findById(userId, {
+      includeProfile,
+      select: fields,
+    });
+
+    return { success: true, data: user };
+  }
+);
+
+// Register
+registry.register('get-user-profile', getUserProfileExecutor);
+
+// Use in workflow
+const workflow: WorkflowDefinition = {
+  id: 'user-workflow',
+  name: 'User Profile Workflow',
+  nodes: [
+    {
+      id: 'fetch-user',
+      type: 'get-user-profile',
+      config: {
+        userId: '123e4567-e89b-12d3-a456-426614174000',
+        includeProfile: true,
+        fields: ['name', 'email', 'avatar'],
+      },
+      inputs: [],
+      outputs: ['process']
+    }
+  ]
+};
+```
+
+## Next Steps
+
+<Cards>
+  <Card title="Error Handling" href="/docs/guides/error-handling" description="Comprehensive error handling system" />
+  <Card title="Node Executors" href="/docs/core-concepts/executors" description="Create custom node executors" />
+  <Card title="Workflow Definitions" href="/docs/core-concepts/workflows" description="Define workflow structures" />
+</Cards>

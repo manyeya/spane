@@ -5,7 +5,172 @@ description: Handle failures, retry jobs, and manage Dead Letter Queue
 
 # Error Handling & DLQ
 
-SPANE provides comprehensive error handling through retry policies, Dead Letter Queue (DLQ), and workflow control operations.
+SPANE provides comprehensive error handling through standardized error classes, retry policies, Dead Letter Queue (DLQ), and workflow control operations.
+
+## Error Classes
+
+SPANE defines a hierarchy of error classes for consistent error handling:
+
+### Base WorkflowError
+
+All SPANE errors extend from `WorkflowError`:
+
+```typescript
+import { WorkflowError, isWorkflowError } from '@manyeya/spane';
+
+interface WorkflowError extends Error {
+  code: WorkflowErrorCode;
+  executionId?: string;
+  nodeId?: string;
+  workflowId?: string;
+  timestamp: Date;
+  originalCause?: Error;
+}
+
+// Check if error is a WorkflowError
+if (isWorkflowError(error)) {
+  console.error('Error code:', error.code);
+  console.error('Execution ID:', error.executionId);
+}
+```
+
+### Error Codes
+
+```typescript
+import { WorkflowErrorCode } from '@manyeya/spane';
+
+enum WorkflowErrorCode {
+  // Workflow errors
+  WORKFLOW_NOT_FOUND = 'WORKFLOW_NOT_FOUND',
+  WORKFLOW_VALIDATION_FAILED = 'WORKFLOW_VALIDATION_FAILED',
+  WORKFLOW_CYCLE_DETECTED = 'WORKFLOW_CYCLE_DETECTED',
+
+  // Node errors
+  NODE_NOT_FOUND = 'NODE_NOT_FOUND',
+  NODE_NOT_REGISTERED = 'NODE_NOT_REGISTERED',
+  NODE_EXECUTION_FAILED = 'NODE_EXECUTION_FAILED',
+  NODE_SKIPPED = 'NODE_SKIPPED',
+  NODE_TIMEOUT = 'NODE_TIMEOUT',
+
+  // Execution errors
+  EXECUTION_NOT_FOUND = 'EXECUTION_NOT_FOUND',
+  EXECUTION_TIMEOUT = 'EXECUTION_TIMEOUT',
+  EXECUTION_CANCELLED = 'EXECUTION_CANCELLED',
+  EXECUTION_PAUSED = 'EXECUTION_PAUSED',
+  EXECUTION_MAX_DEPTH_EXCEEDED = 'EXECUTION_MAX_DEPTH_EXCEEDED',
+
+  // Configuration errors
+  INVALID_CONFIG = 'INVALID_CONFIG',
+  INVALID_PRIORITY = 'INVALID_PRIORITY',
+  INVALID_DELAY = 'INVALID_DELAY',
+
+  // State errors
+  STATE_CORRUPTION = 'STATE_CORRUPTION',
+  STATE_PERSISTENCE_FAILED = 'STATE_PERSISTENCE_FAILED',
+
+  // Queue errors
+  QUEUE_ERROR = 'QUEUE_ERROR',
+  WORKER_ERROR = 'WORKER_ERROR',
+
+  // Sub-workflow errors
+  SUBWORKFLOW_FAILED = 'SUBWORKFLOW_FAILED',
+  SUBWORKFLOW_NOT_FOUND = 'SUBWORKFLOW_NOT_FOUND',
+
+  // Rate limiting
+  RATE_LIMIT_EXCEEDED = 'RATE_LIMIT_EXCEEDED',
+
+  // Circuit breaker
+  CIRCUIT_BREAKER_OPEN = 'CIRCUIT_BREAKER_OPEN',
+
+  // Generic
+  UNKNOWN_ERROR = 'UNKNOWN_ERROR',
+}
+```
+
+### Specialized Error Classes
+
+```typescript
+import {
+  WorkflowNotFoundError,
+  WorkflowValidationError,
+  NodeExecutionError,
+  NodeNotRegisteredError,
+  ExecutionTimeoutError,
+  MaxDepthExceededError,
+  RateLimitError,
+  CircuitBreakerOpenError,
+  StatePersistenceError
+} from '@manyeya/spane';
+```
+
+### Using Error Classes
+
+```typescript
+import { WorkflowNotFoundError, NodeExecutionError } from '@manyeya/spane';
+
+// In your code
+throw new WorkflowNotFoundError('my-workflow');
+
+throw new NodeExecutionError(
+  'node-1',
+  'exec-123',
+  'API timeout after 30s',
+  new Error('Request timeout')
+);
+```
+
+## Error Utility Functions
+
+### Check Retryable Errors
+
+```typescript
+import { isRetryableError } from '@manyeya/spane';
+
+try {
+  await someOperation();
+} catch (error) {
+  if (isRetryableError(error)) {
+    // Error will be retried by BullMQ
+    // These include: RATE_LIMIT_EXCEEDED, CIRCUIT_BREAKER_OPEN,
+    // NODE_TIMEOUT, QUEUE_ERROR, WORKER_ERROR
+    console.log('Will retry:', error.message);
+  } else {
+    // Non-retryable error
+    console.error('Fatal error:', error.message);
+  }
+}
+```
+
+### Check DLQ Eligibility
+
+```typescript
+import { shouldMoveToDLQ } from '@manyeya/spane';
+
+// Determine if error should go to DLQ
+if (shouldMoveToDLQ(error, attemptsMade, maxAttempts)) {
+  // Error will go to DLQ because:
+  // 1. Max attempts exceeded, OR
+  // 2. Error is non-retryable (VALIDATION_FAILED, CYCLE_DETECTED, etc.)
+  console.log('Moving to DLQ');
+}
+```
+
+### Get User-Friendly Messages
+
+```typescript
+import { getUserMessage } from '@manyeya/spane';
+
+try {
+  await engine.enqueueWorkflow('my-workflow', data);
+} catch (error) {
+  const userMessage = getUserMessage(error);
+  // Returns sanitized messages like:
+  // - "The specified workflow could not be found."
+  // - "The workflow definition is invalid."
+  // - "Too many requests. Please try again later."
+  alert(userMessage);
+}
+```
 
 ## Retry Policies
 
@@ -19,14 +184,14 @@ Configure retry behavior at the node level:
   type: 'http',
   config: {
     url: 'https://unstable-api.example.com',
-    retryPolicy: {
-      maxAttempts: 5,           // Total attempts (initial + retries)
-      backoff: {
-        type: 'exponential',     // or 'fixed'
-        delay: 1000            // Initial delay in ms
-      },
-      continueOnFail: false      // Stop workflow if all retries fail
-    }
+  },
+  retryPolicy: {
+    maxAttempts: 5,           // Total attempts (initial + retries)
+    backoff: {
+      type: 'exponential',     // or 'fixed'
+      delay: 1000            // Initial delay in ms
+    },
+    continueOnFail: false      // Stop workflow if all retries fail
   },
   inputs: [],
   outputs: []
@@ -98,10 +263,10 @@ Allow workflow to continue even after all retries fail:
   type: 'http',
   config: {
     url: 'https://enrichment-api.example.com',
-    retryPolicy: {
-      maxAttempts: 3,
-      continueOnFail: true  // Don't stop workflow
-    }
+  },
+  retryPolicy: {
+    maxAttempts: 3,
+    continueOnFail: true  // Don't stop workflow
   },
   inputs: ['data'],
   outputs: ['save']
@@ -137,6 +302,7 @@ Jobs are sent to DLQ when:
 - All retry attempts are exhausted
 - Job fails with `continueOnFail: false`
 - Job crashes repeatedly
+- Error is non-retryable (validation errors, cycle detected, etc.)
 
 ### Accessing DLQ
 
@@ -152,23 +318,6 @@ for (const item of items) {
   console.log('Attempts:', item.attemptsMade);
   console.log('Failed At:', item.failedAt);
   console.log('Error:', item.stacktrace);
-}
-```
-
-### DLQ Item Structure
-
-```typescript
-interface DLQItem {
-  jobId: string;
-  executionId: string;
-  workflowId: string;
-  nodeId: string;
-  nodeType: string;
-  inputData: any;
-  error: string;
-  stacktrace: string;
-  attemptsMade: number;
-  failedAt: Date;
 }
 ```
 
@@ -200,18 +349,6 @@ for (const item of items) {
 console.log(`Retried ${successCount}/${items.length} jobs`);
 ```
 
-### Clear DLQ
-
-```typescript
-// Manually clear DLQ items
-const dlqManager = new DLQManager(queueManager);
-const items = await dlqManager.getDLQItems(0, -1);
-
-for (const item of items) {
-  await dlqManager.removeDLQItem(item.jobId);
-}
-```
-
 ## Workflow Control
 
 ### Pause Workflow
@@ -219,7 +356,7 @@ for (const item of items) {
 Pause a running workflow:
 
 ```typescript
-await engine.pauseWorkflow(executionId);
+await engine.pauseExecution(executionId);
 ```
 
 What happens when paused:
@@ -233,7 +370,7 @@ What happens when paused:
 Resume a paused workflow:
 
 ```typescript
-await engine.resumeWorkflow(executionId);
+await engine.resumeExecution(executionId);
 ```
 
 What happens when resumed:
@@ -246,7 +383,7 @@ What happens when resumed:
 Cancel a workflow completely:
 
 ```typescript
-await engine.cancelWorkflow(executionId);
+await engine.cancelExecution(executionId);
 ```
 
 What happens when cancelled:
@@ -276,7 +413,6 @@ class GracefulExecutor implements INodeExecutor {
         return {
           success: true,
           data: this.getCachedData(context),
-          metadata: { fallback: true }
         };
       }
     }
@@ -294,66 +430,16 @@ Combine circuit breaker with retries:
   type: 'http',
   config: {
     url: 'https://api.example.com/endpoint',
-    retryPolicy: {
-      maxAttempts: 5,
-      backoff: { type: 'exponential', delay: 1000 }
-    },
-    circuitBreaker: {
-      failureThreshold: 10,
-      successThreshold: 2,
-      timeout: 60000
-    }
-  }
-}
-```
-
-### Conditional Retry
-
-```typescript
-class SmartRetryExecutor implements INodeExecutor {
-  async execute(context: ExecutionContext): Promise<ExecutionResult> {
-    let lastError: Error | null = null;
-    const maxAttempts = 3;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        const result = await this.callService(context);
-
-        // Success - return result
-        return { success: true, data: result };
-      } catch (error) {
-        lastError = error instanceof Error ? error : new Error('Unknown error');
-
-        // Don't retry certain errors
-        if (this.isNonRetryable(error)) {
-          throw error;
-        }
-
-        // Log retry attempt
-        console.warn(`Attempt ${attempt} failed:`, lastError.message);
-
-        // Wait before retry (exponential backoff)
-        if (attempt < maxAttempts) {
-          await this.delay(Math.pow(2, attempt - 1) * 1000);
-        }
-      }
-    }
-
-    // All retries failed
-    return {
-      success: false,
-      error: lastError?.message || 'Max retries exceeded'
-    };
-  }
-
-  private isNonRetryable(error: any): boolean {
-    // Non-retryable errors
-    const nonRetryableCodes = [400, 401, 403, 404];
-    return nonRetryableCodes.includes(error?.statusCode);
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  },
+  retryPolicy: {
+    maxAttempts: 5,
+    backoff: { type: 'exponential', delay: 1000 }
+  },
+  circuitBreaker: {
+    enabled: true,
+    failureThreshold: 10,
+    successThreshold: 2,
+    timeout: 60000
   }
 }
 ```
@@ -377,66 +463,33 @@ if (execution.status === 'failed') {
 }
 ```
 
-### Get Execution Logs
+### Complete Error Handling Example
 
 ```typescript
-const logs = await stateStore.getLogs(executionId);
-
-const errorLogs = logs.filter(log => log.level === 'error');
-
-for (const log of errorLogs) {
-  console.error(`[${log.timestamp}] ${log.nodeId}: ${log.message}`);
-}
-```
-
-### Track Execution Span
-
-```typescript
-const trace = await stateStore.getTrace(executionId);
-
-for (const span of trace.spans) {
-  if (span.status === 'failed') {
-    console.error(`Span ${span.name} failed:`, span.error);
-    console.error('Duration:', span.endTime - span.startTime, 'ms');
-  }
-}
-```
-
-## Complete Error Handling Example
-
-```typescript
-import { WorkflowEngine } from 'spane/engine/workflow-engine';
-import type { EngineConfig } from 'spane/engine/config';
+import {
+  WorkflowEngine,
+  isRetryableError,
+  shouldMoveToDLQ,
+  getUserMessage
+} from '@manyeya/spane';
 
 // Configure engine
-const engineConfig: EngineConfig = {
-  useFlowProducerForSubWorkflows: true,
-  workerConcurrency: 10
-};
-
-const engine = new WorkflowEngine(
-  registry,
-  stateStore,
-  redis,
-  undefined, undefined, undefined, undefined,
-  engineConfig
-);
+const engine = new WorkflowEngine(registry, stateStore, redis);
 
 // Register workflow with error handling
 const workflow: WorkflowDefinition = {
   id: 'robust-workflow',
   name: 'Robust Workflow with Error Handling',
-  entryNodeId: 'step1',
   nodes: [
     {
       id: 'step1',
       type: 'http',
       config: {
         url: 'https://api1.example.com',
-        retryPolicy: {
-          maxAttempts: 5,
-          backoff: { type: 'exponential', delay: 1000 }
-        }
+      },
+      retryPolicy: {
+        maxAttempts: 5,
+        backoff: { type: 'exponential', delay: 1000 }
       },
       inputs: [],
       outputs: ['step2']
@@ -446,44 +499,35 @@ const workflow: WorkflowDefinition = {
       type: 'http',
       config: {
         url: 'https://api2.example.com',
-        retryPolicy: {
-          maxAttempts: 3,
-          continueOnFail: true  // Optional step
-        }
+      },
+      retryPolicy: {
+        maxAttempts: 3,
+        continueOnFail: true  // Optional step
       },
       inputs: ['step1'],
       outputs: ['step3']
-    },
-    {
-      id: 'step3',
-      type: 'transform',
-      config: {},
-      inputs: ['step1', 'step2'],  // Wait for both
-      outputs: []
     }
   ]
 };
 
-await engine.registerWorkflow(workflow);
-
 // Execute and monitor
 const executionId = await engine.enqueueWorkflow('robust-workflow', data);
 
-// Subscribe to events
-const subscription = await engine.getEventStream().subscribeToExecution(
-  executionId,
-  (event) => {
-    if (event.type === 'node:failed') {
-      console.error(`Node ${event.nodeId} failed:`, event.error);
+// Monitor execution
+const execution = await stateStore.getExecution(executionId);
 
-      // Check if it's critical
-      if (event.nodeId === 'step1') {
-        // Cancel workflow if critical node fails
-        engine.cancelWorkflow(event.executionId);
+if (execution.status === 'failed') {
+  for (const [nodeId, result] of Object.entries(execution.nodeResults)) {
+    if (result.success === false) {
+      console.error(`Node ${nodeId} failed:`, result.error);
+
+      // Check if retryable
+      if (isRetryableError(new Error(result.error || ''))) {
+        console.log('This error is retryable');
       }
     }
   }
-);
+}
 ```
 
 ## Best Practices
@@ -493,14 +537,13 @@ const subscription = await engine.getEventStream().subscribeToExecution(
 3. **Implement Fallbacks**: Have alternative data sources
 4. **Monitor DLQ**: Regularly review and retry failed jobs
 5. **Use Circuit Breakers**: Protect external dependencies
-6. **Log Context**: Include execution and node IDs in logs
-7. **Handle Transient Errors**: Differentiate retryable vs non-retryable errors
-8. **Set Timeouts**: Prevent indefinite hanging
+6. **Handle Transient Errors**: Differentiate retryable vs non-retryable errors
+7. **Set Timeouts**: Prevent indefinite hanging
 
 ## Next Steps
 
 <Cards>
-  <Card title="Circuit Breakers" href="/docs/guide/circuit-breakers" description="Protect external services with circuit breaking" />
-  <Card title="Advanced Features" href="/docs/guide/advanced" description="Rate limiting and delays" />
-  <Card title="Event Streaming" href="/docs/guide/event-streaming" description="Monitor executions in real time" />
+  <Card title="Circuit Breakers" href="/docs/guides/circuit-breakers" description="Protect external services with circuit breaking" />
+  <Card title="Validation" href="/docs/guides/validation" description="Runtime validation with Zod schemas" />
+  <Card title="State Storage" href="/docs/guides/state-storage" description="Persist execution state" />
 </Cards>

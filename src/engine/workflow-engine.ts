@@ -12,10 +12,25 @@ import { WorkerManager } from './worker-manager';
 import type { DLQItem } from './types';
 import { logger } from '../utils/logger';
 import { type EngineConfig, mergeEngineConfig } from './config';
+import {
+    DEFAULT_WORKFLOW_CACHE_SIZE,
+    DEFAULT_WORKFLOW_CACHE_TTL_MS,
+    MAX_SUBWORKFLOW_DEPTH,
+    DEFAULT_PAGE_SIZE,
+    DEFAULT_RETRY_DELAY_MS,
+    DEFAULT_DLQ_FETCH_SIZE,
+    PRIORITY_MIN,
+    PRIORITY_MAX,
+} from './constants';
+import {
+    WorkflowNotFoundError,
+    MaxDepthExceededError,
+    WorkflowValidationError,
+} from './errors';
 
 export interface WorkflowCacheOptions {
-    maxSize?: number;      // Max number of workflows to cache (default: 500)
-    ttlMs?: number;        // Time-to-live in milliseconds (default: 1 hour)
+    maxSize?: number;      // Max number of workflows to cache
+    ttlMs?: number;        // Time-to-live in milliseconds
 }
 
 export class WorkflowEngine {
@@ -38,7 +53,7 @@ export class WorkflowEngine {
         this.config = mergeEngineConfig(engineConfig);
 
         // Initialize LRU cache with configurable limits
-        const { maxSize = 500, ttlMs = 3600000 } = cacheOptions || {};
+        const { maxSize = DEFAULT_WORKFLOW_CACHE_SIZE, ttlMs = DEFAULT_WORKFLOW_CACHE_TTL_MS } = cacheOptions || {};
         this.workflowCache = new LRUCache<string, WorkflowDefinition>({
             max: maxSize,
             ttl: ttlMs,
@@ -362,7 +377,7 @@ export class WorkflowEngine {
      */
     async getAllWorkflowsFromDatabase(
         activeOnly: boolean = true,
-        limit: number = 100,
+        limit: number = DEFAULT_PAGE_SIZE,
         offset: number = 0
     ): Promise<WorkflowDefinition[]> {
         return await this.stateStore.listWorkflows(activeOnly, limit, offset);
@@ -389,16 +404,16 @@ export class WorkflowEngine {
         // Lazy load workflow from database if not in cache
         const workflow = await this.getWorkflow(workflowId);
         if (!workflow) {
-            throw new Error(`Workflow ${workflowId} not found`);
+            throw new WorkflowNotFoundError(workflowId);
         }
+
+        // Create execution first
+        const executionId = await this.stateStore.createExecution(workflowId, parentExecutionId, depth, initialData);
 
         // Depth limit to prevent infinite recursion
-        const MAX_DEPTH = 10;
-        if (depth >= MAX_DEPTH) {
-            throw new Error(`Maximum sub-workflow depth (${MAX_DEPTH}) exceeded`);
+        if (depth >= MAX_SUBWORKFLOW_DEPTH) {
+            throw new MaxDepthExceededError(executionId, depth, MAX_SUBWORKFLOW_DEPTH);
         }
-
-        const executionId = await this.stateStore.createExecution(workflowId, parentExecutionId, depth, initialData);
 
 
 
@@ -414,7 +429,10 @@ export class WorkflowEngine {
             // Use the specified entry node
             const entryNode = workflow.nodes.find(n => n.id === workflow.entryNodeId);
             if (!entryNode) {
-                throw new Error(`Entry node '${workflow.entryNodeId}' not found in workflow '${workflowId}'`);
+                throw new WorkflowValidationError(
+                    workflowId,
+                    `Entry node '${workflow.entryNodeId}' not found`
+                );
             }
             entryNodes = [entryNode];
         } else {
@@ -460,12 +478,15 @@ export class WorkflowEngine {
             attempts: 3,
             backoff: {
                 type: 'exponential',
-                delay: 1000,
+                delay: DEFAULT_RETRY_DELAY_MS,
             },
         };
 
-        // Add priority if specified (1-10, higher = more important)
+        // Add priority if specified
         if (options?.priority !== undefined) {
+            if (options.priority < PRIORITY_MIN || options.priority > PRIORITY_MAX) {
+                throw new Error(`Priority must be between ${PRIORITY_MIN} and ${PRIORITY_MAX}`);
+            }
             jobOpts.priority = options.priority;
         }
 
@@ -546,7 +567,7 @@ export class WorkflowEngine {
     }
 
     // Get items from DLQ
-    async getDLQItems(start: number = 0, end: number = 10): Promise<DLQItem[]> {
+    async getDLQItems(start: number = 0, end: number = DEFAULT_DLQ_FETCH_SIZE): Promise<DLQItem[]> {
         return this.dlqManager.getDLQItems(start, end);
     }
 
@@ -628,7 +649,7 @@ export class WorkflowEngine {
         // Emit 'paused' workflow event directly via EventStreamManager
 
 
-        console.log(`⏸️ Workflow ${executionId} paused (delayed ${pausedCount} jobs)`);
+        logger.info({ executionId, pausedCount }, `⏸️ Workflow ${executionId} paused (delayed ${pausedCount} jobs)`);
     }
 
     async resumeWorkflow(executionId: string): Promise<void> {
