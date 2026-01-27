@@ -21,60 +21,57 @@ export function FinalCTA() {
   useGSAP(() => {
     if (!container.current) return;
 
-    // Card animation
-    gsap.fromTo(cardRef.current,
-      { opacity: 0, scale: 0.95, y: 50 },
-      {
-        opacity: 1,
-        scale: 1,
-        y: 0,
-        duration: 1,
-        ease: 'power3.out',
-        scrollTrigger: {
-          trigger: cardRef.current,
-          start: 'top 80%',
-        }
-      }
-    );
+    // CRITICAL: Set initial values BEFORE animations to prevent flicker
+    gsap.set(cardRef.current, { opacity: 0, scale: 0.95, y: 50 });
+    gsap.set(titleRef.current, { opacity: 0, y: 40 });
+    gsap.set(subtitleRef.current, { opacity: 0, y: 30 });
 
-    // Title animation with split text effect
-    gsap.fromTo(titleRef.current,
-      { opacity: 0, y: 40 },
-      {
-        opacity: 1,
-        y: 0,
-        duration: 1,
-        delay: 0.2,
-        ease: 'power3.out'
-      }
-    );
-
-    // Subtitle
-    gsap.fromTo(subtitleRef.current,
-      { opacity: 0, y: 30 },
-      {
-        opacity: 1,
-        y: 0,
-        duration: 1,
-        delay: 0.4,
-        ease: 'power3.out'
-      }
-    );
-
-    // CTA buttons
     const buttons = ctaRef.current?.querySelectorAll('a');
     if (buttons) {
-      gsap.fromTo(buttons,
-        { opacity: 0, y: 20 },
-        {
-          opacity: 1,
-          y: 0,
-          duration: 0.8,
-          stagger: 0.1,
-          delay: 0.6,
-          ease: 'power3.out'
-        }
-      );
+      gsap.set(buttons, { opacity: 0, y: 20 });
+    }
+
+    // Card animation
+    gsap.to(cardRef.current, {
+      opacity: 1,
+      scale: 1,
+      y: 0,
+      duration: 1,
+      ease: 'power3.out',
+      scrollTrigger: {
+        trigger: cardRef.current,
+        start: 'top 80%',
+      }
+    });
+
+    // Title animation with split text effect
+    gsap.to(titleRef.current, {
+      opacity: 1,
+      y: 0,
+      duration: 1,
+      delay: 0.2,
+      ease: 'power3.out'
+    });
+
+    // Subtitle
+    gsap.to(subtitleRef.current, {
+      opacity: 1,
+      y: 0,
+      duration: 1,
+      delay: 0.4,
+      ease: 'power3.out'
+    });
+
+    // CTA buttons
+    if (buttons) {
+      gsap.to(buttons, {
+        opacity: 1,
+        y: 0,
+        duration: 0.8,
+        stagger: 0.1,
+        delay: 0.6,
+        ease: 'power3.out'
+      });
     }
 
     // Floating particles
@@ -145,7 +142,7 @@ export function FinalCTA() {
   }, []);
 
   return (
-    <section ref={container} className="w-full py-32 px-6 relative overflow-hidden">
+    <section ref={container} className="w-full py-20 px-6 relative overflow-hidden">
       <div className="mx-auto max-w-5xl">
         <div
           ref={cardRef}

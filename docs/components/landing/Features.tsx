@@ -50,54 +50,52 @@ export function Features() {
   useGSAP(() => {
     if (!container.current) return;
 
+    // CRITICAL: Set initial values BEFORE animations to prevent flicker
+    gsap.set(titleRef.current, { opacity: 0, y: 50 });
+    gsap.set(subtitleRef.current, { opacity: 0, y: 30 });
+    featureRefs.current.forEach((feature) => {
+      if (feature) gsap.set(feature, { opacity: 0, y: 80, scale: 0.95 });
+    });
+
     // Title animation
-    gsap.fromTo(titleRef.current,
-      { opacity: 0, y: 50 },
-      {
-        opacity: 1,
-        y: 0,
-        duration: 1,
-        ease: 'power3.out',
-        scrollTrigger: {
-          trigger: titleRef.current,
-          start: 'top 80%',
-        }
+    gsap.to(titleRef.current, {
+      opacity: 1,
+      y: 0,
+      duration: 1,
+      ease: 'power3.out',
+      scrollTrigger: {
+        trigger: titleRef.current,
+        start: 'top 80%',
       }
-    );
+    });
 
     // Subtitle
-    gsap.fromTo(subtitleRef.current,
-      { opacity: 0, y: 30 },
-      {
-        opacity: 1,
-        y: 0,
-        duration: 1,
-        delay: 0.2,
-        ease: 'power3.out',
-        scrollTrigger: {
-          trigger: subtitleRef.current,
-          start: 'top 80%',
-        }
+    gsap.to(subtitleRef.current, {
+      opacity: 1,
+      y: 0,
+      duration: 1,
+      delay: 0.2,
+      ease: 'power3.out',
+      scrollTrigger: {
+        trigger: subtitleRef.current,
+        start: 'top 80%',
       }
-    );
+    });
 
     // Feature cards stagger
     featureRefs.current.forEach((feature, i) => {
       if (feature) {
-        gsap.fromTo(feature,
-          { opacity: 0, y: 80, scale: 0.95 },
-          {
-            opacity: 1,
-            y: 0,
-            scale: 1,
-            duration: 0.8,
-            ease: 'power3.out',
-            scrollTrigger: {
-              trigger: feature,
-              start: 'top 85%',
-            }
+        gsap.to(feature, {
+          opacity: 1,
+          y: 0,
+          scale: 1,
+          duration: 0.8,
+          ease: 'power3.out',
+          scrollTrigger: {
+            trigger: feature,
+            start: 'top 85%',
           }
-        );
+        });
 
         // Icon rotation on hover
         const icon = iconRefs.current[i];
@@ -126,7 +124,7 @@ export function Features() {
   }, { scope: container });
 
   return (
-    <section ref={container} className="w-full py-32 px-6 relative overflow-hidden">
+    <section ref={container} className="w-full py-20 px-6 relative overflow-hidden">
       <div className="mx-auto max-w-6xl">
         {/* Header */}
         <div className="mb-20 text-center">

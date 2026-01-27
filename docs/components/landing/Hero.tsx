@@ -22,64 +22,48 @@ export function Hero() {
   useGSAP(() => {
     if (!container.current) return;
 
-    // Create a master timeline for perfectly synced animations
+    // CRITICAL: Set initial values BEFORE any animations to prevent flicker
+    // useGSAP runs before paint, so this prevents the browser from rendering
+    // elements at their final position before animation starts
+    gsap.set(badgeRef.current, { opacity: 0, scale: 0.8, y: -10 });
+    titleWordsRef.current.forEach((word) => {
+      if (word) gsap.set(word, { y: 80, opacity: 0, rotationX: -15 });
+    });
+    gsap.set(underlineRef.current, { scaleX: 0, opacity: 0 });
+    gsap.set(subtitleRef.current, { opacity: 0, y: 20 });
+    ctaRefs.current.forEach((btn) => {
+      if (btn) gsap.set(btn, { y: 30, opacity: 0 });
+    });
+    gsap.set(codeRef.current, { y: 40, opacity: 0, scale: 0.95 });
+
+    // Now animate from the set initial values
     const tl = gsap.timeline({ defaults: { ease: 'power4.out' } });
 
     // Step 1: Badge appears with scale
-    tl.fromTo(badgeRef.current,
-      { opacity: 0, scale: 0.8, y: -10 },
-      { opacity: 1, scale: 1, y: 0, duration: 0.6, ease: 'back.out(1.7)' },
-      0
-    );
+    tl.to(badgeRef.current, { opacity: 1, scale: 1, y: 0, duration: 0.6, ease: 'back.out(1.7)' }, 0);
 
     // Step 2: Title words cascade - overlapping for fluid feel
     titleWordsRef.current.forEach((word, i) => {
       if (word) {
-        tl.fromTo(word,
-          { y: 80, opacity: 0, rotationX: -15 },
-          {
-            y: 0,
-            opacity: 1,
-            rotationX: 0,
-            duration: 0.8,
-            ease: 'power3.out'
-          },
-          0.2 + (i * 0.08) // Stagger with overlap
-        );
+        tl.to(word, { y: 0, opacity: 1, rotationX: 0, duration: 0.8, ease: 'power3.out' }, 0.2 + (i * 0.08));
       }
     });
 
     // Step 3: Underline expands from center
-    tl.fromTo(underlineRef.current,
-      { scaleX: 0, opacity: 0 },
-      { scaleX: 1, opacity: 1, duration: 0.6, ease: 'power2.out' },
-      '-=0.3'
-    );
+    tl.to(underlineRef.current, { scaleX: 1, opacity: 1, duration: 0.6, ease: 'power2.out' }, '-=0.3');
 
     // Step 4: Subtitle fades in smoothly
-    tl.fromTo(subtitleRef.current,
-      { opacity: 0, y: 20 },
-      { opacity: 1, y: 0, duration: 0.8, ease: 'power2.out' },
-      '-=0.4'
-    );
+    tl.to(subtitleRef.current, { opacity: 1, y: 0, duration: 0.8, ease: 'power2.out' }, '-=0.4');
 
     // Step 5: CTA buttons slide up together
     ctaRefs.current.forEach((btn) => {
       if (btn) {
-        tl.fromTo(btn,
-          { y: 30, opacity: 0 },
-          { y: 0, opacity: 1, duration: 0.6, ease: 'power3.out' },
-          '-=0.5'
-        );
+        tl.to(btn, { y: 0, opacity: 1, duration: 0.6, ease: 'power3.out' }, '-=0.5');
       }
     });
 
     // Step 6: Code block appears with bounce
-    tl.fromTo(codeRef.current,
-      { y: 40, opacity: 0, scale: 0.95 },
-      { y: 0, opacity: 1, scale: 1, duration: 0.7, ease: 'back.out(1.2)' },
-      '-=0.3'
-    );
+    tl.to(codeRef.current, { y: 0, opacity: 1, scale: 1, duration: 0.7, ease: 'back.out(1.2)' }, '-=0.3');
 
     // Ambient floating particles - continuous
     const particles = particlesRef.current?.querySelectorAll('.particle');

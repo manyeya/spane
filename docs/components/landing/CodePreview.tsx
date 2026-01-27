@@ -82,55 +82,51 @@ export function CodePreview() {
   useGSAP(() => {
     if (!container.current) return;
 
-    // Title animation
-    gsap.fromTo(titleRef.current,
-      { opacity: 0, x: -50 },
-      {
-        opacity: 1,
-        x: 0,
-        duration: 1,
-        ease: 'power3.out',
-        scrollTrigger: {
-          trigger: titleRef.current,
-          start: 'top 80%',
-        }
-      }
-    );
+    // CRITICAL: Set initial values BEFORE animations to prevent flicker
+    gsap.set(titleRef.current, { opacity: 0, x: -50 });
+    gsap.set(subtitleRef.current, { opacity: 0, x: 50 });
+    gsap.set(codeBlockRef.current, { opacity: 0, y: 60, rotationX: 10 });
 
-    gsap.fromTo(subtitleRef.current,
-      { opacity: 0, x: 50 },
-      {
-        opacity: 1,
-        x: 0,
-        duration: 1,
-        ease: 'power3.out',
-        scrollTrigger: {
-          trigger: subtitleRef.current,
-          start: 'top 80%',
-        }
+    // Title animation
+    gsap.to(titleRef.current, {
+      opacity: 1,
+      x: 0,
+      duration: 1,
+      ease: 'power3.out',
+      scrollTrigger: {
+        trigger: titleRef.current,
+        start: 'top 80%',
       }
-    );
+    });
+
+    gsap.to(subtitleRef.current, {
+      opacity: 1,
+      x: 0,
+      duration: 1,
+      ease: 'power3.out',
+      scrollTrigger: {
+        trigger: subtitleRef.current,
+        start: 'top 80%',
+      }
+    });
 
     // Code block slide in
-    gsap.fromTo(codeBlockRef.current,
-      { opacity: 0, y: 60, rotationX: 10 },
-      {
-        opacity: 1,
-        y: 0,
-        rotationX: 0,
-        duration: 1,
-        ease: 'power3.out',
-        scrollTrigger: {
-          trigger: codeBlockRef.current,
-          start: 'top 80%',
-          onEnter: () => {
-            // Start typing animation when in view
-            startTyping();
-          },
-          once: true
-        }
+    gsap.to(codeBlockRef.current, {
+      opacity: 1,
+      y: 0,
+      rotationX: 0,
+      duration: 1,
+      ease: 'power3.out',
+      scrollTrigger: {
+        trigger: codeBlockRef.current,
+        start: 'top 80%',
+        onEnter: () => {
+          // Start typing animation when in view
+          startTyping();
+        },
+        once: true
       }
-    );
+    });
 
   }, { scope: container });
 
@@ -167,7 +163,7 @@ export function CodePreview() {
   });
 
   return (
-    <section ref={container} className="w-full py-32 px-6 relative overflow-hidden">
+    <section ref={container} className="w-full py-20 px-6 relative overflow-hidden">
       <div className="mx-auto max-w-5xl">
         {/* Header */}
         <div className="mb-16 flex flex-col md:flex-row md:items-end md:justify-between gap-6">
@@ -228,7 +224,7 @@ export function CodePreview() {
           </div>
 
           {/* Code content */}
-          <div className="p-6 sm:p-8 overflow-x-auto">
+          <div className="pl-16 p-6 sm:pl-20 sm:p-8 overflow-x-auto">
             <pre className="text-sm sm:text-base leading-relaxed text-zinc-300 font-mono">
               <code
                 dangerouslySetInnerHTML={{

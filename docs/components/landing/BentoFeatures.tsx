@@ -37,13 +37,6 @@ const bentoItems: BentoItem[] = [
     statLabel: 'durable',
   },
   {
-    icon: <Activity className="h-6 w-6" />,
-    title: 'Real-time Events',
-    description: 'Pub/Sub event streaming via Redis. Monitor executions as they happen.',
-    gradient: 'from-green-500/20 to-emerald-500/20',
-    size: 'medium',
-  },
-  {
     icon: <Shield className="h-6 w-6" />,
     title: 'Circuit Breakers',
     description: 'Protection for external services built natively into the engine processor.',
@@ -76,38 +69,38 @@ export function BentoFeatures() {
   useGSAP(() => {
     if (!container.current) return;
 
+    // CRITICAL: Set initial values BEFORE animations to prevent flicker
+    gsap.set(titleRef.current, { opacity: 0, y: 60 });
+    itemRefs.current.forEach((item) => {
+      if (item) gsap.set(item, { opacity: 0, y: 80, scale: 0.9 });
+    });
+
     // Title animation
-    gsap.fromTo(titleRef.current,
-      { opacity: 0, y: 60 },
-      {
-        opacity: 1,
-        y: 0,
-        duration: 1,
-        ease: 'power3.out',
-        scrollTrigger: {
-          trigger: titleRef.current,
-          start: 'top 80%',
-        }
+    gsap.to(titleRef.current, {
+      opacity: 1,
+      y: 0,
+      duration: 1,
+      ease: 'power3.out',
+      scrollTrigger: {
+        trigger: titleRef.current,
+        start: 'top 80%',
       }
-    );
+    });
 
     // Grid items stagger animation
     itemRefs.current.forEach((item, i) => {
       if (item) {
-        gsap.fromTo(item,
-          { opacity: 0, y: 80, scale: 0.9 },
-          {
-            opacity: 1,
-            y: 0,
-            scale: 1,
-            duration: 0.8,
-            ease: 'power3.out',
-            scrollTrigger: {
-              trigger: item,
-              start: 'top 85%',
-            }
+        gsap.to(item, {
+          opacity: 1,
+          y: 0,
+          scale: 1,
+          duration: 0.8,
+          ease: 'power3.out',
+          scrollTrigger: {
+            trigger: item,
+            start: 'top 85%',
           }
-        );
+        });
 
         // Hover glow effect setup
         const glow = glowRefs.current[i];
@@ -136,7 +129,7 @@ export function BentoFeatures() {
   }, { scope: container });
 
   return (
-    <section ref={container} className="w-full py-32 px-6 relative overflow-hidden">
+    <section ref={container} className="w-full py-20 px-6 relative overflow-hidden">
       <div className="mx-auto max-w-6xl">
         {/* Header */}
         <div className="mb-16">
@@ -252,11 +245,11 @@ export function BentoFeatures() {
         </div>
 
         {/* Bottom CTA */}
-        <div className="mt-16 text-center">
+        {/* <div className=" text-center">
           <p className="text-zinc-500 text-sm">
             Built on BullMQ + Redis • PostgreSQL persistence • Full TypeScript
           </p>
-        </div>
+        </div> */}
       </div>
 
       {/* Decorative background */}
