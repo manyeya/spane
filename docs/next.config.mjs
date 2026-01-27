@@ -7,6 +7,18 @@ const config = {
   reactStrictMode: true,
   output: 'export',
   trailingSlash: true,
+  basePath: '/spane',
+  assetPrefix: '/spane',
+  // Redirect root to basePath for direct domain access
+  async redirects() {
+    return [
+      {
+        source: '/',
+        destination: '/spane/',
+        permanent: false,
+      },
+    ];
+  },
 };
 
 export default withMDX(config);
