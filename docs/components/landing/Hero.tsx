@@ -4,7 +4,7 @@ import { useRef, useEffect } from 'react';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import Link from 'next/link';
-import { Github, Play, ArrowRight, Sparkles } from 'lucide-react';
+import { Github, ArrowRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export function Hero() {
@@ -22,21 +22,8 @@ export function Hero() {
   useGSAP(() => {
     if (!container.current) return;
 
-    // CRITICAL: Set initial values BEFORE any animations to prevent flicker
-    // useGSAP runs before paint, so this prevents the browser from rendering
-    // elements at their final position before animation starts
-    gsap.set(badgeRef.current, { opacity: 0, scale: 0.8, y: -10 });
-    titleWordsRef.current.forEach((word) => {
-      if (word) gsap.set(word, { y: 80, opacity: 0, rotationX: -15 });
-    });
-    gsap.set(underlineRef.current, { scaleX: 0, opacity: 0 });
-    gsap.set(subtitleRef.current, { opacity: 0, y: 20 });
-    ctaRefs.current.forEach((btn) => {
-      if (btn) gsap.set(btn, { y: 30, opacity: 0 });
-    });
-    gsap.set(codeRef.current, { y: 40, opacity: 0, scale: 0.95 });
-
-    // Now animate from the set initial values
+    // Elements start with inline styles for hidden state, preventing flash
+    // No need for gsap.set() - animate directly from initial inline styles
     const tl = gsap.timeline({ defaults: { ease: 'power4.out' } });
 
     // Step 1: Badge appears with scale
@@ -175,6 +162,7 @@ export function Hero() {
         <div
           ref={badgeRef}
           className="mb-10 inline-flex items-center gap-2 rounded-full border border-zinc-800/80 bg-zinc-950/80 px-5 py-2.5 text-sm font-medium text-zinc-400 backdrop-blur-md shadow-lg"
+          style={{ opacity: 0, transform: 'scale(0.8) translateY(-10px)' }}
         >
           <span className="relative flex h-2 w-2">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-500 opacity-75" />
@@ -196,7 +184,7 @@ export function Hero() {
                   'inline-block mr-3 sm:mr-4 perspective-1000',
                   word.highlight ? 'text-white relative' : 'text-zinc-200'
                 )}
-                style={{ display: 'inline-block' }}
+                style={{ display: 'inline-block', opacity: 0, transform: 'translateY(80px) rotateX(-15deg)' }}
               >
                 {word.text}
                 {word.highlight && (
@@ -211,7 +199,7 @@ export function Hero() {
         </div>
 
         {/* Animated underline */}
-        <div ref={underlineRef} className="relative h-0.5 w-32 overflow-hidden rounded-full">
+        <div ref={underlineRef} className="relative h-0.5 w-32 overflow-hidden rounded-full" style={{ opacity: 0, transform: 'scaleX(0)' }}>
           <div className="absolute inset-0 bg-gradient-to-r from-blue-500 via-purple-500 to-cyan-500" />
           <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent animate-shimmer" />
         </div>
@@ -220,6 +208,7 @@ export function Hero() {
         <p
           ref={subtitleRef}
           className="mt-8 max-w-2xl text-lg text-zinc-400 sm:text-xl leading-relaxed"
+          style={{ opacity: 0, transform: 'translateY(20px)' }}
         >
           A high-performance workflow orchestration engine built on{' '}
           <span className="text-zinc-300">BullMQ</span> and{' '}
@@ -235,6 +224,7 @@ export function Hero() {
             ref={(el) => { ctaRefs.current[0] = el; }}
             href="/docs/getting-started"
             className="group relative inline-flex items-center gap-2.5 overflow-hidden rounded-full bg-white px-10 py-4 text-black font-semibold transition-transform hover:scale-105 active:scale-95 shadow-xl shadow-white/10"
+            style={{ opacity: 0, transform: 'translateY(30px)' }}
           >
             <span>Read Docs</span>
             <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1 group-hover:scale-110" />
@@ -246,6 +236,7 @@ export function Hero() {
             href="https://github.com/manyeya/spane"
             target="_blank"
             className="group inline-flex items-center gap-2.5 rounded-full border border-zinc-700/50 bg-zinc-950/80 px-10 py-4 text-zinc-300 backdrop-blur-sm transition-all hover:bg-zinc-900 hover:border-zinc-600 active:scale-95 shadow-lg"
+            style={{ opacity: 0, transform: 'translateY(30px)' }}
           >
             <Github className="h-5 w-5 transition-transform group-hover:scale-110" />
             <span className="font-medium">GitHub</span>
@@ -256,6 +247,7 @@ export function Hero() {
         <div
           ref={codeRef}
           className="mt-10 group relative inline-flex items-center gap-3 rounded-2xl border border-zinc-800/80 bg-zinc-950/90 px-6 py-3.5 backdrop-blur-sm transition-all hover:border-zinc-700 hover:shadow-2xl hover:shadow-blue-500/10"
+          style={{ opacity: 0, transform: 'translateY(40px) scale(0.95)' }}
         >
           {/* Outer glow on hover */}
           <div className="absolute -inset-1 rounded-2xl bg-gradient-to-r from-blue-500/20 via-purple-500/20 to-cyan-500/20 opacity-0 blur-xl transition-opacity duration-500 group-hover:opacity-100 -z-10" />
