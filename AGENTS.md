@@ -1,7 +1,8 @@
 # SPANE - Parallel Asynchronous Node Execution
 
+**Version:** 0.2.0
 **Generated:** 2026-02-08
-**Commit:** 412670e
+**Commit:** 1c28538
 **Project:** BullMQ-based workflow orchestration engine
 
 ## OVERVIEW
@@ -13,7 +14,7 @@ SPANE is a **BullMQ-based distributed workflow execution engine** for TypeScript
 ```
 spane/
 ├── src/
-│   ├── index.ts           # Barrel export (125 lines)
+│   ├── index.ts           # Barrel export (140 lines)
 │   ├── types.ts           # Core interfaces (IExecutionStateStore, WorkflowDefinition)
 │   ├── engine/            # Core workflow orchestration
 │   │   ├── workflow-engine.ts
@@ -21,39 +22,38 @@ spane/
 │   │   ├── node-utils.ts    # Input validation with circular reference detection
 │   │   ├── worker-manager.ts
 │   │   ├── queue-manager.ts
-│   │   ├── event-stream.ts
 │   │   ├── event-emitter.ts
+│   │   ├── event-types.ts
 │   │   ├── registry.ts
 │   │   ├── config.ts
+│   │   ├── constants.ts
+│   │   ├── types.ts
+│   │   ├── validation.ts
+│   │   ├── graph-validation.ts
+│   │   ├── errors.ts
+│   │   ├── dlq-manager.ts
 │   │   ├── handlers/        # Specialized node processors
 │   │   │   ├── execution-handler.ts
 │   │   │   ├── delay-handler.ts
 │   │   │   ├── subworkflow-handler.ts  # Improved error handling
 │   │   │   └── child-enqueue-handler.ts
-│   │   ├── processors/      # Worker thread sandboxing
-│   │   └── tests/           # 54 test files (property/integration/unit)
-│   ├── db/                # State persistence (3 strategies)
+│   │   └── tests/           # 34 test files (property/integration/unit)
+│   ├── db/                # State persistence (2 strategies)
 │   │   ├── inmemory-store.ts    # TTL/LRU eviction, memory leak fixes
 │   │   ├── drizzle-store.ts     # Optimistic locking, transaction isolation
-│   │   └── hybrid-store.ts
+│   │   └── schema.ts
 │   └── utils/             # Production utilities
 │       ├── circuit-breaker.ts
 │       ├── metrics.ts
 │       ├── health.ts
-│       ├── health-monitor.ts  # DUPLICATE - see health.ts
 │       ├── graceful-shutdown.ts
-│       ├── timeout-monitor.ts
 │       ├── distributed-lock.ts  # Configurable TTL, auto-renewal
-│       └── retry-helper.ts
-├── drizzle/               # Database migrations (non-standard location)
-├── examples/              # Usage examples (NOT published)
-│   ├── react-flow-backend.ts
-│   ├── sandboxed-processor-setup.ts
-│   ├── rate-limiting-configuration.ts
-│   ├── test-workflow-controls.ts
-│   └── react-flow-n8n/    # Standalone Next.js project
-├── docs/                  # Separate Next.js docs project (non-standard)
-├── scripts/                # Maintenance scripts (non-standard location)
+│       ├── layout.ts
+│       └── logger.ts
+├── drizzle/               # Database migrations
+├── docs/                  # Separate Next.js docs project
+├── maintenance/           # Maintenance scripts
+├── migrations/            # Database migration files
 └── dist/                  # Compiled output
 ```
 
@@ -61,25 +61,25 @@ spane/
 
 | Task | Location | Notes |
 |------|----------|-------|
-| **Engine core** | `src/engine/workflow-engine.ts` | Main orchestrator, 806 lines |
+| **Engine core** | `src/engine/workflow-engine.ts` | Main orchestrator, 786 lines |
 | **Worker patterns** | `src/engine/worker-manager.ts` | BullMQ worker lifecycle, rate limiting |
-| **Node execution** | `src/engine/node-processor.ts` | 1268 lines - CRITICAL complexity hotspot |
-| **State stores** | `src/db/` | InMemory / Drizzle / Hybrid strategies |
-| **Serialization** | `src/engine/processors/serialization.ts` | Worker thread data transfer |
-| **Event streaming** | `src/engine/event-stream.ts` | SSE via BullMQ QueueEvents |
-| **Tests** | `src/engine/tests/` | 54 test files, Bun test runner |
-| **Circuit breakers** | `src/utils/circuit-breaker.ts` | Opossum integration |
-| **Production utilities** | `src/utils/` | Metrics, health, shutdown, monitoring |
+| **Node execution** | `src/engine/node-processor.ts` | Node job processing, 328 lines |
+| **Node utilities** | `src/engine/node-utils.ts` | DAG traversal, data aggregation, 478 lines |
+| **State stores** | `src/db/` | InMemory / Drizzle strategies |
+| **Event streaming** | `src/engine/event-emitter.ts` | Local event emission |
+| **Tests** | `src/engine/tests/` | 34 test files, Bun test runner |
+| **Graph validation** | `src/engine/graph-validation.ts` | DAG validation, cycle detection |
+| **Production utilities** | `src/utils/` | Metrics, health, shutdown, distributed locking |
 
 ## CONVENTIONS
 
 **Deviations from standard:**
 - **Bun** package manager (not npm/yarn/pnpm)
 - **ESM-only** module system (`"type": "module"`)
-- **Tests nested** in `src/engine/tests/` (not root-level)
+- **Tests nested** in `src/engine/tests/` and `src/db/` (not root-level)
 - **Docs as separate project** in `docs/` (Next.js)
-- **Examples as standalone** project in `examples/react-flow-n8n/`
-- **Maintenance scripts** in `scripts/` at root
+- **Maintenance scripts** in `maintenance/` at root
+- **Migrations** in `migrations/` at root
 
 **Code style:**
 - TypeScript strict mode with `noUncheckedIndexedAccess` and `verbatimModuleSyntax`
@@ -107,46 +107,42 @@ spane/
 - `debug.destroy()` — Does nothing
 
 **Known issues:**
-- Duplicate health monitoring systems (`health.ts` + `health-monitor.ts`)
-- `node-processor.ts` violates SRP (1268 lines, 5+ responsibilities)
+- Removed `health-monitor.ts` (now consolidated into `health.ts`)
+- `drizzle-store.ts` is large (1225 lines) but well-organized with transactions
 
 ## UNIQUE STYLES
 
 **Worker thread sandboxing:**
-- `node-processor.sandbox.js` compiled separately for BullMQ `useWorkerThreads`
-- Type marker serialization for cross-thread transfer (Date, Error, BigInt, Buffer)
-- Non-serializable types (functions, symbols) removed with warnings
+- Removed in v0.2.0 - simplified worker architecture
+- Direct BullMQ worker usage without sandbox isolation
 
 **Multi-store strategy:**
-- `InMemoryExecutionStore` — Development/testing
-- `DrizzleExecutionStateStore` — PostgreSQL with optional Redis cache
-- `HybridExecutionStateStore` — Redis-first (active), DB on completion
+- `InMemoryExecutionStore` — Development/testing with LRU eviction and TTL cleanup
+- `DrizzleExecutionStateStore` — PostgreSQL with optimistic locking and transaction isolation
 
-**Dual-worker architecture:**
-- Node Worker (`node-execution`) — Individual node jobs, high concurrency (default: 5)
-- Workflow Worker (`workflow-execution`) — Workflow triggers, half concurrency
+**Single-worker architecture:**
+- Node Worker (`node-execution`) — Individual node jobs with configurable concurrency (default: 5)
+- FlowProducer for sub-workflows — Native parent-child dependency management
 
-**Event streaming simplified:**
-- Node events via `job.updateProgress()` → BullMQ QueueEvents → Redis Pub/Sub
+**Event streaming:**
 - Workflow status via `emitLocal()` (single-instance only)
+- Event types defined in `event-types.ts`
 
 ## COMMANDS
 
 ```bash
 # Development
-bun dev                  # Vite dev server (docs)
 bun test                  # Run all tests (Bun test runner)
 
 # Build
 bun build                 # Compile src/index.ts → dist/index.js
-bun run build:examples  # Build example sandbox processor
+bun run build:types       # Generate .d.ts declaration files
+bun run build:all         # Both build and types
 
-# Linting
-bun lint                  # ESLint with caching
-bun format                 # Prettier write
-
-# Production
-bun start                 # Start engine with workers
+# Database operations
+bun run db:generate       # Generate migrations from schema
+bun run db:push           # Push schema directly to database
+bun run db:studio         # Open Drizzle Studio
 ```
 
 ## NOTES
@@ -154,48 +150,60 @@ bun start                 # Start engine with workers
 **Configuration:**
 - Redis: `SPANE_REDIS_URL` env var (or `REDIS_URL`)
 - Database: `SPANE_DATABASE_URL` env var (or `DATABASE_URL`)
-- Worker threads: Compile sandbox processor first → `bun build src/engine/processors/node-processor.sandbox.ts --outdir src/engine/processors --target node`
 
 **Worker configuration:**
 - `EngineConfig.workerConcurrency` (default: 5)
-- `EngineConfig.useWorkerThreads` (enable CPU isolation)
 - `EngineConfig.useNativeRateLimiting` (BullMQ limiter)
-- `EngineConfig.useFlowProducerForSubWorkflows` (native parent-child deps)
+- `EngineConfig.useFlowProducerForSubWorkflows` (native parent-child deps, recommended)
+- `EngineConfig.useJobSchedulers` (always enabled)
 
-**Large files requiring attention:**
-1. `src/engine/node-processor.ts` (1268 lines) — Extract strategy pattern per node type
-2. `src/db/drizzle-store.ts` (1206 lines) — Split concerns
-3. `src/db/hybrid-store.ts` (978 lines) — Extract specialized handlers
+**Large files:**
+1. `src/db/drizzle-store.ts` (1225 lines) — Well-organized with transaction support
+2. `src/engine/workflow-engine.ts` (786 lines) — Main orchestrator
+3. `src/engine/node-utils.ts` (478 lines) — DAG utilities and data aggregation
 
-## RECENT IMPROVEMENTS
+## RECENT IMPROVEMENTS (v0.2.0)
 
-**Race condition fixes with distributed locking:**
-- `DistributedLock` class in `src/utils/distributed-lock.ts` now supports configurable TTL per operation type
-- Auto-renewal mechanism for long-running operations (configurable renewal ratio and max renewals)
-- Atomic lock acquisition using Redis SET NX with expiration
-- Lua scripts for atomic check-and-delete and check-and-extend operations
+**Refactored examples:**
+- Removed `react-flow-n8n` standalone Next.js project (moved to separate repository)
+- Simplified examples structure with direct TypeScript usage examples
+- Better focused examples for ETL, conditional branching, and dynamic looping
+
+**Enhanced sub-workflow error handling:**
+- `subworkflow-handler.ts` now properly propagates errors to parent workflows
+- Failed sub-workflows store error results in parent execution state
+- Support for `continueOnFail` at sub-workflow level via `failParentOnFailure` and `ignoreDependencyOnFailure` options
+- Re-enqueues parent node after sub-workflow completion (success or failure)
+- Results stored in parent state before re-enqueuing for idempotency
+
+**Database transaction improvements:**
+- New `drizzle-store-transaction.test.ts` with comprehensive transaction tests
+- `DrizzleStore.updateNodeResult()` uses INSERT ... ON CONFLICT DO UPDATE for atomic upserts
+- `setExecutionStatus()` uses WHERE clause with status check to prevent overwriting terminal states
+- All state modifications wrapped in transactions for atomicity
 
 **Memory leak fixes:**
 - `InMemoryExecutionStore` now implements LRU eviction with configurable `maxExecutions` limit
 - TTL-based cleanup for completed/failed executions (default: 1 hour)
 - Automatic cleanup interval (default: 5 minutes) with unref'd timer
 - Per-execution limits for logs (`maxLogsPerExecution`) and spans (`maxSpansPerExecution`)
+- New `cache-memory-leak.test.ts` to verify proper cleanup
 
-**Sub-workflow error handling improvements:**
-- `subworkflow-handler.ts` now properly propagates errors to parent workflows
-- Failed sub-workflows store error results in parent execution state
-- Support for `continueOnFail` at sub-workflow level via `failParentOnFailure` and `ignoreDependencyOnFailure` options
-- Re-enqueues parent node after sub-workflow completion (success or failure)
+**Distributed locking enhancements:**
+- `DistributedLock` class in `src/utils/distributed-lock.ts` supports configurable TTL per operation type
+- Auto-renewal mechanism for long-running operations (configurable renewal ratio and max renewals)
+- Atomic lock acquisition using Redis SET NX with expiration
+- Lua scripts for atomic check-and-delete and check-and-extend operations
 
-**Transaction isolation with optimistic locking:**
-- `DrizzleStore.updateNodeResult()` uses INSERT ... ON CONFLICT DO UPDATE for atomic upserts
-- `setExecutionStatus()` uses WHERE clause with status check to prevent overwriting terminal states
-- All state modifications are wrapped in transactions for atomicity
-
-**Input validation with circular reference detection:**
-- `node-utils.ts` now includes `validateInputData()` with WeakSet-based circular reference detection
+**Input validation improvements:**
+- `node-utils.ts` includes `validateInputData()` with WeakSet-based circular reference detection
 - Comprehensive error messages for invalid parentIds and missing parent results
 - Validates parent node success before merging data
 - Clear error messages distinguishing between configuration errors, internal errors, and execution errors
 
-**Library entry point:** Import from `spane` after npm install — `import { WorkflowEngine, NodeRegistry } from 'spane'`
+**New test coverage:**
+- `nested-sub-workflow.integration.test.ts` - Nested sub-workflow execution tests
+- `flow-producer-sub-workflow.unit.test.ts` - FlowProducer pattern unit tests
+- `no-job-creation-events.property.test.ts.skip` - Event validation tests (skipped pending fix)
+
+**Library entry point:** Import from `@manyeya/spane` after npm install — `import { WorkflowEngine, NodeRegistry } from '@manyeya/spane'`

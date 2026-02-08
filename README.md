@@ -4,11 +4,13 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue)](https://www.typescriptlang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Parallel Asynchronous Node Execution** — A workflow orchestration engine built on BullMQ and Redis.
+**Parallel Asynchronous Node Execution** — An experimental workflow orchestration engine built on BullMQ and Redis.
 
 SPANE executes DAG-based workflows with parallel node processing, automatic retries, state persistence, and comprehensive error handling.
 
-> **Note:** This is an experimental project. Not production-tested. Expect breaking changes.
+> **Warning:** This is an experimental project. APIs may change between versions. Not recommended for production use without thorough testing.
+
+**Version 0.2.0** — Active development with features including distributed locking, memory management, atomic state operations, and sub-workflow error handling.
 
 ## Features
 
@@ -21,95 +23,190 @@ SPANE executes DAG-based workflows with parallel node processing, automatic retr
 - **Conditional Branching** — Dynamic path selection based on execution results
 - **Rate Limiting** — Native BullMQ rate limiting per node type
 - **Circuit Breakers** — Fault tolerance for external service calls
-- **Production Ready** — Distributed locking, memory management, and atomic operations
+- **Advanced Features** — Distributed locking, memory management, and atomic operations
 
-## Reliability & Production Features
+## Reliability Features
 
-SPANE includes enterprise-grade features for safe concurrent execution and production deployments:
+> **Note:** SPANE is experimental. The following features demonstrate the project's capabilities, but APIs may change.
+
+SPANE v0.2.0 includes features for safe concurrent execution:
 
 ### Distributed Locking
 
-Prevents race conditions when multiple workers process workflow completion simultaneously:
+Prevents race conditions when multiple workers process workflow completion simultaneously. The `DistributedLock` class provides Redis-based locking with configurable TTL and auto-renewal:
 
 ```typescript
-import { DistributedLock } from '@manyeya/spane';
+import { DistributedLock } from '@manyeya/spane/utils/distributed-lock';
+import type { Redis } from 'ioredis';
 
-// Acquire lock with automatic renewal
-const lock = new DistributedLock(redis, {
-  ttl: 5000,              // Lock expires after 5 seconds
-  autoRenew: true,        // Automatically renew while held
-  renewalInterval: 3000,  // Renew every 3 seconds
-  retryDelay: 100         // Retry acquisition every 100ms
-});
+const redis: Redis = new Redis();
+const lock = new DistributedLock(redis);
 
-await lock.acquire('workflow-completion:exec-123');
-try {
+// Execute with automatic lock acquisition and release
+const result = await lock.withLock('workflow-completion:exec-123', async (renew) => {
   // Critical section - only one process executes here
   await completeWorkflow(executionId);
-} finally {
-  await lock.release('workflow-completion:exec-123');
+
+  // Optionally extend the lock manually
+  await renew(5000); // Extend by 5 seconds
+
+  return { success: true };
+}, {
+  ttl: 5000,              // Lock expires after 5 seconds
+  autoRenew: true,        // Automatically renew while held
+  renewalRatio: 0.5,      // Renew at 50% of TTL
+  maxRenewals: 10,        // Maximum renewal attempts
+  operationType: 'default' // fast (10s), default (30s), long (2m), very-long (5m)
+});
+
+// Manual acquire/release pattern
+const token = await lock.acquire('my-lock-key', 30000);
+if (token) {
+  try {
+    await criticalOperation();
+  } finally {
+    await lock.release('my-lock-key', token);
+  }
 }
 ```
 
-Adaptive presets for common scenarios:
-
-```typescript
-import { LockPresets } from '@manyeya/spane';
-
-await lock.acquire('key', LockPresets.workflowCompletion());    // 5s TTL, 3s renewal
-await lock.acquire('key', LockPresets.nodeExecution());        // 30s TTL, 15s renewal
-await lock.acquire('key', LockPresets.subWorkflow());          // 10s TTL, 5s renewal
-await lock.acquire('key', LockPresets.longRunning());          // 60s TTL, 30s renewal
-```
+Key features:
+- **Automatic TTL** — Locks auto-expire to prevent deadlocks
+- **Auto-renewal** — Optional periodic renewal for long operations
+- **Adaptive presets** — Built-in TTL presets for common operation types
+- **Atomic operations** — Lua scripts for safe acquire/release/extend
+- **Expiration warnings** — Optional callback when lock is about to expire
 
 ### Memory Management
 
-InMemoryStore includes automatic memory management to prevent unbounded growth:
+`InMemoryExecutionStore` includes automatic memory management to prevent unbounded growth during development and testing:
 
 ```typescript
-import { InMemoryExecutionStore } from '@manyeya/spane';
+import { InMemoryExecutionStore, type InMemoryStoreConfig } from '@manyeya/spane';
 
 const store = new InMemoryExecutionStore({
-  // Evict entries after TTL expires
-  ttl: 3600_000,           // 1 hour
+  // Evict completed/failed executions after TTL expires
+  completedExecutionTtl: 3600_000,     // 1 hour default
 
   // LRU eviction when size limit reached
-  maxSize: 1000,           // Maximum number of executions
+  maxExecutions: 1000,                  // Maximum executions in memory
+
+  // Per-execution limits
+  maxLogsPerExecution: 1000,            // Maximum log entries per execution
+  maxSpansPerExecution: 500,            // Maximum spans per execution trace
 
   // Background cleanup interval
-  cleanupInterval: 300_000 // Check every 5 minutes
+  cleanupInterval: 300_000,             // Run cleanup every 5 minutes
+  enableCleanup: true                   // Enable automatic cleanup
 });
+
+// Get current store statistics
+const stats = store.getStats();
+console.log(`Executions: ${stats.executionCount}, Logs: ${stats.logCount}`);
+
+// Manually trigger cleanup if needed
+store.cleanup();
+
+// Clear all data (useful for testing)
+store.clear();
+
+// Cleanup when done
+store.destroy();
 ```
 
 ### Atomic State Operations
 
-DrizzleStore uses optimistic locking for concurrent modification safety:
+`DrizzleExecutionStateStore` uses multiple strategies to ensure data consistency under concurrent operations:
 
 ```typescript
-// Updates fail if version mismatch (concurrent modification detected)
-await store.updateNodeResult(executionId, nodeId, {
-  result: data,
-  expectedVersion: 5  // Fails if current version != 5
-});
+import { DrizzleExecutionStateStore } from '@manyeya/spane';
+
+const store = new DrizzleExecutionStateStore(
+  process.env.DATABASE_URL!,
+  redisCache,  // Optional Redis for caching
+  3600,        // Cache TTL in seconds
+  true         // Enable cache
+);
+
+// 1. Atomic Upserts (INSERT ... ON CONFLICT DO UPDATE)
+// Prevents duplicate node results for the same execution/node pair
+await store.updateNodeResult(executionId, nodeId, result);
+
+// 2. Optimistic Locking for Status Updates
+// Only updates if execution is still 'running'
+await store.setExecutionStatus(executionId, 'completed');
+// Prevents overwriting terminal states (completed, failed, cancelled)
+
+// 3. Transactional Operations
+// Atomic DLQ entry + node result + error log
+await store.handlePermanentFailure(
+  executionId,
+  nodeId,
+  jobData,
+  errorMessage,
+  attemptsMade
+);
+
+// Atomic node result + completion check + status update
+const { completed, status } = await store.updateNodeResultWithCompletion(
+  executionId,
+  nodeId,
+  result,
+  totalNodes
+);
+
+// 4. Redis Caching with Write-Through
+// Database is source of truth, cache provides fast reads
+await store.cacheNodeResult(executionId, nodeId, result);
 ```
+
+Transaction isolation guarantees:
+- **Atomic upserts** — No duplicate node results via unique constraints
+- **Optimistic locking** — Status updates only succeed for running executions
+- **Transactional failures** — DLQ + result + log in single transaction
+- **Cache invalidation** — Cache cleared after DB commit
+- **Batch operations** — N+1 query prevention for child executions
 
 ### Input Validation
 
-Workflow validation includes circular reference detection and type safety:
+Workflow validation includes circular reference detection and comprehensive type safety using Zod:
 
 ```typescript
 import {
   validateWorkflowDefinition,
-  detectCircularReferences
+  validateWorkflowDefinitionSafe,
+  validateNodeConfig
 } from '@manyeya/spane';
 
-// Detects cycles in the DAG
-const result = validateWorkflowDefinition(workflow);
+// Runtime validation (throws on error)
+const validated = validateWorkflowDefinition(workflowDefinition);
+
+// Safe validation (returns result object)
+const result = validateWorkflowDefinitionSafe(workflowDefinition);
 if (!result.success) {
-  // result.errors contains circular reference details
-  console.error('Circular dependency:', result.errors);
+  // result.errors contains validation details
+  console.error('Validation errors:', result.errors);
 }
+
+// Node config validation with Zod schemas
+import { z } from 'zod';
+
+const HttpNodeSchema = z.object({
+  url: z.string().url(),
+  method: z.enum(['GET', 'POST', 'PUT', 'DELETE']).default('GET'),
+  timeout: z.number().positive().optional()
+});
+
+const validatedConfig = validateNodeConfig(HttpNodeSchema, nodeConfig);
 ```
+
+The validation system checks for:
+- **Circular dependencies** — Detects cycles in the DAG
+- **Missing entry nodes** — Ensures workflow has a starting point
+- **Orphaned nodes** — Finds nodes unreachable from entry
+- **Duplicate node IDs** — Prevents ambiguous references
+- **Invalid connections** — Validates node input/output references
+- **Type safety** — Zod schemas for runtime type checking
 
 ## Requirements
 
@@ -218,11 +315,16 @@ src/engine/
 │   ├── subworkflow-handler.ts  # Sub-workflow execution
 │   └── child-enqueue-handler.ts # Child node enqueueing
 ├── event-emitter.ts        # BullMQ event emission
-├── distributed-lock.ts     # Redis-based locking
 ├── config.ts               # Engine configuration
 ├── constants.ts            # Configuration constants
 ├── errors.ts               # Standardized error classes
 └── validation.ts           # Zod validation schemas
+
+src/utils/
+├── distributed-lock.ts     # Redis-based distributed locking
+├── metrics.ts              # Metrics collection
+├── graceful-shutdown.ts    # Shutdown coordination
+└── logger.ts               # Structured logging
 ```
 
 ### WorkflowEngine
@@ -444,7 +546,7 @@ Supported duration fields:
 
 ### Sub-Workflows
 
-Compose workflows from other workflows using BullMQ's FlowProducer:
+Compose workflows from other workflows using BullMQ's FlowProducer with enhanced error handling:
 
 ```typescript
 // Child workflow
@@ -472,8 +574,9 @@ const onboardingWorkflow: WorkflowDefinition = {
       type: 'sub-workflow',
       config: {
         workflowId: 'send-email',
-        inputMapping: { 'to': 'userEmail' },
-        outputMapping: { 'messageId': 'emailId' }
+        inputMapping: { 'to': 'userEmail' },  // Map parent data to child input
+        outputMapping: { 'messageId': 'emailId' },  // Map child output to parent
+        continueOnFail: false  // Fail parent if child fails
       },
       inputs: ['create-user'],
       outputs: []
@@ -481,6 +584,12 @@ const onboardingWorkflow: WorkflowDefinition = {
   ]
 };
 ```
+
+**v0.2.0 Enhanced Error Handling:**
+- **Atomic failure propagation** — Sub-workflow failures are atomically stored in parent execution state
+- **Continue-on-fail support** — Parent workflows can continue even if sub-workflow fails
+- **Nested workflow support** — Error context preserved through multiple nesting levels
+- **Aggregator pattern** — BullMQ FlowProducer ensures all children complete before parent continues
 
 ### Triggers
 
@@ -793,12 +902,11 @@ app.listen(3000);
 
 ## Examples
 
-See the `examples/` directory for complete examples:
+For complete workflow examples, see the integration tests in `src/engine/tests/`:
 
-- `simple-workflow.ts` — Basic workflow setup
-- `conditional-branching.ts` — Dynamic path selection
-- `dynamic-looping.ts` — Loop processing
-- `advanced-etl.ts` — ETL pipeline with sub-workflows
+- `*.integration.test.ts` — Full workflow execution scenarios
+- `nested-sub-workflow.integration.test.ts` — Nested sub-workflow examples
+- `flow-producer-sub-workflow.unit.test.ts` — FlowProducer pattern examples
 
 ## Publishing
 

@@ -1,6 +1,6 @@
 {
   "name": "@manyeya/spane",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Parallel Asynchronous Node Execution - Workflow orchestration engine built on BullMQ and Redis",
   "type": "module",
   "main": "./dist/index.js",

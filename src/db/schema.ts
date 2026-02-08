@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, jsonb, integer, bigint, boolean, index, foreignKey } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, jsonb, integer, bigint, boolean, index, foreignKey, unique } from 'drizzle-orm/pg-core';
 
 // Workflows table - stores workflow definitions
 export const workflows = pgTable('workflows', {
@@ -78,7 +78,7 @@ export const nodeResults = pgTable('node_results', {
   index('execution_node_idx').on(table.executionId, table.nodeId),
   // Unique constraint on (executionId, nodeId) for atomic upsert operations
   // This enables INSERT ... ON CONFLICT DO UPDATE for concurrent node result updates
-  index('node_results_execution_node_unique_idx').on(table.executionId, table.nodeId).unique(),
+  unique('node_results_execution_node_unique').on(table.executionId, table.nodeId),
   foreignKey({
     columns: [table.executionId],
     foreignColumns: [executions.executionId],

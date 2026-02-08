@@ -176,6 +176,9 @@ export function mergeParentInputs(
     // Single parent: Pass data directly
     if (parentIds.length === 1) {
         const parentId = parentIds[0];
+        if (!parentId) {
+            throw new Error(`Parent ID is undefined or empty in parentIds array`);
+        }
         const parentResult = previousResults[parentId];
 
         if (!parentResult) {

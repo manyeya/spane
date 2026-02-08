@@ -165,12 +165,12 @@ export function Hero() {
           style={{ opacity: 0, transform: 'scale(0.8) translateY(-10px)' }}
         >
           <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-500 opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+            <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-amber-500 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500" />
           </span>
           <span>v0.1.1</span>
           <span className="text-zinc-700">•</span>
-          <span className="text-zinc-500">Production Ready</span>
+          <span className="text-amber-500">Experimental</span>
         </div>
 
         {/* Title */}
@@ -210,12 +210,15 @@ export function Hero() {
           className="mt-8 max-w-2xl text-lg text-zinc-400 sm:text-xl leading-relaxed"
           style={{ opacity: 0, transform: 'translateY(20px)' }}
         >
-          A high-performance workflow orchestration engine built on{' '}
+          A workflow orchestration engine built on{' '}
           <span className="text-zinc-300">BullMQ</span> and{' '}
           <span className="text-zinc-300">Redis</span>. Execute complex DAGs with{' '}
           <span className="text-white font-medium">parallel processing</span>,{' '}
           <span className="text-blue-400 font-medium">smart retries</span>, and{' '}
           <span className="text-purple-400 font-medium">full type safety</span>.
+          <span className="block mt-3 text-amber-500/80 text-base">
+            APIs may change. Not recommended for production without thorough testing.
+          </span>
         </p>
 
         {/* CTA Buttons */}

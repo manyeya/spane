@@ -195,8 +195,8 @@ export function FinalCTA() {
               ref={subtitleRef}
               className="text-lg sm:text-xl text-zinc-400 max-w-2xl mx-auto leading-relaxed"
             >
-              Join developers building high-performance workflow systems with SPANE.
-              Battle-tested infrastructure, developer-friendly APIs.
+              Join developers exploring workflow orchestration with SPANE.
+              An active research project with evolving APIs and features.
             </p>
 
             {/* CTA Buttons */}
@@ -230,8 +230,8 @@ export function FinalCTA() {
             {/* Trust indicators */}
             <div className="mt-12 flex flex-wrap items-center justify-center gap-6 text-sm text-zinc-600">
               <div className="flex items-center gap-2">
-                <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
-                <span>Production Ready</span>
+                <div className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+                <span>Experimental - APIs May Change</span>
               </div>
               <div className="flex items-center gap-2">
                 <div className="h-2 w-2 rounded-full bg-blue-500" />
