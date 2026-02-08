@@ -96,6 +96,131 @@ describe("Stateless utilities", () => {
             );
             expect(result).toEqual({ parent1: { a: 1 }, parent2: { b: 2 } });
         });
+
+        describe("input validation", () => {
+            test("throws for invalid parentIds (not an array)", () => {
+                expect(() => {
+                    mergeParentInputs({}, "not-an-array" as any, {});
+                }).toThrow("Invalid parentIds: expected array");
+            });
+
+            test("throws for invalid previousResults (not an object)", () => {
+                expect(() => {
+                    mergeParentInputs({}, [], "not-an-object" as any);
+                }).toThrow("Invalid previousResults: expected object");
+            });
+
+            test("throws for invalid parent ID (empty string)", () => {
+                expect(() => {
+                    mergeParentInputs(
+                        {},
+                        [""],
+                        { "": { success: true, data: {} } }
+                    );
+                }).toThrow("Invalid parent ID in parentIds array");
+            });
+
+            test("throws for invalid parent ID (non-string)", () => {
+                expect(() => {
+                    mergeParentInputs(
+                        {},
+                        [123 as any],
+                        {}
+                    );
+                }).toThrow("Invalid parent ID in parentIds array");
+            });
+
+            test("throws when single parent not found in results", () => {
+                expect(() => {
+                    mergeParentInputs(
+                        {},
+                        ["missing-parent"],
+                        {}
+                    );
+                }).toThrow("Parent node 'missing-parent' not found in previous results");
+            });
+
+            test("throws when single parent failed", () => {
+                expect(() => {
+                    mergeParentInputs(
+                        {},
+                        ["failed-parent"],
+                        { "failed-parent": { success: false, error: "Something went wrong" } }
+                    );
+                }).toThrow("Parent node 'failed-parent' did not complete successfully");
+            });
+
+            test("throws when any parent missing in multi-parent merge", () => {
+                expect(() => {
+                    mergeParentInputs(
+                        {},
+                        ["parent1", "missing-parent"],
+                        {
+                            parent1: { success: true, data: { a: 1 } }
+                        }
+                    );
+                }).toThrow("Cannot merge parent inputs: missing parents: 'missing-parent'");
+            });
+
+            test("throws when any parent failed in multi-parent merge", () => {
+                expect(() => {
+                    mergeParentInputs(
+                        {},
+                        ["parent1", "failed-parent"],
+                        {
+                            parent1: { success: true, data: { a: 1 } },
+                            "failed-parent": { success: false, error: "Failed" }
+                        }
+                    );
+                }).toThrow("Cannot merge parent inputs: failed parents: 'failed-parent'");
+            });
+
+            test("throws for circular reference in input data", () => {
+                const circular: any = { a: 1 };
+                circular.self = circular;
+
+                expect(() => {
+                    mergeParentInputs(circular, [], {});
+                }).toThrow("Circular reference detected in input data");
+            });
+
+            test("throws for circular reference in parent data", () => {
+                const circular: any = { b: 2 };
+                circular.self = circular;
+
+                expect(() => {
+                    mergeParentInputs(
+                        {},
+                        ["parent1"],
+                        { parent1: { success: true, data: circular } }
+                    );
+                }).toThrow("Data validation failed for parent node 'parent1'");
+            });
+
+            test("validates complex nested objects without circular refs", () => {
+                const complexData = {
+                    level1: {
+                        level2: {
+                            level3: {
+                                value: "deep"
+                            }
+                        }
+                    },
+                    array: [1, 2, 3],
+                    primitive: "string"
+                };
+
+                const result = mergeParentInputs(complexData, [], {});
+                expect(result).toEqual(complexData);
+            });
+
+            test("handles null and primitive data types", () => {
+                expect(mergeParentInputs(null, [], {})).toBeNull();
+                expect(mergeParentInputs("string", [], {})).toBe("string");
+                expect(mergeParentInputs(123, [], {})).toBe(123);
+                expect(mergeParentInputs(true, [], {})).toBe(true);
+            });
+        });
     });
 
     describe("applyInputMapping", () => {

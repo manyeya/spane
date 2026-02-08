@@ -70,7 +70,7 @@ export { NodeRegistry } from './engine/registry';
 // State Stores
 // ----------------------------------------------------------------------------
 
-export { InMemoryExecutionStore } from './db/inmemory-store';
+export { InMemoryExecutionStore, type InMemoryStoreConfig } from './db/inmemory-store';
 export { DrizzleExecutionStateStore } from './db/drizzle-store';
 export type { IExecutionStateStore, ExecutionState, ExecutionLog, ExecutionTrace, ExecutionSpan } from './types';
 

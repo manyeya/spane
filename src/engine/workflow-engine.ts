@@ -57,7 +57,21 @@ export class WorkflowEngine {
         this.workflowCache = new LRUCache<string, WorkflowDefinition>({
             max: maxSize,
             ttl: ttlMs,
-            updateAgeOnGet: true, // Reset TTL on access
+            // CRITICAL: Enable ttlAutopurge to prevent memory leak
+            // Without this, expired entries are only deleted when accessed,
+            // causing unbounded memory growth for stale entries
+            ttlAutopurge: true,
+            // Disable updateAgeOnGet to ensure TTL is strictly enforced
+            // This prevents frequently accessed workflows from never expiring
+            updateAgeOnGet: false,
+            // Do not allow stale entries to be returned
+            allowStale: false,
+            // Disable updateAgeOnHas to prevent TTL extension on existence checks
+            // This ensures workflows expire based on original set time
+            updateAgeOnHas: false,
+            // Set ttlResolution to control how often stale items are checked
+            // Lower values = more frequent cleanup but slightly more CPU overhead
+            ttlResolution: 1000, // Check for stale entries every 1 second
         });
 
         // Initialize Components

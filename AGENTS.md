@@ -1,7 +1,7 @@
 # SPANE - Parallel Asynchronous Node Execution
 
-**Generated:** Tue Jan 13 2026
-**Commit:** 0e18d4a
+**Generated:** 2026-02-08
+**Commit:** 412670e
 **Project:** BullMQ-based workflow orchestration engine
 
 ## OVERVIEW
@@ -18,17 +18,23 @@ spane/
 │   ├── engine/            # Core workflow orchestration
 │   │   ├── workflow-engine.ts
 │   │   ├── node-processor.ts
+│   │   ├── node-utils.ts    # Input validation with circular reference detection
 │   │   ├── worker-manager.ts
 │   │   ├── queue-manager.ts
 │   │   ├── event-stream.ts
 │   │   ├── event-emitter.ts
 │   │   ├── registry.ts
 │   │   ├── config.ts
+│   │   ├── handlers/        # Specialized node processors
+│   │   │   ├── execution-handler.ts
+│   │   │   ├── delay-handler.ts
+│   │   │   ├── subworkflow-handler.ts  # Improved error handling
+│   │   │   └── child-enqueue-handler.ts
 │   │   ├── processors/      # Worker thread sandboxing
 │   │   └── tests/           # 54 test files (property/integration/unit)
 │   ├── db/                # State persistence (3 strategies)
-│   │   ├── inmemory-store.ts
-│   │   ├── drizzle-store.ts
+│   │   ├── inmemory-store.ts    # TTL/LRU eviction, memory leak fixes
+│   │   ├── drizzle-store.ts     # Optimistic locking, transaction isolation
 │   │   └── hybrid-store.ts
 │   └── utils/             # Production utilities
 │       ├── circuit-breaker.ts
@@ -37,7 +43,7 @@ spane/
 │       ├── health-monitor.ts  # DUPLICATE - see health.ts
 │       ├── graceful-shutdown.ts
 │       ├── timeout-monitor.ts
-│       ├── distributed-lock.ts
+│       ├── distributed-lock.ts  # Configurable TTL, auto-renewal
 │       └── retry-helper.ts
 ├── drizzle/               # Database migrations (non-standard location)
 ├── examples/              # Usage examples (NOT published)
@@ -102,9 +108,7 @@ spane/
 
 **Known issues:**
 - Duplicate health monitoring systems (`health.ts` + `health-monitor.ts`)
-- Inconsistent logging (pino vs console.log in many files)
 - `node-processor.ts` violates SRP (1268 lines, 5+ responsibilities)
-- `drizzle-store.ts` has N+1 query problem in `persistCompleteExecution()`
 
 ## UNIQUE STYLES
 
@@ -160,7 +164,38 @@ bun start                 # Start engine with workers
 
 **Large files requiring attention:**
 1. `src/engine/node-processor.ts` (1268 lines) — Extract strategy pattern per node type
-2. `src/db/drizzle-store.ts` (1206 lines) — Fix N+1 queries, split concerns
+2. `src/db/drizzle-store.ts` (1206 lines) — Split concerns
 3. `src/db/hybrid-store.ts` (978 lines) — Extract specialized handlers
+
+## RECENT IMPROVEMENTS
+
+**Race condition fixes with distributed locking:**
+- `DistributedLock` class in `src/utils/distributed-lock.ts` now supports configurable TTL per operation type
+- Auto-renewal mechanism for long-running operations (configurable renewal ratio and max renewals)
+- Atomic lock acquisition using Redis SET NX with expiration
+- Lua scripts for atomic check-and-delete and check-and-extend operations
+
+**Memory leak fixes:**
+- `InMemoryExecutionStore` now implements LRU eviction with configurable `maxExecutions` limit
+- TTL-based cleanup for completed/failed executions (default: 1 hour)
+- Automatic cleanup interval (default: 5 minutes) with unref'd timer
+- Per-execution limits for logs (`maxLogsPerExecution`) and spans (`maxSpansPerExecution`)
+
+**Sub-workflow error handling improvements:**
+- `subworkflow-handler.ts` now properly propagates errors to parent workflows
+- Failed sub-workflows store error results in parent execution state
+- Support for `continueOnFail` at sub-workflow level via `failParentOnFailure` and `ignoreDependencyOnFailure` options
+- Re-enqueues parent node after sub-workflow completion (success or failure)
+
+**Transaction isolation with optimistic locking:**
+- `DrizzleStore.updateNodeResult()` uses INSERT ... ON CONFLICT DO UPDATE for atomic upserts
+- `setExecutionStatus()` uses WHERE clause with status check to prevent overwriting terminal states
+- All state modifications are wrapped in transactions for atomicity
+
+**Input validation with circular reference detection:**
+- `node-utils.ts` now includes `validateInputData()` with WeakSet-based circular reference detection
+- Comprehensive error messages for invalid parentIds and missing parent results
+- Validates parent node success before merging data
+- Clear error messages distinguishing between configuration errors, internal errors, and execution errors
 
 **Library entry point:** Import from `spane` after npm install — `import { WorkflowEngine, NodeRegistry } from 'spane'`

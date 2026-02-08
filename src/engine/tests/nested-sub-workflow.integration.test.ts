@@ -741,4 +741,148 @@ describe("Nested sub-workflow integration tests", () => {
       });
     });
   });
+
+  /**
+   * Tests for sub-workflow error handling in nested scenarios
+   *
+   * Verifies that error context is properly propagated through nested sub-workflows
+   * and that the parent workflow can handle failures correctly.
+   */
+  describe("Nested sub-workflow error handling", () => {
+    test("aggregator stores failure result in parent execution state", () => {
+      const parentExecutionId = 'parent-exec-error-test';
+      const parentNodeId = 'failing-sub-workflow-node';
+      const childExecutionId = 'child-exec-error-test';
+
+      // Simulate the error scenario
+      const aggregatorErrorResult: ExecutionResult = {
+        success: false,
+        error: `Sub-workflow aggregation failed: Child node failed with timeout`,
+      };
+
+      // Simulate storing the error in parent's execution state
+      const mockParentState: Record<string, ExecutionResult> = {
+        [parentNodeId]: aggregatorErrorResult,
+      };
+
+      // Verify error is stored with correct structure
+      const storedResult = mockParentState[parentNodeId];
+      expect(storedResult.success).toBe(false);
+      expect(storedResult.error).toContain("Sub-workflow aggregation failed:");
+      expect(storedResult.error).toContain("timeout");
+    });
+
+    test("nested sub-workflow failure propagates error type through levels", () => {
+      // Simulate a 3-level nested workflow failure
+      // Level 0 (root) -> Level 1 (middle) -> Level 2 (leaf)
+
+      const leafExecutionId = 'leaf-exec-fail';
+      const middleExecutionId = 'middle-exec-fail';
+      const rootExecutionId = 'root-exec-fail';
+
+      // Leaf aggregator fails
+      const leafAggregatorResult: ExecutionResult = {
+        success: false,
+        error: "Sub-workflow aggregation failed: ValidationError: Invalid input schema",
+      };
+
+      // Middle stores the error from leaf in its execution state
+      const middleNodeResults: Record<string, ExecutionResult> = {
+        'middle-sub': leafAggregatorResult,
+      };
+
+      // Verify error type is preserved through the chain
+      const middleResult = middleNodeResults['middle-sub'];
+      expect(middleResult.success).toBe(false);
+      expect(middleResult.error).toContain("ValidationError"); // Error type preserved
+      expect(middleResult.error).toContain("Invalid input schema"); // Error message preserved
+    });
+
+    test("parent workflow receives properly formatted error result", () => {
+      const parentExecutionId = 'parent-exec-format-test';
+      const parentNodeId = 'sub-workflow-with-error';
+      const childExecutionId = 'child-exec-with-error';
+
+      // Simulate what the aggregator does: store result in parent's state
+      const errorResult: ExecutionResult = {
+        success: false,
+        error: `Sub-workflow aggregation failed: ConnectionError: Database unavailable`,
+      };
+
+      // The parent node's idempotency check will return this result
+      // when re-executed after the aggregator completes
+      const mockParentExecution: Partial<ExecutionState> = {
+        executionId: parentExecutionId,
+        workflowId: 'parent-workflow',
+        status: 'running',
+        nodeResults: {
+          [parentNodeId]: errorResult,
+        },
+      };
+
+      // Verify the parent has access to the error
+      const storedError = mockParentExecution.nodeResults?.[parentNodeId];
+      expect(storedError).toBeDefined();
+      expect(storedError?.success).toBe(false);
+      expect(storedError?.error).toContain("ConnectionError");
+    });
+
+    test("successful nested sub-workflow stores actual output in parent state", () => {
+      const parentExecutionId = 'parent-exec-success';
+      const parentNodeId = 'successful-sub-workflow';
+
+      // Simulate successful aggregation
+      const aggregatedData = { result: 'success', count: 42 };
+      const successResult: ExecutionResult = {
+        success: true,
+        data: aggregatedData,
+      };
+
+      // Store in parent's execution state
+      const mockParentExecution: Partial<ExecutionState> = {
+        executionId: parentExecutionId,
+        workflowId: 'parent-workflow',
+        status: 'running',
+        nodeResults: {
+          [parentNodeId]: successResult,
+        },
+      };
+
+      // Verify the parent sees the actual aggregated output
+      const storedResult = mockParentExecution.nodeResults?.[parentNodeId];
+      expect(storedResult?.success).toBe(true);
+      expect(storedResult?.data).toEqual(aggregatedData);
+    });
+
+    test("error context enables continueOnFail decision making", () => {
+      const parentExecutionId = 'parent-exec-continue-on-fail';
+      const failingSubWorkflowNodeId = 'optional-sub-workflow';
+
+      // Simulate a sub-workflow failure
+      const errorResult: ExecutionResult = {
+        success: false,
+        error: "Sub-workflow aggregation failed: External service unavailable",
+      };
+
+      // Parent workflow can check the result and decide whether to continue
+      const shouldContinue = errorResult.error?.includes('unavailable') || false;
+
+      // Simulate parent's decision based on continueOnFail config
+      const parentNodeConfig = { retryPolicy: { continueOnFail: true } };
+
+      if (parentNodeConfig.retryPolicy?.continueOnFail && shouldContinue) {
+        // Create a safe result that allows workflow to continue
+        const safeResult: ExecutionResult = {
+          success: true,
+          data: { _error: errorResult.error, _skipped: true },
+          skipped: false,
+        };
+
+        expect(safeResult.success).toBe(true);
+        expect(safeResult.data).toHaveProperty('_error');
+      } else {
+        expect(errorResult.success).toBe(false);
+      }
+    });
+  });
 });

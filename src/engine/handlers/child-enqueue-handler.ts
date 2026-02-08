@@ -150,6 +150,12 @@ export async function enqueueNode(
 /**
  * Check if the workflow has completed (all nodes processed).
  * Uses distributed locking to prevent race conditions.
+ *
+ * **Critical locking strategy:**
+ * 1. Status checks happen INSIDE the lock (not before)
+ * 2. Double-check pattern: verify status after acquiring lock
+ * 3. This prevents check-then-act race conditions where multiple workers
+ *    could simultaneously determine the workflow is complete
  */
 export async function checkWorkflowCompletion(
     executionId: string,
@@ -160,13 +166,8 @@ export async function checkWorkflowCompletion(
     const workflow = await deps.getWorkflowWithLazyLoad(workflowId);
     if (!workflow) return;
 
-    // Check if already failed/cancelled
-    const currentExecution = await deps.stateStore.getExecution(executionId);
-    if (currentExecution?.status === 'failed' || currentExecution?.status === 'cancelled') {
-        return;
-    }
-
     // Use distributed lock to prevent race condition
+    // Must acquire lock BEFORE any status checks to ensure atomicity
     const lockKey = `completion:${executionId}`;
     const lockToken = await deps.distributedLock.acquire(lockKey, DEFAULT_LOCK_TIMEOUT_MS);
 
@@ -176,10 +177,29 @@ export async function checkWorkflowCompletion(
     }
 
     try {
+        // Check if already failed/cancelled/completed INSIDE the lock
+        // This double-check prevents race conditions where status changes
+        // between the initial check and lock acquisition
+        const currentExecution = await deps.stateStore.getExecution(executionId);
+        if (!currentExecution) {
+            return;
+        }
+
+        // Early exit for terminal states that shouldn't transition to 'completed'
+        if (currentExecution.status === 'failed' || currentExecution.status === 'cancelled') {
+            return;
+        }
+
+        // Early exit if already completed (idempotency - another worker just completed it)
+        if (currentExecution.status === 'completed') {
+            return;
+        }
+
         const totalNodes = workflow.nodes.length;
         const pendingCount = await deps.stateStore.getPendingNodeCount(executionId, totalNodes);
 
         if (pendingCount === 0) {
+            // Only one worker will reach this point due to the distributed lock
             await deps.stateStore.setExecutionStatus(executionId, 'completed');
             logger.info({ executionId, workflowId }, `🎉 Workflow ${executionId} completed successfully`);
 

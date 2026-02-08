@@ -72,47 +72,182 @@ export function validateDuration(duration: number | null): { valid: boolean; err
 // ============================================================================
 
 /**
- * Merges input data from multiple parent nodes.
- * 
+ * Validates that input data is safe to process (no circular references).
+ *
+ * @param data - The data to validate
+ * @param seen - WeakSet for tracking seen objects (for circular reference detection)
+ * @returns Object with validation result and optional error message
+ */
+function validateInputData(data: unknown, seen = new WeakSet()): { valid: boolean; error?: string } {
+    // Primitive types and null are always valid
+    if (data === null || typeof data !== 'object') {
+        return { valid: true };
+    }
+
+    // Check for circular reference
+    if (seen.has(data as object)) {
+        return {
+            valid: false,
+            error: 'Circular reference detected in input data. This can cause infinite loops during processing.'
+        };
+    }
+
+    // Add current object to seen set
+    seen.add(data as object);
+
+    // Recursively validate object properties (for plain objects)
+    if (!Array.isArray(data)) {
+        for (const value of Object.values(data as Record<string, unknown>)) {
+            const validation = validateInputData(value, seen);
+            if (!validation.valid) {
+                return validation;
+            }
+        }
+    } else {
+        // Validate array elements
+        for (const item of data as unknown[]) {
+            const validation = validateInputData(item, seen);
+            if (!validation.valid) {
+                return validation;
+            }
+        }
+    }
+
+    return { valid: true };
+}
+
+/**
+ * Merges input data from multiple parent nodes with validation.
+ *
  * Data merging strategy:
  * - Single parent: Returns the parent's data directly
  * - Multiple parents: Returns an object keyed by parent node ID
  * - No parents: Returns the original input data
- * 
+ *
  * @param inputData - The original input data (for entry nodes)
  * @param parentIds - Array of parent node IDs
  * @param previousResults - Map of parent node ID to their execution results
  * @returns Merged input data for the node
+ * @throws {Error} If input validation fails with a descriptive error message
  */
 export function mergeParentInputs(
-    inputData: any,
+    inputData: unknown,
     parentIds: string[],
     previousResults: Record<string, ExecutionResult>
-): any {
+): unknown {
+    // Validate parentIds is an array
+    if (!Array.isArray(parentIds)) {
+        throw new Error(
+            `Invalid parentIds: expected array, got '${typeof parentIds}'. ` +
+            `This indicates a configuration error in the workflow definition.`
+        );
+    }
+
+    // Validate previousResults is an object
+    if (typeof previousResults !== 'object' || previousResults === null) {
+        throw new Error(
+            `Invalid previousResults: expected object, got '${typeof previousResults}'. ` +
+            `This indicates an internal state management error.`
+        );
+    }
+
+    // No parents: validate and return input data directly
     if (parentIds.length === 0) {
+        const validation = validateInputData(inputData);
+        if (!validation.valid) {
+            throw new Error(
+                `Input data validation failed for entry node: ${validation.error}`
+            );
+        }
         return inputData;
     }
 
-    if (parentIds.length === 1) {
-        // Single parent: Pass data directly
-        const parentId = parentIds[0];
-        if (parentId) {
-            const parentResult = previousResults[parentId];
-            if (parentResult?.success && parentResult.data !== undefined) {
-                return parentResult.data;
-            }
+    // Validate all parent IDs are non-empty strings
+    for (const parentId of parentIds) {
+        if (typeof parentId !== 'string' || parentId.trim() === '') {
+            throw new Error(
+                `Invalid parent ID in parentIds array: expected non-empty string, ` +
+                `got '${typeof parentId}'${typeof parentId === 'string' ? ` with value '${parentId}'` : ''}. ` +
+                `This indicates a workflow definition error where a node has an invalid parent reference.`
+            );
         }
-        return undefined;
+    }
+
+    // Single parent: Pass data directly
+    if (parentIds.length === 1) {
+        const parentId = parentIds[0];
+        const parentResult = previousResults[parentId];
+
+        if (!parentResult) {
+            throw new Error(
+                `Parent node '${parentId}' not found in previous results. ` +
+                `This may indicate the parent node has not yet completed or failed without producing a result.`
+            );
+        }
+
+        if (!parentResult.success) {
+            throw new Error(
+                `Parent node '${parentId}' did not complete successfully. ` +
+                `Cannot merge data from a failed parent node. Error: ${parentResult.error || 'Unknown error'}`
+            );
+        }
+
+        const validation = validateInputData(parentResult.data);
+        if (!validation.valid) {
+            throw new Error(
+                `Data validation failed for parent node '${parentId}': ${validation.error}`
+            );
+        }
+
+        return parentResult.data;
     }
 
     // Multiple parents: Merge data into an object keyed by parent node ID
-    const mergedData: Record<string, any> = {};
+    const mergedData: Record<string, unknown> = {};
+    const missingParents: string[] = [];
+    const failedParents: string[] = [];
+
     for (const parentId of parentIds) {
         const parentResult = previousResults[parentId];
-        if (parentResult?.success && parentResult.data !== undefined) {
+
+        if (!parentResult) {
+            missingParents.push(parentId);
+            continue;
+        }
+
+        if (!parentResult.success) {
+            failedParents.push(parentId);
+            continue;
+        }
+
+        // Validate each parent's data before adding to merged result
+        const validation = validateInputData(parentResult.data);
+        if (!validation.valid) {
+            throw new Error(
+                `Data validation failed for parent node '${parentId}': ${validation.error}`
+            );
+        }
+
+        if (parentResult.data !== undefined) {
             mergedData[parentId] = parentResult.data;
         }
     }
+
+    // Report any missing or failed parents
+    if (missingParents.length > 0 || failedParents.length > 0) {
+        const errors: string[] = [];
+        if (missingParents.length > 0) {
+            errors.push(`missing parents: ${missingParents.map(p => `'${p}'`).join(', ')}`);
+        }
+        if (failedParents.length > 0) {
+            errors.push(`failed parents: ${failedParents.map(p => `'${p}'`).join(', ')}`);
+        }
+        throw new Error(
+            `Cannot merge parent inputs: ${errors.join('; ')}. ` +
+            `All parent nodes must complete successfully before merging.`
+        );
+    }
+
     return mergedData;
 }
 

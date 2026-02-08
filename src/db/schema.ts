@@ -76,6 +76,9 @@ export const nodeResults = pgTable('node_results', {
   skipped: boolean('skipped').default(false),
 }, (table) => [
   index('execution_node_idx').on(table.executionId, table.nodeId),
+  // Unique constraint on (executionId, nodeId) for atomic upsert operations
+  // This enables INSERT ... ON CONFLICT DO UPDATE for concurrent node result updates
+  index('node_results_execution_node_unique_idx').on(table.executionId, table.nodeId).unique(),
   foreignKey({
     columns: [table.executionId],
     foreignColumns: [executions.executionId],

@@ -16,11 +16,100 @@ SPANE executes DAG-based workflows with parallel node processing, automatic retr
 - **Sub-Workflows** — Compose workflows from other workflows with FlowProducer
 - **State Persistence** — In-memory or PostgreSQL-backed execution state
 - **Error Handling** — Standardized error classes with retry policies and DLQ support
-- **Validation** — Runtime validation with Zod schemas
+- **Validation** — Runtime validation with Zod schemas, including circular reference detection
 - **Triggers** — Webhook and scheduled (cron) workflow execution
 - **Conditional Branching** — Dynamic path selection based on execution results
 - **Rate Limiting** — Native BullMQ rate limiting per node type
 - **Circuit Breakers** — Fault tolerance for external service calls
+- **Production Ready** — Distributed locking, memory management, and atomic operations
+
+## Reliability & Production Features
+
+SPANE includes enterprise-grade features for safe concurrent execution and production deployments:
+
+### Distributed Locking
+
+Prevents race conditions when multiple workers process workflow completion simultaneously:
+
+```typescript
+import { DistributedLock } from '@manyeya/spane';
+
+// Acquire lock with automatic renewal
+const lock = new DistributedLock(redis, {
+  ttl: 5000,              // Lock expires after 5 seconds
+  autoRenew: true,        // Automatically renew while held
+  renewalInterval: 3000,  // Renew every 3 seconds
+  retryDelay: 100         // Retry acquisition every 100ms
+});
+
+await lock.acquire('workflow-completion:exec-123');
+try {
+  // Critical section - only one process executes here
+  await completeWorkflow(executionId);
+} finally {
+  await lock.release('workflow-completion:exec-123');
+}
+```
+
+Adaptive presets for common scenarios:
+
+```typescript
+import { LockPresets } from '@manyeya/spane';
+
+await lock.acquire('key', LockPresets.workflowCompletion());    // 5s TTL, 3s renewal
+await lock.acquire('key', LockPresets.nodeExecution());        // 30s TTL, 15s renewal
+await lock.acquire('key', LockPresets.subWorkflow());          // 10s TTL, 5s renewal
+await lock.acquire('key', LockPresets.longRunning());          // 60s TTL, 30s renewal
+```
+
+### Memory Management
+
+InMemoryStore includes automatic memory management to prevent unbounded growth:
+
+```typescript
+import { InMemoryExecutionStore } from '@manyeya/spane';
+
+const store = new InMemoryExecutionStore({
+  // Evict entries after TTL expires
+  ttl: 3600_000,           // 1 hour
+
+  // LRU eviction when size limit reached
+  maxSize: 1000,           // Maximum number of executions
+
+  // Background cleanup interval
+  cleanupInterval: 300_000 // Check every 5 minutes
+});
+```
+
+### Atomic State Operations
+
+DrizzleStore uses optimistic locking for concurrent modification safety:
+
+```typescript
+// Updates fail if version mismatch (concurrent modification detected)
+await store.updateNodeResult(executionId, nodeId, {
+  result: data,
+  expectedVersion: 5  // Fails if current version != 5
+});
+```
+
+### Input Validation
+
+Workflow validation includes circular reference detection and type safety:
+
+```typescript
+import {
+  validateWorkflowDefinition,
+  detectCircularReferences
+} from '@manyeya/spane';
+
+// Detects cycles in the DAG
+const result = validateWorkflowDefinition(workflow);
+if (!result.success) {
+  // result.errors contains circular reference details
+  console.error('Circular dependency:', result.errors);
+}
+```
 
 ## Requirements
 
@@ -277,11 +366,18 @@ Two implementations available:
 
 ```typescript
 import { InMemoryExecutionStore } from '@manyeya/spane';
-// Development only — data lost on restart
+// Development/testing with memory management:
+// - TTL-based eviction (auto-cleanup after expiration)
+// - LRU eviction (removes least-recently-used when full)
+// - Configurable size limits
+// - Background cleanup process
 
 import { DrizzleStore } from '@manyeya/spane';
-// PostgreSQL persistence with full versioning
-// Set DATABASE_URL to enable
+// PostgreSQL persistence with:
+// - Full execution versioning
+// - Optimistic locking for concurrent safety
+// - Atomic state + DLQ + error logging
+// - Set DATABASE_URL to enable
 ```
 
 ## Advanced Features

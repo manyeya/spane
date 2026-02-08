@@ -13,6 +13,18 @@ import {
     DEFAULT_RETRY_DELAY_MS,
 } from './constants';
 
+/**
+ * BullMQ Queue Prefix Convention
+ * --------------------------------
+ * All BullMQ queues (Queue, QueueEvents, FlowProducer) MUST use the prefix 'spane'
+ * without curly braces. This ensures consistent Redis key naming across all queues.
+ *
+ * Redis key format: {prefix}:{queue-name}:{key}
+ * Example: spane:node-execution:1
+ *
+ * Note: Do NOT use '{spane}' format (with curly braces) as that creates a Redis
+ * Cluster hash tag which causes inconsistent key routing.
+ */
 export class QueueManager {
     public nodeQueue: Queue<NodeJobData>;
     public workflowQueue: Queue<WorkflowJobData>;
@@ -59,7 +71,7 @@ export class QueueManager {
         // Dedicated QueueEvents for caching results to avoid conflicts
         this.resultCacheEvents = new QueueEvents('node-execution', {
             connection: redisConnection,
-            prefix: '{spane}',
+            prefix: 'spane', // Standardized prefix format for all BullMQ queues
         });
 
         // Initialize FlowProducer for sub-workflow handling

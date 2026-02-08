@@ -85,6 +85,14 @@ export async function processAggregatorNode(
             const parentExecution = await deps.stateStore.getExecution(parentExecutionId);
             const parentWorkflowId = parentExecution?.workflowId || 'unknown';
 
+            // Store the successful result in parent execution state before re-enqueuing.
+            // This ensures the parent sees the actual sub-workflow output (not just the initial flowJobId).
+            // The parent node's idempotency check will return this stored result.
+            await deps.stateStore.updateNodeResult(parentExecutionId, parentNodeId, {
+                success: true,
+                data: mappedOutput,
+            });
+
             // Re-enqueue the parent node to continue processing
             await deps.enqueueNode(parentExecutionId, parentWorkflowId, parentNodeId);
         }
@@ -100,10 +108,21 @@ export async function processAggregatorNode(
         // Mark sub-workflow execution as failed
         await deps.stateStore.setExecutionStatus(executionId, 'failed');
 
-        // Notify parent workflow of failure if applicable
+        // Store the error result in parent execution state so the parent workflow
+        // can see the sub-workflow failure and continue or fail accordingly
         if (parentExecutionId && parentNodeId) {
             const parentExecution = await deps.stateStore.getExecution(parentExecutionId);
             const parentWorkflowId = parentExecution?.workflowId || 'unknown';
+
+            // Store the sub-workflow failure result in the parent's node results
+            // This preserves error context and enables proper continueOnFail handling
+            await deps.stateStore.updateNodeResult(parentExecutionId, parentNodeId, {
+                success: false,
+                error: `Sub-workflow aggregation failed: ${errorMessage}`,
+            });
+
+            // Re-enqueue the parent node to continue processing
+            // The parent will see the failed result in its node results
             await deps.enqueueNode(parentExecutionId, parentWorkflowId, parentNodeId);
         }
 
